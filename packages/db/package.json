@@ -1,0 +1,25 @@
+{
+  "name": "@erp/db",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Schema source of truth, tenant machinery, seeds and the isolation test harness. Migrations are hand-written SQL; Drizzle mirrors, never generates.",
+  "exports": {
+    ".": "./src/index.ts",
+    "./testing": "./src/testing/harness.ts",
+    "./seed": "./src/seed/index.ts"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "drizzle-orm": "^0.36.4"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "^0.2.17",
+    "@types/node": "^22.10.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}
