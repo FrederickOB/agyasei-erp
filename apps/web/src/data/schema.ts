@@ -380,32 +380,6 @@ export const LOCAL_TABLES: readonly LocalTableDef[] = [
     ],
   },
   {
-    // The device's CURRENT receipt-number block (03 §3.7.5). LOCAL-ONLY and
-    // deliberately so: the block is allocated server-side and handed to this
-    // device, and `consumed_upto` is device state that is REPORTED, never
-    // synced back down. Syncing a counter to a device is the defect 04 §4.7
-    // deleted `document_number_range` for.
-    //
-    // This table is exactly what a wipe destroys. When OPFS is evicted the row
-    // goes with it, the device reconnects holding nothing, and the server sees
-    // a live block it cannot account for — which is how the regression is
-    // caught (see data/sequence.ts).
-    name: 'sequence_block',
-    localOnly: true,
-    columns: [
-      t('sequence_key'),
-      t('location_id'),
-      i('block_start'), // CAST AS TEXT on read — a number, never a float64
-      i('block_size'),
-      i('consumed_upto'), // NULL until the first number is issued
-      t('number_format'), // tenant configuration, handed down by the server
-      t('number_prefix'),
-      t('location_code'),
-      t('issued_at'),
-      t('reported_at'),
-    ],
-  },
-  {
     name: 'outbox',
     localOnly: true,
     columns: [
@@ -416,10 +390,75 @@ export const LOCAL_TABLES: readonly LocalTableDef[] = [
       t('kind'), // 'sale' (skeleton); adjustments/transfers/payments later
       t('payload'), // JSON; every monetary value is a decimal STRING of minor units
       i('total_minor'), // for the sales list — CAST AS TEXT on read
+      // The device-allocated human-facing number this sale was rung under
+      // (03 §3.7.5). Denormalised out of `payload` because the receipt screen,
+      // the recent-sales list and a reprint all need it without parsing JSON.
+      t('receipt_no'),
+      // Cash tender is DEVICE-LOCAL state, deliberately not on the wire: the
+      // sale contract has nowhere to put it server-side until app.cash_session
+      // and app.sale_tender land (see the design note in
+      // packages/contracts/src/sale.ts), and a field the server silently drops
+      // is worse than one it refuses. Cash-up reads these columns.
+      i('tendered_minor'), // CAST AS TEXT on read
+      i('change_minor'), // CAST AS TEXT on read
       t('created_at'),
       t('server_ack_at'), // NULL until the server acks; drives the §8.5 badge
       t('rejected_at'),
       t('reject_reason'),
+    ],
+  },
+  {
+    // Device-allocated human-facing sequence numbers (03 §3.7.5). LOCAL-ONLY
+    // and consumed with ZERO connectivity — a block is drawn down inside the
+    // same local transaction that writes the sale, so a rolled-back checkout
+    // burns no number and a committed one can never re-issue it.
+    //
+    // `source` is the whole safety argument. A 'server' block is one the
+    // server allocated under a row lock on a per-(tenant, location,
+    // sequence_key) counter: ranges are disjoint by construction, so the
+    // printed number needs no device tag. A 'device' block is one this device
+    // self-issued because no server-allocated block was on hand — its range
+    // overlaps every other device's, so disjointness has to come from the
+    // identifier itself and the formatter appends the device tag. Both are
+    // "per-device blocks, monotonic within a device, gaps expected", which is
+    // exactly what §3.7.5 chooses; only the source of disjointness differs.
+    // LOCAL-ONLY, and that is the second half of the safety argument: a
+    // counter is never synced DOWN to a device (04 §4.7 deleted
+    // `document_number_range` for exactly that defect), so `consumed_upto` is
+    // device state that is REPORTED and compared server-side, never
+    // authoritative here.
+    //
+    // This table is also precisely what a wipe destroys. Evict OPFS, or
+    // reinstall the PWA on the same enrolled device, and the row goes with it
+    // while the server still shows the block live — which is how the
+    // regression is detected (`data/sequence.ts` buildBlockReport, and
+    // `sequence.syncBlock` on the server).
+    name: 'sequence_block',
+    localOnly: true,
+    columns: [
+      t('sequence_key'), // 'RECEIPT' | 'INVOICE' | … — pack + tenant data, not an enum
+      t('location_id'),
+      t('device_node'), // this device's 32-hex HLC node id
+      t('source'), // 'server' | 'device'
+      i('block_start'), // CAST AS TEXT on read — a counter, same discipline
+      i('block_size'),
+      i('consumed_upto'), // NULL until the first number is drawn
+      // The tenant's rendering configuration, as the SERVER handed it down with
+      // the block (app.sequence_counter.number_format / .number_prefix, and the
+      // location's own code). NULL on a self-issued block, which has none.
+      //
+      // It lives on the BLOCK rather than in device configuration so a block
+      // and the format its numbers were printed under cannot drift apart: a
+      // reprint of yesterday's receipt must render what the customer is holding.
+      t('number_format'),
+      t('number_prefix'),
+      t('location_code'),
+      t('issued_at'),
+      t('exhausted_at'), // set when the last number in the block is consumed
+      // The cursor value this device last TOLD the server about, stamped when
+      // the reconnect report is queued. Not the same thing as consumed_upto:
+      // the gap between the two is the window a wipe would hide.
+      t('reported_at'),
     ],
   },
 ];
@@ -442,11 +481,16 @@ export function localSchemaDdl(): string[] {
   stmts.push('CREATE UNIQUE INDEX idx_outbox_idempotency_key ON outbox (idempotency_key)');
   stmts.push('CREATE INDEX idx_cart_line_cart ON cart_line (cart_id)');
   stmts.push('CREATE INDEX idx_outbox_pending ON outbox (created_at)');
-  // One live block per (sequence_key, location) on this device — the local
-  // mirror of app.sequence_block's partial unique index. Holding two would
-  // make "the block I am consuming" ambiguous at the till.
+  // One live block per (sequence_key, location) on this device: the partial
+  // index makes "two open blocks for the same counter" unrepresentable rather
+  // than merely unlikely, so a number can never be drawn from a stale block.
   stmts.push(
-    'CREATE UNIQUE INDEX idx_sequence_block_current ON sequence_block (sequence_key, location_id)',
+    `CREATE UNIQUE INDEX idx_sequence_block_open
+       ON sequence_block (sequence_key, location_id)
+     WHERE exhausted_at IS NULL`,
+  );
+  stmts.push(
+    'CREATE INDEX idx_sequence_block_range ON sequence_block (sequence_key, location_id, block_start)',
   );
   return stmts;
 }

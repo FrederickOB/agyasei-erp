@@ -20,7 +20,7 @@
  */
 import type { FastifyInstance } from 'fastify';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { uuidv7 } from '@erp/db';
+import { PERMISSION_CODES, uuidv7 } from '@erp/db';
 import { renderNumber } from '@erp/sequence';
 import { signDevToken } from '../src/auth.js';
 import { buildServer } from '../src/server.js';
@@ -362,7 +362,11 @@ describe('§3.9 drill — wipe a device\'s local DB mid-block, reissue', () => {
     expect(review.status).toBe('open');
     expect(review.entity_table).toBe('app.sequence_block');
     expect(review.field_path).toBe('consumed_upto');
-    expect(review.required_permission).toBe('sequence.review');
+    // The CATALOGUED code (packages/db permissions.ts, migration 0005), not a
+    // code this router minted for itself: a required_permission nobody can be
+    // granted is a severity-1 queue nobody can read.
+    expect(review.required_permission).toBe('sync.conflict.review');
+    expect(PERMISSION_CODES).toContain(review.required_permission);
     expect(review.pending_value.overlapFrom).toBe(blockStart.toString(10));
     expect(review.pending_value.overlapTo).toBe(serverSaw.toString(10));
     // Both sides of the story, with provenance.

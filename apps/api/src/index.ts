@@ -26,6 +26,15 @@ export {
   type CreditPolicyStore,
 } from './credit-policy.js';
 export { adminRunnerFrom, type AdminRunner, type Queryable, type TenantRunner } from './db.js';
+export {
+  assertPermission,
+  loadPermissionState,
+  permissionState,
+  requireKnownCode,
+  DENY,
+  type PermissionCtx,
+  type PermissionState,
+} from './permissions.js';
 export { registerSyncRoutes, type SyncRouteOptions, type UploadAck, type UploadAckStatus } from './sync.js';
 export { createPgRunners, type PgRunners } from './pg-runner.js';
 export { taxComponentsInForce, computeLineTaxes } from './tax.js';

@@ -25,23 +25,18 @@
  * No `@powersync/web` import: plain logic over the LocalDb seam, unit-tested
  * with a mocked transport (no live service).
  */
+import { MAX_UPLOAD_BATCH, type UploadAck, type UploadAckStatus } from '@erp/contracts';
 import type { LocalDb } from '../db';
 
-export type AckStatus = 'applied' | 'duplicate' | 'rejected';
-
-export interface UploadAck {
-  readonly key: string;
-  readonly status: AckStatus;
-  /** Only on `rejected`; prefixed with the server error code (see api/src/sync.ts). */
-  readonly reason?: string;
-  /**
-   * The mutation's stored response, present only for the ops that need it
-   * (api/src/sync.ts RESULT_OPS) — today, the sequence-block report, because
-   * the server decides which numbers this device may use next and after a
-   * regression that is a different block from the one it asked about.
-   */
-  readonly result?: unknown;
-}
+/**
+ * The ack shape and the batch cap are the SERVER'S declarations, imported —
+ * not restated. Both used to be hand-copied here (`MAX_UPLOAD_BATCH = 500`
+ * written out twice, once on each side of the wire), which is the same
+ * failure that made every sale payload a BAD_REQUEST, one layer out.
+ */
+export { MAX_UPLOAD_BATCH, type UploadAck, type UploadAckStatus };
+/** Retained spelling for existing callers; the contract's name is UploadAckStatus. */
+export type AckStatus = UploadAckStatus;
 
 /** One pending outbox row, as read from the local queue. */
 export interface PendingOp {
@@ -100,9 +95,6 @@ export function classifyRejection(reason: string | undefined): RejectionClass {
   const prefix = reason.split(':', 1)[0]?.trim() ?? '';
   return DEFINITIVE_PREFIXES.has(prefix) ? 'definitive' : 'retryable';
 }
-
-/** The server's envelope cap (api/src/sync.ts uploadBodySchema). */
-export const MAX_UPLOAD_BATCH = 500;
 
 export interface DrainProgress {
   readonly sentCount: number;

@@ -6,6 +6,7 @@
     "lib": ["ES2022"],
     "baseUrl": ".",
     "paths": {
+      "@erp/contracts": ["../../packages/contracts/src/index.ts"],
       "@erp/money": ["../../packages/money/src/index.ts"],
       "@erp/db": ["../../packages/db/src/index.ts"],
       "@erp/db/testing": ["../../packages/db/src/testing/harness.ts"],

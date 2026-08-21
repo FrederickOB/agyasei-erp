@@ -23,53 +23,30 @@
  */
 import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
+import { openAccountInput, recordEntryInput } from '@erp/contracts';
 import { deterministicUuid } from '@erp/db';
 import { mulDiv } from '@erp/money';
 import { days30, type CreditPolicy } from '../credit-policy.js';
 import type { Queryable } from '../db.js';
 import { runIdempotent } from '../pipeline.js';
-import { router, tenantProcedure } from '../trpc.js';
+import { permissionProcedure, router } from '../trpc.js';
 import {
   addCalendarDays,
   calendarDaysBetween,
   mutationEnvelope,
   wire,
   zBusinessDate,
-  zScaledInt,
-  zScaledIntNonNeg,
   zUuid,
 } from '../wire.js';
 
-const openAccountInput = z
-  .object({
-    ...mutationEnvelope,
-    customerId: zUuid.optional(),
-    newCustomer: z
-      .object({ code: z.string().min(1).max(64), name: z.string().min(1), phone: z.string().optional() })
-      .strict()
-      .optional(),
-    termsDays: z.number().int().min(0).max(365),
-    /** Basis points per month, per ACCOUNT (ADR-0006). 2%/month = 200. */
-    feeRateBpPerMonth: z.number().int().min(0).max(10_000),
-    creditLimitMinor: zScaledIntNonNeg,
-  })
-  .strict()
-  .refine((v) => (v.customerId === undefined) !== (v.newCustomer === undefined), {
-    message: 'provide exactly one of customerId or newCustomer',
-  });
-
-const recordEntryInput = z
-  .object({
-    ...mutationEnvelope,
-    accountId: zUuid,
-    kind: z.enum(['CHARGE', 'PAYMENT', 'ADJUSTMENT', 'WRITE_OFF']), // FEE is accrual-only
-    /** SIGNED minor units: CHARGE > 0, PAYMENT/WRITE_OFF < 0 (ce_sign). */
-    amountMinor: zScaledInt.refine((v) => v !== 0n, 'amount must be non-zero'),
-    businessDate: zBusinessDate,
-    dueDate: zBusinessDate.optional(),
-    appliesToId: zUuid.optional(),
-  })
-  .strict();
+/**
+ * The two DEVICE-UPLOADABLE input shapes — `openAccountInput` and
+ * `recordEntryInput` — are not defined here. They live in `@erp/contracts`,
+ * the one declaration both sides of the wire import, so a device builder
+ * cannot be written against a shape this router will reject (see
+ * `packages/contracts/src/device-ops.ts` for why that rule exists). The
+ * query and accrual inputs below stay local: they are not device writes.
+ */
 
 interface EntryRow {
   id: string;
@@ -195,8 +172,46 @@ function bucketLabels(bounds: readonly number[]): { label: string; from: number;
   return buckets;
 }
 
+/**
+ * ─────────────────────────────────────────────────────────────────────────
+ * WHY EVERY CREDIT WRITE HERE IS `at: 'tenant'`
+ * ─────────────────────────────────────────────────────────────────────────
+ * A customer's credit account belongs to the TENANT, not to an outlet:
+ * `app.customer_account` has no location column, because the contractor who
+ * buys cement at Techiman on Monday and at Wenchi on Thursday has ONE
+ * exposure and one limit. So there is no location in these requests to check
+ * a permission at — and "held somewhere" would be the wrong answer, because
+ * it would let a grant made at one outlet reach an object that spans all of
+ * them.
+ *
+ * `at: 'tenant'` requires the capability at the ROOT of the tenant's location
+ * tree. Grants expand DOWN the closure (a grant at the Bono region covers
+ * every outlet under it; a grant at Techiman covers Techiman), so authority
+ * at the root is exactly "over the whole tenant" and a leaf grant can never
+ * reach it. That is the location-scoped variant for an object with no
+ * location: an outlet manager holding `credit.entry.record` at their own
+ * counter is refused here, and Accounts — assigned at the root — is not.
+ *
+ * Reads are `at: 'any'`: a manager with `credit.view` at their outlet may
+ * look a customer up. The tenant boundary on those reads is RLS, which is a
+ * different control and is not weakened by this one.
+ */
 export const creditRouter = router({
-  openAccount: tenantProcedure.input(openAccountInput).mutation(async ({ ctx, input }) => {
+  /**
+   * Opening an account also SETS A CREDIT LIMIT, so it passes through
+   * `credit.limit.change` whenever the limit is non-zero — one of the brief's
+   * two hard prohibitions, and the reason it is checked HERE and not only on
+   * some future setLimit endpoint. There must be no path to a credit limit
+   * that does not pass through that capability; opening an account with
+   * GH₵50,000 of headroom is such a path.
+   */
+  openAccount: permissionProcedure({
+    code: 'credit.account.manage',
+    at: 'tenant',
+  }).input(openAccountInput).mutation(async ({ ctx, input }) => {
+    if (input.creditLimitMinor !== 0n) {
+      ctx.permissions.requireTenantWide('credit.limit.change');
+    }
     const tenantId = ctx.identity.tenantId;
     const key = input.idempotencyKey;
     const result = await runIdempotent(
@@ -273,7 +288,10 @@ export const creditRouter = router({
     return result.response;
   }),
 
-  recordEntry: tenantProcedure.input(recordEntryInput).mutation(async ({ ctx, input }) => {
+  recordEntry: permissionProcedure({
+    code: 'credit.entry.record',
+    at: 'tenant',
+  }).input(recordEntryInput).mutation(async ({ ctx, input }) => {
     const tenantId = ctx.identity.tenantId;
     const key = input.idempotencyKey;
     const result = await runIdempotent(
@@ -333,7 +351,7 @@ export const creditRouter = router({
   }),
 
   /** Exposure = Σ(entries). Derived on every read; never a counter. */
-  exposure: tenantProcedure
+  exposure: permissionProcedure({ code: 'credit.view', at: 'any' })
     .input(z.object({ accountId: zUuid }).strict())
     .query(async ({ ctx, input }) => {
       return ctx.deps.runner.withTenant(ctx.identity.tenantId, async (tx) => {
@@ -355,7 +373,7 @@ export const creditRouter = router({
     }),
 
   /** Ageing by DAYS PAST DUE (§6.3), boundaries from the tenant policy. */
-  ageing: tenantProcedure
+  ageing: permissionProcedure({ code: 'credit.view', at: 'any' })
     .input(z.object({ accountId: zUuid, asOf: zBusinessDate }).strict())
     .query(async ({ ctx, input }) => {
       const policy = await ctx.deps.policyStore.get(ctx.identity.tenantId);
@@ -424,7 +442,7 @@ export const creditRouter = router({
    * confirmed, writes nothing, and every figure carries the provisional
    * label — someone will quote a report to a customer.
    */
-  previewFacilityFee: tenantProcedure
+  previewFacilityFee: permissionProcedure({ code: 'credit.view', at: 'any' })
     .input(z.object({ accountId: zUuid, asOf: zBusinessDate }).strict())
     .query(async ({ ctx, input }) => {
       const policy = await ctx.deps.policyStore.get(ctx.identity.tenantId);
@@ -457,7 +475,7 @@ export const creditRouter = router({
    * because the five fee decisions are revenue recognition calls no agent
    * makes (open-questions.md Q4; CLAUDE.md §2.8).
    */
-  accrueFacilityFee: tenantProcedure
+  accrueFacilityFee: permissionProcedure({ code: 'credit.fee.accrue', at: 'tenant' })
     .input(z.object({ ...mutationEnvelope, accountId: zUuid, asOf: zBusinessDate }).strict())
     .mutation(async ({ ctx, input }) => {
       const policy = await ctx.deps.policyStore.get(ctx.identity.tenantId);

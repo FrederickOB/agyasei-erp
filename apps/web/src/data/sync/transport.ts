@@ -10,16 +10,20 @@
  * then completes nothing (upload.ts). The transport never interprets acks;
  * it only carries them.
  */
+import { uploadBodySchema, type DeviceOpKind, type UploadBody } from '@erp/contracts';
 import type { FetchLike, HttpResponseLike } from './credentials';
 import type { AckStatus, PendingOp, UploadAck, UploadResult, UploadTransport } from './upload';
 
 /**
- * Outbox `kind` → the wire op discriminator (api/src/sync.ts DEVICE_OPS).
- * Unknown kinds pass through verbatim: the server answers UNKNOWN_KIND, which
- * dead-letters the op into the VISIBLE attention state rather than silently
- * wedging the queue.
+ * Outbox `kind` → the wire op discriminator.
+ *
+ * The values are typed as the contract's `DeviceOpKind`, so a kind this client
+ * ships that the server has no handler for does not compile. Unknown kinds
+ * still pass through verbatim at RUNTIME: the server answers UNKNOWN_KIND,
+ * which dead-letters the op into the VISIBLE attention state rather than
+ * silently wedging the queue.
  */
-export const WIRE_KINDS: Readonly<Record<string, string>> = {
+export const WIRE_KINDS: Readonly<Record<string, DeviceOpKind>> = {
   sale: 'sale.create',
   sequence_block: 'sequence.sync_block',
 };
@@ -83,7 +87,10 @@ export function httpUploadTransport(opts: HttpTransportOptions): UploadTransport
 
   return {
     async send(ops: readonly PendingOp[]): Promise<UploadResult> {
-      const body = {
+      // TYPED AS THE CONTRACT'S ENVELOPE — the same declaration the API's
+      // /sync/upload route parses. The envelope used to be hand-rolled here
+      // against a schema defined only on the server.
+      const body: UploadBody = {
         ops: ops.map((op) => ({
           idempotency_key: op.idempotencyKey,
           ...(op.claimedHlc !== null ? { claimed_hlc: op.claimedHlc } : {}),
@@ -92,6 +99,17 @@ export function httpUploadTransport(opts: HttpTransportOptions): UploadTransport
           payload: parsePayload(op.payloadJson),
         })),
       };
+      // Prove the batch against the contract before it leaves the device. A
+      // malformed envelope refuses the WHOLE batch server-side and applies
+      // nothing, so the outcome is identical either way — but caught here it
+      // is visible on the device without a round trip. The ops stay pending
+      // and the §8.4 "stuck" state surfaces the queue that stopped draining:
+      // loud, never lost (§3.3.4 — the unknown case defaults to retry).
+      const envelope = uploadBodySchema.safeParse(body);
+      if (!envelope.success) {
+        return { ok: false, status: 0, acks: [] };
+      }
+
       let res: HttpResponseLike;
       try {
         res = await fetchFn(`${base}/sync/upload`, {

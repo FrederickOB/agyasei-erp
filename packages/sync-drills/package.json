@@ -9,6 +9,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@erp/contracts": "workspace:*",
     "@erp/db": "workspace:*",
     "@powersync/common": "^2.1.0",
     "@powersync/node": "^0.21.0",

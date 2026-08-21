@@ -16,7 +16,6 @@
 import { describe, expect, it } from 'vitest';
 import type { LocalDb } from '../src/data/db';
 import {
-  NoBlockError,
   adoptBlock,
   applySyncBlockResult,
   buildBlockReport,
@@ -48,8 +47,8 @@ async function withBlock(
   await adoptBlock(db, { locationId: LOCATION, block: { blockStart, blockSize }, format: FORMAT });
 }
 
-async function take(db: LocalDb, discriminator = 'aaaa-bbbb') {
-  return takeNumber(db, { locationId: LOCATION, deviceId: DEVICE, discriminator });
+async function take(db: LocalDb) {
+  return takeNumber(db, { locationId: LOCATION, deviceId: DEVICE, locationCode: 'OUT-01' });
 }
 
 describe('consuming a block at the counter', () => {
@@ -65,15 +64,30 @@ describe('consuming a block at the counter', () => {
     expect(block!.consumedUpto).toBe(1002n);
   });
 
-  it('refuses to self-issue when it holds no block', async () => {
+  it('with NO block it self-issues a device-tagged one — the till still trades', async () => {
+    // The reporting half arrived refusing to issue anything without a
+    // server-allocated block. That refusal was rejected on merge: it stops a
+    // counter trading until the radio comes back, in a market where the radio
+    // is down for days (CLAUDE.md §2.2). Disjointness comes from the DEVICE TAG
+    // instead — un-collidable by construction, visibly exceptional on the paper,
+    // and reported to the server on the next reconnect.
     const db = openTestDb();
-    await expect(take(db)).rejects.toThrow(NoBlockError);
+    const first = await take(db);
+    expect(first.emergency).toBe(true);
+    expect(first.receiptNo).toMatch(/-01A024$/);
+
+    const block = await readCurrentBlock(db, LOCATION);
+    expect(block!.source).toBe('device');
+    expect(block!.consumedUpto).toBe(first.n);
+
+    // …and the very next reconnect asks for a real block, unconditionally.
+    expect((await buildBlockReport(db, { locationId: LOCATION })).wantBlock).toBe(true);
   });
 
   it('advances the cursor in the SAME transaction that mints the number', async () => {
     // A battery pull between minting and recording would hand the next customer
     // a number this one already has — so the two must not be separable.
-    const db = openTestDb({ failOn: (sql) => sql.includes('UPDATE sequence_block') });
+    const db = openTestDb({ failOn: (sql) => sql.includes('SET consumed_upto') });
     await withBlock(db, '1000', 500);
     await expect(take(db)).rejects.toThrow(/injected fault/);
     expect((await readCurrentBlock(db, LOCATION))!.consumedUpto).toBeNull();
@@ -85,15 +99,27 @@ describe('consuming a block at the counter', () => {
     expect((await take(db)).receiptNo).toBe('OUT-01-RCT-004998');
     expect((await take(db)).receiptNo).toBe('OUT-01-RCT-004999');
 
-    const spent = await take(db, 'sale-0001-dead');
+    // Spent. The server block is closed and a self-issued one opens in the same
+    // transaction: the number is device-tagged (§3.7.5's emergency form) and
+    // cannot collide with any allocated range at this or any other till.
+    const spent = await take(db);
     expect(spent.emergency).toBe(true);
-    expect(spent.n).toBeNull();
-    // Visibly exceptional, device-derived, and NOT a number in anyone's block.
-    expect(spent.receiptNo).toMatch(/^OUT-01-RCT-004999-01A/);
+    expect(spent.receiptNo).toMatch(/-01A024$/);
+    expect(spent.receiptNo).not.toBe('OUT-01-RCT-004999');
 
     // Two emergency numbers from ONE device do not collide with each other.
-    const another = await take(db, 'sale-0002-beef');
+    const another = await take(db);
     expect(another.receiptNo).not.toBe(spent.receiptNo);
+
+    // The burned block is KEPT, closed — §3.7.5 requires gaps be reportable and
+    // a deleted row reports nothing.
+    const rows = await db.getAll(
+      'SELECT source, exhausted_at FROM sequence_block ORDER BY block_start',
+    );
+    expect(rows).toHaveLength(2);
+    expect(rows[0]!['source']).toBe('server');
+    expect(rows[0]!['exhausted_at']).not.toBeNull();
+    expect(rows[1]!['source']).toBe('device');
   });
 });
 
@@ -179,9 +205,13 @@ describe('adopting the server\'s answer', () => {
     expect(block!.consumedUpto).toBeNull();
     expect((await take(db)).receiptNo).toBe('OUT-01-RCT-001500');
 
-    // Exactly one live block, locally as on the server.
-    const rows = await db.getAll('SELECT id FROM sequence_block');
+    // Exactly one LIVE block, locally as on the server. The burned one stays on
+    // disk, closed: it is the record of which numbers were issued and which
+    // were never used.
+    const rows = await db.getAll('SELECT id FROM sequence_block WHERE exhausted_at IS NULL');
     expect(rows).toHaveLength(1);
+    const all = await db.getAll('SELECT id FROM sequence_block');
+    expect(all).toHaveLength(2);
   });
 
   it('a routine report about the SAME block leaves the cursor alone', async () => {

@@ -5,6 +5,14 @@
  * lines and its stock movements (and, for a credit tender, the credit
  * entry) in ONE transaction, all rows FK-tied to one app.write_log marker.
  *
+ * The INPUT SHAPE is not defined here. It lives in `@erp/contracts`
+ * (`packages/contracts/src/sale.ts`), which `apps/web` imports too, so the
+ * client cannot build a payload this router will reject without `tsc` saying
+ * so first. Read that file for the wire contract and for the two design
+ * decisions it records: the till's claimed total is accepted and compared
+ * (never trusted), and cash tender detail is refused until there is a table
+ * to record it in.
+ *
  * Pricing: lines price from the named price list's items in force on the
  * BUSINESS DATE (never current_date). The extended line amount is
  * `lineNetMinor` — rounded once, on the extended amount, never on the unit
@@ -27,6 +35,7 @@
  */
 import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
+import { comparePriceCheck, createSaleInput } from '@erp/contracts';
 import { deterministicUuid } from '@erp/db';
 import { lineNetMinor, mulBps, mulDiv } from '@erp/money';
 import { emergencyNumber } from '@erp/sequence';
@@ -39,41 +48,7 @@ import {
   SEVERITY_BLOCKING,
   openConflictReview,
 } from './sequence.js';
-import {
-  addCalendarDays,
-  mutationEnvelope,
-  wire,
-  zBusinessDate,
-  zScaledIntNonNeg,
-  zScaledIntPos,
-  zUuid,
-} from '../wire.js';
-
-const saleLineInput = z
-  .object({
-    productId: zUuid,
-    /** Scaled integer in the SELLING unit's scale. */
-    qty: zScaledIntPos,
-    /** Selling unit code; defaults to the product's default sell unit. */
-    uomCode: z.string().min(1).optional(),
-    lineDiscountMinor: zScaledIntNonNeg.default('0'),
-  })
-  .strict();
-
-const createSaleInput = z
-  .object({
-    ...mutationEnvelope,
-    locationId: zUuid,
-    priceListCode: z.string().min(1),
-    /** Device-allocated per-outlet receipt number (03 §3.7.5). */
-    receiptNo: z.string().min(1).max(64),
-    businessDate: zBusinessDate,
-    occurredAt: z.string().datetime({ offset: true }).optional(),
-    tender: z.enum(['CASH', 'CREDIT']),
-    customerId: zUuid.optional(),
-    lines: z.array(saleLineInput).min(1).max(200),
-  })
-  .strict();
+import { addCalendarDays, wire, zUuid } from '../wire.js';
 
 interface TenantJurisdiction {
   jurisdictionCode: string;
@@ -364,6 +339,23 @@ export const salesRouter = router({
         }
         const claimedReceiptNo = collidesWith === null ? null : input.receiptNo;
 
+        // ── Contract decision (b): the till's total is COMPARED, never trusted.
+        // `total` above is the server's own repricing against the price list
+        // and tax rates in force on the BUSINESS DATE, and it is what gets
+        // written to app.sale — unconditionally, whatever the device claims.
+        // When the device sent its own figure we record the comparison in the
+        // response, which the pipeline stores verbatim in
+        // write_log.response_body (jsonb; money as decimal strings, 03 §3.6.2)
+        // and hands back to the till. That is what makes a device trading on a
+        // stale price list stop being silent. A mismatch is REPORTED, never a
+        // rejection: the goods have already left the yard, and refusing the
+        // write would lose the sale to make a point.
+        // Omitted entirely when the client did not send one, so a payload
+        // without it gets a byte-identical response to before this existed.
+        const priceCheck =
+          input.clientTotalMinor === undefined
+            ? undefined
+            : comparePriceCheck(input.clientTotalMinor, total);
         const response = {
           saleId,
           receiptNo: storedReceiptNo,
@@ -402,6 +394,7 @@ export const salesRouter = router({
           credit: credit
             ? { accountId: credit.accountId, dueDate: credit.dueDate, chargeMinor: wire(total) }
             : null,
+          ...(priceCheck === undefined ? {} : { priceCheck }),
         } satisfies JsonValue & Record<string, unknown>;
 
         return {

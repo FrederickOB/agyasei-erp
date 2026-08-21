@@ -122,14 +122,20 @@ boundary starts here.
 ## Tests and drills
 
 ```bash
-pnpm test                              # 234 tests, 30 files, all packages
+pnpm test                              # 388 tests, 39 files, all packages
 pnpm lint:money                        # ADR-0004 enforcement
-pnpm --filter @erp/sync-drills drill   # the 5 acceptance drills (needs the stack up)
+pnpm --filter @erp/sync-drills drill   # the 7 acceptance drills (needs the stack up)
+pnpm --filter @erp/wire-conformance drill:live   # D6 alone: the PWA's own payload, live
 ```
 
 The drills start their own devices and are the proof behind
 [`sync-drill-report.md`](sync-drill-report.md) — real partitions, real per-device SQLite, nothing
 mocked.
+
+**D1–D5 are evidence about the sync path, not the client path.** Their payloads come from the
+drills' own helpers and their transport is a Node client with no browser origin, which is how both
+the CORS bug and the sale-payload bug passed a green 5/5. D6 and `packages/wire-conformance` drive
+`apps/web`'s real code instead — see `docs/phase1-status.md` §0.
 
 ---
 

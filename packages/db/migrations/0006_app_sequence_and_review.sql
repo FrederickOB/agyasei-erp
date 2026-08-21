@@ -1,5 +1,5 @@
 -- ============================================================================
--- 0005_app_sequence_and_review.sql — human-facing document numbers allocated
+-- 0006_app_sequence_and_review.sql — human-facing document numbers allocated
 -- offline (03 §3.7.5), and the review queue their failure mode reports into
 -- (03 §3.6.2, conflict class #14).
 --

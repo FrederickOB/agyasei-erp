@@ -11,6 +11,19 @@ import type { CurrencySpec } from '@erp/money';
 import { uuidv7 } from '../lib/uuidv7';
 import type { LocalDb } from './db';
 import { CONFIG_KEY_CURRENCY_SPEC } from './queries/config';
+import {
+  CONFIG_KEY_LOCATION_CODE,
+  CONFIG_KEY_LOCATION_ID,
+  CONFIG_KEY_PRICE_LIST_ID,
+} from './queries/session';
+
+async function writeConfigValue(db: LocalDb, key: string, value: string): Promise<void> {
+  await db.execute('INSERT INTO local_config (id, key, value) VALUES (?, ?, ?)', [
+    uuidv7(),
+    key,
+    value,
+  ]);
+}
 
 /** '¤' is the generic currency sign — a placeholder, never a real symbol. */
 export const DEV_PLACEHOLDER_CURRENCY: CurrencySpec = {
@@ -80,25 +93,150 @@ const DEV_PRODUCTS: readonly SeedProduct[] = [
   },
 ];
 
-const DEV_PRICE_LIST_ID = 'dev-price-list';
-const DEV_LOCATION_ID = 'dev-location';
+/**
+ * Ids are real UUIDs because the wire contract requires UUIDs: `locationId`
+ * and `productId` are `z.string().uuid()`. The old `'dev-location'` /
+ * `'dev-price-list'` placeholders could never have produced a payload the API
+ * would accept, and nothing noticed — a dev seed that cannot round-trip
+ * through the real contract is a rehearsal of the wrong play.
+ *
+ * They are also FIXED, not `uuidv7()` at module load. A value minted afresh on
+ * every page load cannot be backfilled coherently: the id written into
+ * `local_config` on Tuesday named no row that existed on Monday, so a device
+ * that healed half of its configuration ended up pointing at nothing. Fixed
+ * placeholders make this file idempotent — run it a hundred times and the
+ * device converges on the same rows.
+ *
+ * Codes are neutral placeholders. A location code and a price-list code are
+ * TENANT data; these are stand-ins for a device whose configuration has not
+ * arrived, and carry no tenant's vocabulary (§8.9).
+ *
+ * ═══════════════════════════════════════════════════════════════════════════
+ * THE PLACEHOLDER PRICE LIST IS STRICTLY LOCAL-ONLY, AND HERE IS WHAT MAKES
+ * IT SO.
+ * ═══════════════════════════════════════════════════════════════════════════
+ * `DEFAULT` is not a price list any tenant has. It exists so local-only mode
+ * has something to price against with zero backend. It must NEVER be the list
+ * a synced sale is priced against — a device that rings against it puts
+ * `priceListCode: 'DEFAULT'` on the wire and the API answers
+ * PRECONDITION_FAILED (`no price list DEFAULT in force`), so the counter
+ * believes it sold and the sale is rejected hours later.
+ *
+ * What keeps it local-only is STRUCTURAL, not a convention: the row below is
+ * written with `tenant_id = NULL`, and every row that arrives over the sync
+ * stream carries one (`app.price_list.tenant_id` is `not null` server-side and
+ * sync_rules.yaml selects `WHERE tenant_id = bucket.tenant_id`). Provisioning
+ * only ever considers rows WITH a tenant_id — see
+ * `data/session/device-price-list.ts` — so a device that holds a session
+ * cannot resolve to this row, whatever its code or ranking.
+ *
+ * Do not give this row a tenant_id, and do not "fix" its NULL effective dates
+ * by filling them in. Both are what disqualify it, deliberately.
+ */
+const DEV_PRICE_LIST_ID = '01900000-0000-7000-8000-000000000002';
+const DEV_PRICE_LIST_CODE = 'DEFAULT';
+const DEV_LOCATION_ID = '01900000-0000-7000-8000-000000000001';
+const DEV_LOCATION_CODE = 'LOC1';
 
+async function hasConfigKey(db: LocalDb, key: string): Promise<boolean> {
+  const rows = await db.getAll('SELECT 1 AS hit FROM local_config WHERE key = ? LIMIT 1', [key]);
+  return rows.length > 0;
+}
+
+/**
+ * Adopt the placeholder row this seed already created on an earlier run, if it
+ * is there, rather than minting a second one beside it.
+ *
+ * Matching is by CODE, not by id: a database created by an older build carries
+ * a row with a randomly generated id, and its products' prices hang off that
+ * row. Adopting it is what lets such a device sell after it heals; inserting a
+ * fresh price list next to it would leave every seeded product priceless in
+ * the list the device was pointed at.
+ */
+async function adoptOrInsert(
+  db: LocalDb,
+  table: 'location' | 'price_list',
+  code: string,
+  fallbackId: string,
+  insert: (id: string) => Promise<void>,
+): Promise<string> {
+  const rows = await db.getAll(`SELECT id FROM ${table} WHERE code = ? LIMIT 1`, [code]);
+  const existing = rows[0]?.['id'];
+  if (typeof existing === 'string' && existing.length > 0) return existing;
+  await insert(fallbackId);
+  return fallbackId;
+}
+
+/**
+ * DEV/LOCAL-ONLY BACKFILL — and the second half of the bug this file caused.
+ *
+ * The old guard was a single sentinel: if `currency_spec` was present the whole
+ * config block was skipped. The location keys were added to this seed LATER, so
+ * every device whose local database had been created by an earlier build — and
+ * a browser's OPFS database outlives any number of rebuilds — could never
+ * acquire them. It had a currency and no location, forever, and every checkout
+ * was refused. That is the live symptom the user reported.
+ *
+ * So each key is now checked and inserted INDEPENDENTLY. Nothing is skipped on
+ * behalf of anything else, and an older database heals on next load.
+ *
+ * Existing values are never overwritten: this is a floor under a device with
+ * nothing, not an authority over a device with something. In sync mode the
+ * session's location overwrites whatever this wrote — see main.tsx.
+ */
 export async function seedDevDataIfEmpty(db: LocalDb): Promise<void> {
-  const config = await db.getAll('SELECT 1 AS hit FROM local_config WHERE key = ? LIMIT 1', [
-    CONFIG_KEY_CURRENCY_SPEC,
-  ]);
-  const products = await db.getAll('SELECT 1 AS hit FROM product LIMIT 1');
-  if (config.length > 0 && products.length > 0) return;
+  let wrote = false;
 
-  await db.writeTransaction(async (tx) => {
-    if (config.length === 0) {
-      await tx.execute('INSERT INTO local_config (id, key, value) VALUES (?, ?, ?)', [
-        uuidv7(),
-        CONFIG_KEY_CURRENCY_SPEC,
-        JSON.stringify(DEV_PLACEHOLDER_CURRENCY),
-      ]);
+  if (!(await hasConfigKey(db, CONFIG_KEY_CURRENCY_SPEC))) {
+    await writeConfigValue(db, CONFIG_KEY_CURRENCY_SPEC, JSON.stringify(DEV_PLACEHOLDER_CURRENCY));
+    wrote = true;
+  }
+
+  // The synced rows the sale payload resolves against: the location gives the
+  // receipt number its code and the sale its trading-day timezone; the price
+  // list gives the API the CODE it prices by.
+  const locationId = await adoptOrInsert(db, 'location', DEV_LOCATION_CODE, DEV_LOCATION_ID, async (id) => {
+    await db.execute(
+      `INSERT INTO location (id, tenant_id, code, name, kind, location_type_id, parent_id,
+                             is_active, timezone, hlc, updated_at)
+       VALUES (?, NULL, ?, ?, NULL, NULL, NULL, 1, ?, NULL, NULL)`,
+      [id, DEV_LOCATION_CODE, 'Development counter', 'UTC'],
+    );
+    wrote = true;
+  });
+  const priceListId = await adoptOrInsert(db, 'price_list', DEV_PRICE_LIST_CODE, DEV_PRICE_LIST_ID, async (id) => {
+    // tenant_id NULL and no effective window: the two things that make this
+    // row invisible to provisioning in sync mode. See the block comment above
+    // DEV_PRICE_LIST_ID before changing either.
+    await db.execute(
+      `INSERT INTO price_list (id, tenant_id, code, name, is_tax_inclusive, currency_code,
+                               priority, location_id, effective_from, effective_to, hlc, updated_at)
+       VALUES (?, NULL, ?, ?, 0, ?, 0, NULL, NULL, NULL, NULL, NULL)`,
+      [id, DEV_PRICE_LIST_CODE, 'Development price list', DEV_PLACEHOLDER_CURRENCY.code],
+    );
+    wrote = true;
+  });
+
+  // Which location this device trades at, and which list it prices from. In
+  // production BOTH are provisioned rather than guessed: the location from the
+  // VERIFIED SESSION (data/session/device-location.ts), the price list from
+  // the tenant's own configuration (data/session/device-price-list.ts). What
+  // is written here is a floor under a device that has neither, and in sync
+  // mode reconciliation replaces both — see main.tsx.
+  for (const [key, value] of [
+    [CONFIG_KEY_LOCATION_ID, locationId],
+    [CONFIG_KEY_LOCATION_CODE, DEV_LOCATION_CODE],
+    [CONFIG_KEY_PRICE_LIST_ID, priceListId],
+  ] as const) {
+    if (!(await hasConfigKey(db, key))) {
+      await writeConfigValue(db, key, value);
+      wrote = true;
     }
-    if (products.length === 0) {
+  }
+
+  const products = await db.getAll('SELECT 1 AS hit FROM product LIMIT 1');
+  if (products.length === 0) {
+    await db.writeTransaction(async (tx) => {
       for (const p of DEV_PRODUCTS) {
         const productId = uuidv7();
         await tx.execute(
@@ -109,7 +247,7 @@ export async function seedDevDataIfEmpty(db: LocalDb): Promise<void> {
         await tx.execute(
           `INSERT INTO price (id, product_id, price_list_id, unit_price_e4)
            VALUES (?, ?, ?, CAST(? AS INTEGER))`,
-          [uuidv7(), productId, DEV_PRICE_LIST_ID, p.unitPriceE4],
+          [uuidv7(), productId, priceListId, p.unitPriceE4],
         );
         await tx.execute(
           `INSERT INTO stock_snapshot (id, product_id, location_id, qty_scaled, as_of)
@@ -117,13 +255,15 @@ export async function seedDevDataIfEmpty(db: LocalDb): Promise<void> {
           [
             uuidv7(),
             productId,
-            DEV_LOCATION_ID,
+            locationId,
             (100n * 10n ** BigInt(p.qtyScale)).toString(),
             new Date().toISOString(),
           ],
         );
       }
-    }
-  });
-  db.changes.notify();
+    });
+    wrote = true;
+  }
+
+  if (wrote) db.changes.notify();
 }

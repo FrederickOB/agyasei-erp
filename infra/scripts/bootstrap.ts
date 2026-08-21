@@ -14,7 +14,12 @@
  *      seed/applyTemplate machinery (Phase 1 acceptance criterion 5 needs a
  *      second tenant) — every tenant-scoped statement runs as app_user under
  *      RLS, exactly like production writes;
- *   5. records both tenant ids in infra/dev-tenants.json.
+ *   5. provisions one DEV PRINCIPAL per template role on each tenant, because
+ *      a template seeds roles but deliberately seeds no users and no role
+ *      assignments — and the API resolves permissions from the database on
+ *      every request, so without this step every dev token is refused at
+ *      the first guarded route;
+ *   6. records both tenant ids in infra/dev-tenants.json.
  *
  * Tenant writes here follow the ONE write path: applyTemplate and the
  * tenant-B location seed write SERVER-origin app.write_log rows first —
@@ -35,6 +40,7 @@ import {
   applySequenceCounters,
   applyTemplate,
   applyTenant1Locations,
+  provisionPrincipal,
   seedGhanaJurisdiction,
 } from '@erp/db/seed';
 
@@ -228,7 +234,72 @@ async function main(): Promise<void> {
         `${resB.founderPending.length} founder-pending SKUs`,
     );
 
-    // 5 — record the dev tenant ids --------------------------------------
+    // 5 — dev principals ---------------------------------------------------
+    //
+    // ════════════════════════════════════════════════════════════════════════
+    // WHY THE STACK IS UNUSABLE WITHOUT THIS
+    // ════════════════════════════════════════════════════════════════════════
+    // `applyTemplate` seeds a tenant's five ROLES and their permission
+    // composition, and deliberately seeds no users and no assignments: who
+    // works here, and at which node of the tree, is onboarding input rather
+    // than template content (01 §1.6).
+    //
+    // The API resolves permissions per request from `app.effective_permission`
+    // keyed on the token's `uid`. So a freshly-bootstrapped tenant has five
+    // roles, zero grants, and every signed token on earth is refused at the
+    // first guarded route. That is correct behaviour and a broken dev stack at
+    // the same time.
+    //
+    // There is no admin.user.manage endpoint yet to do this properly, so the
+    // bootstrap plays the onboarding operator: one principal per template
+    // role, fixed username, so `infra/scripts/dev-token.mjs --role <ref>` can
+    // find it and mint a bearer that actually works.
+    //
+    // DEV CONVENIENCE, STATED PLAINLY: the counter and manager principals are
+    // scoped at the tenant ROOT rather than at a leaf, so `--location OUT-07`
+    // works without re-provisioning. Real onboarding scopes them at their own
+    // outlet, and the leaf-scoped behaviour — a manager at OUT-01 refused at
+    // OUT-04 — is demonstrated over real HTTP by
+    // `pnpm --filter @erp/wire-conformance drill:rbac`. What this does NOT do
+    // is widen anyone's CAPABILITIES: the counter role still holds no
+    // stock.adjust and no credit.limit.change at any scope, which is the part
+    // the brief cares about.
+    const DEV_PRINCIPALS: { roleRef: string; scope: 'root' | 'region'; label: string }[] = [
+      { roleRef: 'counter_staff', scope: 'root', label: 'Counter staff (dev)' },
+      { roleRef: 'outlet_manager', scope: 'root', label: 'Outlet manager (dev)' },
+      { roleRef: 'regional_manager', scope: 'region', label: 'Regional manager (dev)' },
+      { roleRef: 'accounts', scope: 'root', label: 'Accounts (dev)' },
+      { roleRef: 'head_of_operations', scope: 'root', label: 'Head of operations (dev)' },
+    ];
+
+    for (const t of [TENANT_A, TENANT_B]) {
+      const provisioned = await withTenant(t.id, async (tx) => {
+        const regionRes = await tx.query<{ id: string }>(
+          `select id from app.location where kind = 'GROUP' and parent_id is not null
+             and deleted_at is null order by code limit 1`,
+        );
+        const names: string[] = [];
+        for (const p of DEV_PRINCIPALS) {
+          // Deterministic uid so a reset produces the same principals and any
+          // token minted earlier in the day still resolves.
+          const userId = deterministicUuid(t.id, 'dev-principal', p.roleRef);
+          const scopeLocationId =
+            p.scope === 'region' ? regionRes.rows[0]?.id : undefined;
+          await provisionPrincipal(tx, t.id, {
+            userId,
+            username: `dev-${p.roleRef}`,
+            displayName: p.label,
+            roleRef: p.roleRef,
+            ...(scopeLocationId ? { scopeLocationId } : {}),
+          });
+          names.push(p.roleRef);
+        }
+        return names;
+      });
+      console.log(`[bootstrap] tenant ${t.slug}: dev principals ${provisioned.join(', ')}`);
+    }
+
+    // 6 — record the dev tenant ids --------------------------------------
     const outPath = fileURLToPath(new URL('../dev-tenants.json', import.meta.url));
     const tenants = {
       note: 'Local dev-stack tenants, recreated identically by pnpm stack:reset.',

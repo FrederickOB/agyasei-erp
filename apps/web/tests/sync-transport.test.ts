@@ -1,20 +1,29 @@
 /**
  * The HTTP transport for POST /sync/upload, against a mocked fetch. The wire
- * shape is the api contract (apps/api/src/sync.ts): `{ops: [...]}` in,
+ * shape is `@erp/contracts`' `uploadBodySchema` — `{ops: [...]}` in,
  * `{acks: [...]}` out — and NOTHING in an op names a tenant.
+ *
+ * The fixture ops carry REAL UUIDs and a REAL HLC. They used to carry `'k-1'`
+ * and a datetime where the HLC belongs, which the server's envelope schema
+ * would have refused — a transport test whose fixtures the server rejects
+ * proves the transport works against a wire nobody speaks.
  */
 import { describe, expect, it } from 'vitest';
 import type { FetchInitLike, FetchLike } from '../src/data/sync/credentials';
 import { httpUploadTransport, wireKind } from '../src/data/sync/transport';
 import type { PendingOp } from '../src/data/sync/upload';
 
+const KEY_1 = '018f0c4c-0000-7000-8000-000000000001';
+const KEY_2 = '018f0c4c-0000-7000-8000-000000000002';
+const HLC = `1755000000000-00000-${'ab'.repeat(16)}`;
+
 function op(overrides: Partial<PendingOp> = {}): PendingOp {
   return {
-    id: 'k-1',
-    idempotencyKey: 'k-1',
-    claimedHlc: '2026-08-21T09:00:00.000Z-0000-abababababababababababababababab',
+    id: KEY_1,
+    idempotencyKey: KEY_1,
+    claimedHlc: HLC,
     kind: 'sale',
-    payloadJson: JSON.stringify({ kind: 'sale', sale_id: 'k-1', total_minor: '100' }),
+    payloadJson: JSON.stringify({ locationId: KEY_2, clientTotalMinor: '100' }),
     createdAt: '2026-08-21T09:00:00.000Z',
     ...overrides,
   };
@@ -52,7 +61,7 @@ describe('httpUploadTransport', () => {
 
     const result = await transport.send([
       op(),
-      op({ id: 'k-2', idempotencyKey: 'k-2', claimedHlc: null }),
+      op({ id: KEY_2, idempotencyKey: KEY_2, claimedHlc: null }),
     ]);
 
     expect(result.ok).toBe(true);
@@ -66,14 +75,14 @@ describe('httpUploadTransport', () => {
     };
     expect(body.ops).toHaveLength(2);
     const first = body.ops[0];
-    expect(first?.['idempotency_key']).toBe('k-1');
+    expect(first?.['idempotency_key']).toBe(KEY_1);
     expect(first?.['kind']).toBe('sale.create'); // outbox 'sale' → wire discriminator
     expect(first?.['client_wall_at']).toBe('2026-08-21T09:00:00.000Z');
     expect(typeof first?.['claimed_hlc']).toBe('string');
-    expect(first?.['payload']).toEqual({ kind: 'sale', sale_id: 'k-1', total_minor: '100' });
+    expect(first?.['payload']).toEqual({ locationId: KEY_2, clientTotalMinor: '100' });
     // Money crossed the wire as a decimal STRING (ADR-0004), and no tenant id
     // appears anywhere in the op.
-    expect((first?.['payload'] as Record<string, unknown>)['total_minor']).toBe('100');
+    expect((first?.['payload'] as Record<string, unknown>)['clientTotalMinor']).toBe('100');
     expect(JSON.stringify(first)).not.toContain('tenant');
     // Absent claimed_hlc is OMITTED, not null (the api schema is .strict()).
     expect('claimed_hlc' in (body.ops[1] ?? {})).toBe(false);
@@ -83,12 +92,12 @@ describe('httpUploadTransport', () => {
     const { fetchFn } = makeFetch(() => ({
       status: 200,
       body: {
-        acks: [{ key: 'k-1', status: 'rejected', reason: 'BAD_REQUEST: nope' }],
+        acks: [{ key: KEY_1, status: 'rejected', reason: 'BAD_REQUEST: nope' }],
       },
     }));
     const transport = httpUploadTransport({ apiUrl: 'http://x', apiToken: 't', fetchFn });
     const result = await transport.send([op()]);
-    expect(result.acks).toEqual([{ key: 'k-1', status: 'rejected', reason: 'BAD_REQUEST: nope' }]);
+    expect(result.acks).toEqual([{ key: KEY_1, status: 'rejected', reason: 'BAD_REQUEST: nope' }]);
   });
 
   it('a non-200 is ok:false with no acks — the drain then completes nothing', async () => {
@@ -115,5 +124,16 @@ describe('httpUploadTransport', () => {
   it('unknown kinds pass through verbatim — the server dead-letters them VISIBLY', () => {
     expect(wireKind('sale')).toBe('sale.create');
     expect(wireKind('somekind.future')).toBe('somekind.future');
+  });
+
+  it('refuses to ship an op the contract envelope would reject, without a round trip', async () => {
+    // A key that is not a UUID would refuse the WHOLE batch server-side and
+    // apply nothing. Catching it here costs no round trip and leaves every op
+    // pending (never completed, never lost) — the §8.4 stuck state surfaces it.
+    const { fetchFn, calls } = makeFetch(() => ({ status: 200, body: { acks: [] } }));
+    const transport = httpUploadTransport({ apiUrl: 'http://x', apiToken: 't', fetchFn });
+    const result = await transport.send([op({ id: 'k-1', idempotencyKey: 'k-1' })]);
+    expect(result).toEqual({ ok: false, status: 0, acks: [] });
+    expect(calls).toHaveLength(0);
   });
 });

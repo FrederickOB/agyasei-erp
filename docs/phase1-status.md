@@ -1,16 +1,187 @@
 # Phase 1 status — integration & QA report
 
-**Date:** 2026-08-21 (clean-slate verification pass; gap #6 closed same day) · **Author:** QA engineer
-**Verdict:** the whole workspace installs, builds, typechecks and passes — **288 tests, 34 files,
-0 failures** — `tools/lint-money.mjs` is clean, and the Phase 1 sync stack now **reproduces from
-nothing**: `pnpm stack:reset` (docker volume destroyed, migrations + seed from scratch) followed by
-`pnpm --filter @erp/sync-drills drill` passes **6/6 drills against the real stack** — real
-Postgres 16, real self-hosted PowerSync, real API, real `@powersync/node` devices with their own
-sqlite files. Nothing mocked, run twice from a destroyed volume on the final tree.
+**Date:** 2026-08-21 (merge of the RBAC/contracts pass with the receipt-number
+regression pass) · **Author:** QA engineer
+**Verdict:** two independent work-packages are now one tree. From `origin/main`:
+the `@erp/contracts` shared wire contract, RBAC enforcement resolved per request
+from the database, device price-list provisioning, and the wire-conformance
+suite. From PR #4: receipt-number regression detection — server-allocated
+blocks, burn-and-reissue on reconnect, the conflict-review queue, and the
+collision landing path that stops the outbox wedging.
 
-Acceptance criteria **1, 2, 4 and 5 are now demonstrated, not asserted** — measured numbers in §5.
-Criterion 3 remains tested-at-API-level with the Q4 human gate outstanding. This is still not a
-Phase 1 sign-off: the remaining gaps are in §6, and the `product-manager` owns the gate decision.
+**Post-merge verification, on the merged tree:** the whole workspace installs,
+builds, typechecks and passes — **616 tests, 51 files, 0 failures** across seven
+packages — `tools/lint-money.mjs` is clean, and `pnpm stack:reset` (docker
+volume destroyed, six migrations + seed from scratch) followed by
+`pnpm --filter @erp/sync-drills drill` passes **7/7 drills against the real
+stack**: real Postgres 16, real self-hosted PowerSync, real API, real
+`@powersync/node` devices with their own sqlite files. D6 (the PWA's own
+payload) and D7 (receipt-number regression, with a genuine sqlite-file wipe)
+both pass in the same tree, which is the thing neither branch could show on its
+own. Per-package figures below are post-merge counts.
+
+Acceptance criteria **1, 2, 4 and 5 are demonstrated, not asserted** — measured numbers in §5.
+Criterion 3 remains tested-at-API-level with the Q4 human gate outstanding.
+
+**Access control is now enforced on the stock and credit write paths and is NOT enforced on the
+sale path.** That is the single most important sentence in this document; the detail is in §1a and
+the gap is item 1 of §6. This is not a Phase 1 sign-off: the remaining gaps are in §6, and the
+`product-manager` owns the gate decision.
+
+---
+
+## 0. Read this before trusting the drill suite again
+
+**A green suite has now failed EIGHT times to notice that a written path had never been executed.**
+The count is kept here deliberately, and it goes up, because the pattern is the project's most
+reliable defect source: code is written, unit-tested against a harness that agrees with it, and
+never once run against the real stack.
+
+| Bug | What was broken | What the drills said | Why they missed it |
+|---|---|---|---|
+| **CORS** | Every browser call to the API failed at preflight. The PWA could not reach the server. | 5/5 PASS | Each drill device is an `@powersync/node` client. Node has no browser origin, so no drill ever sent a cross-origin request. |
+| **Sale payload shape** | `buildSalePayload` emitted `{kind, sale_id, price_list_id, total_minor, tender:{…}, lines:[{seq, qty_scaled, unit_price_e4, …}]}`; the API's `.strict()` schema required `{locationId, priceListCode, receiptNo, businessDate, tender:'CASH'\|'CREDIT', lines:[{productId, qty}]}`. **Every** uploaded sale was `BAD_REQUEST`. | 5/5 PASS | `packages/sync-drills/src/context.ts` built its own API-shaped JSON. The client's real payload had never been handed to the server's real schema at any level — unit, integration or drill. |
+| **Device enrolment** | The device provisioned itself from values that no longer came from the session. | green | No test drove enrolment from a real token. |
+| **Price list** | The device's price-list selection and the server's resolution disagreed. | green | Both sides tested against a fixture, neither against the other. |
+| **Device price list** | `writeActivePriceListId` was written and never called from anywhere. The only writer of `local_config.price_list_id` was the dev seed, which points it at a placeholder list coded `DEFAULT`. Tenant #1's lists are `RETAIL` and `WHOLESALE`, so in sync mode every sale went up as `priceListCode: 'DEFAULT'` and the API answered `PRECONDITION_FAILED: no price list DEFAULT in force` — **recorded at the counter, rejected at upload**, which is the worst of the three outcomes because the till believed it had sold. | green | Identical shape to the device-enrolment row two above it, and missed the same way: `tests/helpers/fixtures.ts` provisions a device with `priceListCode: 'DEFAULT'` and seeds a matching list, so every unit test agreed with the client about a code the server has never heard of. `tests/live-upload.smoke.ts` *did* hit the real API — with `order by priority desc`, which quietly selects the one list the API can price, so it never exercised what a device would actually choose. |
+| **Currency spec** | The currency the client assumed and the one the server used were never compared. | green | No shared declaration existed to compare them against. |
+| **Sequence reporting (this merge)** | Two halves of PR #4 were written and reachable by nothing. (a) `apps/web/src/data/sequence.ts`'s whole reconnect half — `buildBlockReport`, `enqueueBlockReport`, adoption — was imported by its own unit test and by **no production module**: `powersync.ts` drained the outbox with no `onResult`, and `checkout` allocated numbers through a different function entirely. (b) the review it opens routed on `required_permission = 'sequence.review'`, a code absent from `platform.permission`; the column has no FK, so nothing complained and **no user could ever have held it** — every severity-1 receipt-number review would have landed in a queue nobody could read. | its own suite: green | The unit test imported the module directly, so "does anything call this?" was never asked; and the permission string was asserted against itself (`expect(required_permission).toBe('sequence.review')`) rather than against the catalogue. |
+| **RBAC enforcement (this pass)** | Permission checks were added to the API's stock and credit routes with **535 unit tests green**. On the live stack: migration `0005` had never been applied, so `app.effective_permission` did not exist; `applyTemplate` seeds roles but deliberately seeds **no users and no role assignments**, so every tenant had 5 roles and **0 grants**; and every drill device mints a fresh random `uid`. The result: **the entire Phase 1 acceptance drill suite died at warm-up** with `FORBIDDEN: PERMISSION_DENIED: stock.adjust is not held by this user`, and `pnpm dev:token` produced a bearer that no guarded route would accept. | 535/535 PASS | `apps/api/test/util.ts` grants every test identity the **owner role by default** (`identityFor(..., grant: 'owner')`). Every API test therefore ran as a principal holding the whole catalogue, so no test could observe that no real principal existed. The drills would have caught it in one run — they were not run, because they need docker. |
+
+One root cause, stated once: **both sides were only ever tested against a third thing that agreed
+with neither of them** — a fixture, a harness default, or a hand-written payload. The RBAC entry is
+the same shape wearing different clothes: the harness's `grant: 'owner'` default *is* the third
+thing that agreed with neither the seed data nor the live stack. The drills are a genuine demonstration of the *sync* path — partition,
+convergence, idempotency, isolation — and those results stand. They were never evidence about the
+*client* path, and this document previously implied otherwise.
+
+What changed, so the next one is caught:
+
+- **`packages/contracts`** — one declaration per client↔server payload, imported by `apps/api`
+  (which parses) and `apps/web` (which builds). A shape disagreement is now a `tsc` error.
+- **`packages/wire-conformance`** — the only package that can import both trees. Its tests drive
+  the PWA's real `checkout()` → real outbox → real transport, with a browser `Origin`, at the real
+  Fastify routes and real tRPC routers on a real Postgres, and assert the rows land. Runs on every
+  `pnpm test`, no docker.
+- **Drill D6** — the same journey over a real socket against the deployed stack, so the failures an
+  in-process harness cannot see (CORS preflight, a dev server on stale code, seed data that does
+  not match the contract) are caught too. One of each, from now on.
+- **A pin on the client's write surface.** `apps/web` can upload two kinds today
+  (`sale.create` and `sequence.sync_block`). `outbox-surface.test.ts` fails the moment another
+  appears without a test that drives *its* real builder against *its* real parser — and it did
+  fail, on this merge, the moment the sequence report joined the vocabulary. The answer was
+  `sequence-client-to-api.test.ts`, not a wider allow-list.
+- **Drill D8 — `pnpm --filter @erp/wire-conformance drill:rbac`.** Thirteen authorization checks
+  over a real socket against the deployed stack: every refusal paired with a positive control on
+  the same route with the same payload, so "denied" can never mean "the route is broken for
+  everyone". It is the check that would have caught this pass's failure in one run.
+- **`provisionPrincipal` (`packages/db/src/seed/principals.ts`) and the bootstrap's dev
+  principals.** A tenant with roles and no grants is a correctly-seeded tenant that nobody can use.
+  `pnpm stack:up` now provisions one principal per template role on each dev tenant, and
+  `pnpm dev:token --role <ref>` mints for a **real provisioned principal** — looking the user up by
+  `app.user_account.username` and failing loudly with "run pnpm stack:up" when it is absent, rather
+  than minting a bearer that belongs to nobody.
+
+Both mutation-tested before being believed: drifting the client payload turns
+`sale-client-to-api.test.ts` red (4 failures), and pointing a router at a private schema instead of
+the shared one turns the registry assertion red.
+
+---
+
+## 1a. Access control — what is enforced, and what is not
+
+**Read the second table first.** The first one is the good news and the second one is the reason
+this is not a sign-off.
+
+### The model (`packages/db` — migration `0005_rbac_permissions.sql`, 99 tests)
+
+- **`platform.permission`** — 36 atomic capability codes, GLOBAL, no `tenant_id`. A tenant composes
+  them; it cannot mint one. (A tenant-scoped catalogue would let a tenant invent
+  `sale.super_record`, grant it, watch it resolve, and hold a permission that guards nothing.)
+- **`app.role` / `app.role_permission` / `app.user_role_assignment`** — tenant-owned, RLS-forced.
+  A role is a tenant's word for a tenant's job; **nothing in the platform reads `app.role.name`**,
+  and the only structural flag is `is_owner`, which means "holds the whole catalogue by
+  construction" rather than any name.
+- **`app.location_closure`** — the scope tree. A grant is made at a NODE and expands DOWN. The FY3
+  regional manager is two INSERTs, not a migration.
+- **`app.effective_permission`** (`security_invoker`) — one row per *(user, code, location)*. A
+  permission is never a bare capability; it is always a capability **at a place**.
+- **The two hard prohibitions are the ABSENCE of rows**, not a branch: the counter role simply does
+  not carry `sale.override_price` or `credit.limit.change`. Verified live — see D8 check 7, where a
+  counter-staff principal carrying `role: "head_of_operations"` in its own server-signed token is
+  refused exactly as before.
+
+### Enforcement, per route — the honest table
+
+`assertPermission` / `requiresPermission` / `permissionProcedure` resolve the answer **from the
+database on every request**, keyed on the token's verified `uid` inside the token's `tid` RLS
+context. No permission claim is read from the token, and `role` is never touched.
+
+| Route | Mutating? | Guarded? | Capability |
+|---|---|---|---|
+| `inventory.recordMovement` | yes | **YES** | derived from `sourceKind` → `stock.adjust` / `stock.receive` / `stock.transfer` / `stock.transfer.receive` / `stock.count.perform`, at the request's location |
+| `inventory.onHand` | no | **YES** | `stock.view` at the location asked about |
+| `credit.openAccount` | yes | **YES** | `credit.account.manage` tenant-wide, **plus `credit.limit.change`** when the limit is non-zero |
+| `credit.recordEntry` | yes | **YES** | `credit.entry.record` tenant-wide |
+| `credit.accrueFacilityFee` | yes | **YES** | `credit.fee.accrue` tenant-wide |
+| `credit.exposure` / `ageing` / `previewFacilityFee` | no | **YES** | `credit.view` |
+| `session.permissions` | no | n/a | reads only the caller's own grants; a UX affordance, explicitly not a control |
+| **`sales.createSale`** | **yes** | ❌ **NO** | **see §6 item 1 — the sale path is unguarded** |
+| `sales.get` / `sales.recomputeCheck` | no | ❌ no | `sale.view` exists in the catalogue and is never checked |
+| `catalogue.list` / `search` / `detail` | no | ❌ no | `catalogue.view` exists and is never checked |
+| `provisioning.applyTemplate` | yes | ❌ no | `admin.template.apply` exists and is never checked. Defensible — this is the bootstrap edge that *creates* the roles there would be something to check against — but it is a mutation any valid tenant bearer can call. |
+| `provisioning.createTenant` | yes | operator | platform-operator plane, not tenant RBAC |
+
+**Catalogue wiring: 11 of 36 codes have a production enforcement site.** The other 25 are declared
+and never checked. Most are honest placeholders for endpoints that do not exist yet (`payroll.*`,
+`report.*`, `admin.user.manage`, `sync.conflict.review`, `sale.void`). Four of them, however,
+correspond to endpoints that **do** exist and are listed unguarded above: `sale.record`,
+`sale.record.credit`, `catalogue.view`, `admin.template.apply`. A permission code that nothing
+checks is not a control; it is a comment with a primary key.
+
+### What the live drill demonstrates (`drill:rbac`, 13/13 over HTTP on :3001)
+
+Every refusal is paired with a positive control on the same route with the same payload.
+
+| # | Demonstrated |
+|---|---|
+| 1 | Counter staff **denied** `stock.adjust`; outlet manager **allowed**, same counter, same payload |
+| 2 | Counter staff **and the outlet manager** denied a credit account with a GH₵50,000 limit; **Accounts allowed** — the prohibition is the missing capability, not a policed role name |
+| 3 | Manager holding `stock.adjust` at OUT-01 **denied at OUT-04** — a capability is a capability *at a place* |
+| 4 | Regional manager granted **once at REG-BONO** acts at OUT-01 **and** OUT-03, and still not at OUT-04 — the closure tree, demonstrated today for an FY3 role |
+| 5 | Accounts, at the tenant **root** — the widest scope there is — **denied** a stock adjustment. Scope is not authority |
+| 6 | Revoking the grant refuses **the same unexpired token** on the very next request — the decision is a database read per request, never a token claim |
+| 7 | A counter-staff principal whose token says `role: "head_of_operations"` is refused identically — nothing branches on that string (CLAUDE.md §2.9) |
+
+### Dead surface — exported, never called from production
+
+Listed because "exported and tested" reads as "wired" and is not the same thing. None of these is
+a security hole; all of them are API surface a reviewer could mistake for a control.
+
+- **`session.permissions` has no client.** The route works (verified live: a counter-staff bearer
+  gets its 8 codes across 57 locations, including the `max_order_value_minor: "0"` bound). **The
+  PWA never calls it.** So layer 3 — greying out the button a clerk must not press — does not exist
+  yet: a clerk fills in the form and is refused *after* the customer has walked out. The
+  architecture is explicit that layer 3 protects nothing, so this costs usability rather than
+  safety, but the file's own header describes a behaviour the product does not have.
+- **`assertPermission`** (`apps/api/src/permissions.ts`, re-exported from `trpc.ts` and
+  `index.ts`) — **zero call sites**, in production or in tests. Every in-handler check written so
+  far uses the synchronous `ctx.permissions.requireTenantWide(…)` against the middleware's
+  snapshot, which is the better shape (it cannot open a transaction inside `runIdempotent`).
+  Either delete it or use it; leaving both forms invites the wrong one.
+- **`requireKnownCode`** — publicly re-exported, used only inside its own module.
+- **`catalogueDrift`** and **`BRIEF_RESTRICTED_PERMISSIONS`** (`@erp/db`) — test-only. That is
+  their stated purpose (drift detection and a test anchor), so this is a note, not a finding.
+
+### Not yet done at the sync boundary
+
+`app.user_location_scope` exists and is correct, but **`infra/powersync/sync_rules.yaml` still
+scopes buckets from the token's `locs` claim, not from the table.** CLAUDE.md §2.6 is explicit that
+sync rules are the authorization boundary, so until that swap lands, layer 1 is enforcing a *token
+claim* while layer 2 enforces the *database*. They agree today because `dev-token.mjs` builds
+`locs` from the same closure — but agreeing by construction is not the same as being one control.
+That file is owned by another session this pass and was deliberately not touched; the swap is
+tracked as §6 item 1.
 
 ---
 
@@ -29,8 +200,66 @@ Phase 1 sign-off: the remaining gaps are in §6, and the `product-manager` owns 
   `powersync`, claim `tid` (tenant uuid) — sync rules read tid **from the token only**, never
   from client parameters. All documented in `env.example` files; no real secrets committed.
 - `pnpm stack:up | stack:down | stack:reset` — reset is `down -v` → up (healthcheck-gated) →
-  4 migrations → `powersync` publication (18 tables) → two dev tenants seeded from the
-  construction-materials-gh template → PowerSync up.
+  5 migrations → `powersync` publication (18 tables) → two dev tenants seeded from the
+  construction-materials-gh template → **one dev principal per template role on each
+  tenant** → PowerSync up. That last step is not optional: permissions are resolved
+  from the database per request, and a tenant with roles but no assignments is a
+  tenant nobody can use (§0).
+
+### `packages/contracts` — 80 tests (3 files), build + typecheck clean
+**The one client↔server wire contract.** zod only, so it bundles into the browser build of the
+PWA; a test asserts that by scanning every source file for a non-zod import, so browser safety is
+enforced rather than promised. Both `apps/api` and `apps/web` import it, which is what makes a
+shape disagreement a compile error instead of a `BAD_REQUEST` at a till in Techiman.
+
+- `wire.ts` — scaled-integer primitives (`zScaledInt*`), `zUuid`, `zBusinessDate`, `zClaimedHlc`,
+  the mutation envelope, `wire()`. Money and quantity cross as decimal **strings** and become
+  `bigint` at the boundary (ADR-0004); every input object is `.strict()`, so a forged `tenant_id`
+  fails loudly (CLAUDE.md §2.1).
+- `sale.ts` · `inventory.ts` · `credit.ts` — the four uploadable mutation inputs. The last three
+  were private to `apps/api/src/routers/` until this pass: no PWA builder exists for them yet, and
+  that is exactly why they are declared here now, before someone writes one against a schema they
+  cannot import.
+- `device-ops.ts` — kind → schema registry, `satisfies Record<DeviceOpKind, ZodType>`, so adding an
+  uploadable op without a shared declaration is a **compile** error.
+- `upload.ts` — the `/sync/upload` envelope and the batch cap, one constant for both sides.
+- `sync-token.ts` — the `/sync/token` **response**, the other payload that had no shared
+  declaration. Not `.strict()` (a new server field must not break old devices); `endpoint` is
+  optional because the client ignores it, and the API's actual response is asserted against the
+  live route instead.
+
+- `sale` (41) — the known-good payload, the bug's payload kept verbatim so a regression to it fails
+  here, the pricing-authority refusals (`unitPriceE4`/`lineTotalMinor`/`totalMinor` rejected),
+  tenant-identity refusals, money/quantity discipline past float64 range
+- `wire` (17) — primitives, HLC wire projection, envelope, browser-bundle safety
+- `device-ops` (22) — the registry is exhaustive; every registered schema requires the idempotency
+  key and refuses all three spellings of tenant identity; movement/credit money as strings; no
+  `SALE` movement kind and no `FEE` entry kind on the device surface; the `/sync/token` shape
+
+### `packages/wire-conformance` — 31 tests (3 files), typecheck clean
+**A probe package whose only job is to prove the two sides agree.** No production code imports it.
+It exists because it is the only place that can import `apps/web`'s sources *and* `apps/api`'s:
+the PWA resolves modules as a bundler would and its imports carry no file extensions, which
+`apps/api`'s `NodeNext` compilation cannot follow, so neither app can import the other.
+
+- `sale-client-to-api` (19) — the test that would have caught the bug. Real local SQLite on the
+  device's own schema → real `createCart`/`addProductToCart`/`checkout` → real outbox → real
+  `httpUploadTransport` with a browser `Origin` → real Fastify `/sync/upload` with CORS configured
+  → real tRPC router → real Postgres (PGlite, RLS on). Asserts the ack is `applied`; that the sale,
+  its line, its tax lines and its stock movement landed under the verified tenant at the device's
+  location; that the total is an exact bigint identity and is the **server's** figure, not the
+  till's; that the divergence is reported back in `write_log.response_body` as decimal strings;
+  that a replay acks `duplicate` with no second effect. Negative controls: the old hand-rolled
+  payload and a client-asserted `unitPriceE4` are both rejected `BAD_REQUEST`, classified
+  *definitive* by the client's own `classifyRejection`, with nothing written. Also drives the PWA's
+  real `CredentialCache` against the live `/sync/token`, and asserts the browser **preflight** for
+  the exact request the transport makes (POST, `authorization` + `content-type`, from the PWA's
+  origin) is approved while an arbitrary origin is not — bug #1 of this class, asserted for this
+  request rather than in general.
+- `outbox-surface` (8) — the audit, as a test: the client's write vocabulary is pinned; every
+  registry kind is really dispatched (an empty payload must be `BAD_REQUEST`, never
+  `UNKNOWN_KIND`); an unknown kind is per-op `UNKNOWN_KIND` without taking the batch with it; one
+  contract-shaped payload per kind is accepted end to end; the batch cap is enforced on both sides.
 
 ### `packages/money` — 56 tests (4 files), build + typecheck clean
 The platform's single money module (ADR-0004). `bigint` minor units with runtime
@@ -45,7 +274,7 @@ tie rule.
 - `format` (13) — parse/format round-trips at the presentation boundary only
 - `golden-vat` (10) — golden-file VAT lines against hand-computed figures
 
-### `packages/db` — 46 tests (5 files), typecheck clean
+### `packages/db` — 99 tests (9 files), typecheck clean
 Schema source of truth. Four hand-written SQL migrations (Drizzle mirrors, never
 generates); the test harness runs the **identical DDL** on hermetic PGlite
 (a real Postgres in WASM), so RLS, constraints and triggers under test are the
@@ -81,12 +310,13 @@ Postgres 16 — one DDL, two harnesses.
 - `seed` (15) — the "Construction materials distribution — Ghana" template applies
   as ordinary editable rows (ADR-0006); templates never seed prices
 
-### `apps/api` — 71 tests (10 files), typecheck clean
+### `apps/api` — 143 tests (12 files), typecheck clean
 Fastify + tRPC write path, now with the sync seam wired. Verified-token identity
 (`tid` is the **only** source of tenant identity; roles are opaque tenant-defined
 strings, never branched on), one idempotent pipeline over `app.write_log` with
-server-stamped HLC, tax engine honouring `base_kind`/`base_includes`, six tRPC
-routers (provisioning, catalogue, sales, inventory, credit, sequence), and two
+server-stamped HLC, tax engine honouring `base_kind`/`base_includes`, seven tRPC
+routers (provisioning, session, catalogue, sales, inventory, credit, sequence),
+and two
 plain Fastify sync routes beside the tRPC mount (`src/sync.ts`):
 
 - `GET /sync/token` — exchanges the API bearer for a short-lived PowerSync client
@@ -122,7 +352,7 @@ and tax computation exist; **no** invoice issuance/clearance fields.
   database refusing a regression directly, the collision landing path, and
   tenant isolation across all four new read paths
 
-### `apps/web` — 101 tests (14 files), build (Vite + PWA) + typecheck clean
+### `apps/web` — 189 tests (18 files), build (Vite + PWA) + typecheck clean
 Installable PWA shell and POS skeleton, now with the full sync connector
 (`src/data/sync/`: `credentials.ts`, `upload.ts`, `transport.ts`, `runtime.ts`,
 wired through `src/data/powersync.ts`). `fetchCredentials` exchanges the dev API
@@ -145,13 +375,36 @@ proving checkout is a single ACID transaction.
   block after a burn
 
 ### `packages/sync-drills` — the executable acceptance demonstrations
-`pnpm --filter @erp/sync-drills drill` runs the six Phase 1 drills against the
+`pnpm --filter @erp/sync-drills drill` runs the **seven** Phase 1 drills against the
 **real stack** (auto-spawns the API on :3001 if absent, tears it down after).
-Each "device" is an `@powersync/node` client with its own sqlite file and its own
-tokens; writes go solely outbox → `POST /sync/upload`; the drill connector
+D1–D5: each "device" is an `@powersync/node` client with its own sqlite file and
+its own tokens; writes go solely outbox → `POST /sync/upload`; the drill connector
 **throws** if a PowerSync crud batch ever appears (download-only, enforced).
 Report: `docs/sync-drill-report.md`, regenerated every run. Typecheck clean; the
 drills are the tests (hard assertions, non-zero exit on any failure).
+
+**What D1–D5 are and are not evidence of — see §0.** They demonstrate the *sync*
+path with real partitions and real convergence, and those results stand. They are
+not evidence about the *client* path: their payloads came from
+`src/context.ts`, not from `apps/web`, and their transport is a Node client with
+no browser origin. Two closures this pass:
+
+- **D6 — "the PWA's own payload, end to end"** runs `apps/web`'s real counter path
+  (local SQLite → cart → `checkout()` → outbox → `httpUploadTransport`) over a real
+  socket with a browser `Origin` at the API on :3001, then reads Postgres to prove
+  the sale, its line, its tax lines and its stock movements landed with the
+  **server's** prices, and that a byte-identical re-POST is `duplicate` with no
+  second effect. It lives in `@erp/wire-conformance` (the only package that can
+  import both trees) and is invoked as a child process so it appears in the report
+  with the rest. Runnable alone:
+  `pnpm --filter @erp/wire-conformance drill:live`.
+- **D1–D5's own payloads are now contract-typed.** `saleOp`/`movementOp`/
+  `openAccountOp` in `src/context.ts` returned `Record<string, unknown>`; they now
+  return `Omit<CreateSaleInput, keyof MutationEnvelope>` and friends from
+  `@erp/contracts`, so a drill payload that stops matching the contract is a
+  compile error. That closes "the drills invented their own shape" — though a
+  drill agreeing with the contract still does not prove the PWA does, which is
+  why D6 exists as well.
 
 ### Cross-cutting checks performed at integration
 - `node tools/lint-money.mjs` — clean (two annotated non-amount false positives
@@ -209,6 +462,42 @@ Added in the clean-slate verification pass (2026-08-21):
    milliseconds), `d4.ts` `creditEntries` (a `count(*)` row count). Neither is a
    monetary amount; no assertion changed.
 
+Added in the client↔server contract-conformance pass (2026-08-21):
+
+8. **Every sale the PWA uploaded was rejected `BAD_REQUEST`** — the client and the
+   API had been built in parallel with no shared declaration and agreed on nothing
+   (§0). Fixed structurally, not by patching one payload: `packages/contracts`
+   holds the one declaration, `apps/web` builds a value annotated with it, and the
+   API's routers parse with the same objects. **`.strict()` was NOT loosened** —
+   its refusal of `unit_price_e4` / `line_total_minor` / `total_minor` is the
+   mechanism that keeps pricing authority on the server (CLAUDE.md §2.5). Three
+   contract tests assert those keys stay rejected, and the conformance suite proves
+   it against the live route: a payload identical to a good one except for an added
+   `unitPriceE4` is answered `BAD_REQUEST` and nothing is written.
+9. **Three of the four uploadable mutation schemas were still private to
+   `apps/api`** (`stock.record_movement`, `credit.open_account`,
+   `credit.record_entry`) — the same latent condition, one op away from repeating.
+   Moved into `@erp/contracts` and registered in `device-ops.ts`, where the
+   `satisfies Record<DeviceOpKind, ZodType>` clause makes an unregistered
+   uploadable op a compile error and a conformance test asserts each router really
+   parses with the registered object. Behaviour unchanged: the schemas moved
+   verbatim.
+10. **`GET /sync/token` had no shared declaration either** — the API assembled
+    `{token, expires_at, endpoint}` by hand and the PWA picked those keys out of an
+    `unknown` by hand. A rename would have broken every device's download path
+    silently, on reconnect, in the field, with a green suite. Both sides now use
+    `syncTokenResponse`; the client's failure message names the offending path
+    instead of saying "missing token/expires_at".
+11. **`apps/web/tests/helpers/fixtures.ts` — `seedProduct` gained an optional `id`.**
+    Purely additive, so the conformance suite can seed the device catalogue with the
+    **server's** real product ids. No existing behaviour or assertion changed.
+
+Assertion integrity for this pass: every pre-existing suite kept its exact test
+count (contracts 58, money 56, db 46, api 58, web 121 — unchanged before and
+after). The +49 is entirely new files: `packages/contracts/test/device-ops.test.ts`
+(22) and the two `packages/wire-conformance` suites (27). Nothing was weakened,
+skipped or deleted; there is no `.only`/`.skip`/`.todo` anywhere.
+
 ---
 
 ## 3. Deferred — and why
@@ -233,18 +522,25 @@ Prereqs: Node ≥ 20, pnpm 9 (`corepack enable`), Docker.
 pnpm install                # from the repo root
 pnpm build                  # turbo: tsc for @erp/money, Vite+PWA for @erp/web
 pnpm typecheck              # all packages
-pnpm test                   # all suites (234 tests; PGlite suites take ~30s)
+pnpm test                   # all suites (535 tests; PGlite suites take ~30s)
 pnpm lint:money             # ADR-0004 money-type lint
 
-# Per package (dependency order money → db → api → web):
+# Per package (dependency order contracts → money → db → api → web → conformance):
+pnpm --filter @erp/contracts test    # zod only; no db, no network, no wasm
 pnpm --filter @erp/money test
-pnpm --filter @erp/db test          # hermetic — real DDL on PGlite, no external Postgres
-pnpm --filter @erp/api test         # same harness, drives the tRPC routers + sync routes
-pnpm --filter @erp/web test         # real SQLite via node:sqlite + jsdom for components
+pnpm --filter @erp/db test           # hermetic — real DDL on PGlite, no external Postgres
+pnpm --filter @erp/api test          # same harness, drives the tRPC routers + sync routes
+pnpm --filter @erp/web test          # real SQLite via node:sqlite + jsdom for components
+pnpm --filter @erp/wire-conformance test   # the PWA's real payload vs the API's real parser
 
 # The real stack + acceptance drills (reproducible from nothing):
 pnpm stack:reset                    # docker down -v → up → migrate → seed 2 tenants
-pnpm --filter @erp/sync-drills drill  # 6 drills; spawns the API on :3001 if absent
+pnpm --filter @erp/sync-drills drill  # 7 drills; spawns the API on :3001 if absent
+pnpm --filter @erp/wire-conformance drill:live   # D6 alone, against the running stack
+pnpm --filter @erp/wire-conformance drill:rbac   # D8 — 13 authorization checks over real HTTP
+pnpm dev:token --role counter_staff  # a bearer for a REAL provisioned principal;
+                                    # refs: counter_staff, outlet_manager,
+                                    # regional_manager, accounts, head_of_operations
 pnpm --filter @erp/api dev:stack    # API dev server on :3001 (for manual use)
 
 # POS dev server:
@@ -265,9 +561,12 @@ vitest process ever hangs at exit, it is PGlite/wasm teardown: the api config pi
 
 ## 5. Acceptance criteria — demonstrated, with the measured numbers
 
-All figures are from the final clean-slate run (2026-08-21, `stack:reset` from a
-destroyed docker volume, then `drill`): **6/6 drills PASS**, full log in
-`docs/sync-drill-report.md`. The run was performed twice from a clean slate on
+All figures are from the POST-MERGE clean-slate run (2026-08-21,
+`pnpm stack:reset` from a destroyed docker volume, then `drill`): **7/7 drills
+PASS**, full log in `docs/sync-drill-report.md`. Both drills that neither branch
+could run together are in it — D6 (the PWA's own payload end to end) and D7
+(receipt-number regression, wipe mid-block, reissue). The run was performed
+twice from a clean slate on
 2026-08-21; both passed. Localhost latencies are of course optimistic versus
 field conditions — what the drills prove is *correctness* of the offline→sync
 path and that the 60s budget is met with enormous headroom in the lab; the
@@ -324,28 +623,126 @@ real-device trial (§3) is where field latency gets measured.
    credit book is not synced (§3) — the *tenant* boundary is fully demonstrated;
    the *role/location* narrowing awaits the RBAC matrix.
 
+**Not an acceptance criterion, but the one the last two bugs lived in — the client
+path (D6 + `@erp/wire-conformance`).** A sale rung up through the PWA's own
+`checkout()` and shipped by the PWA's own transport, from a browser origin, over a
+real socket: acked `applied` in 44ms; one `app.sale`, one `app.sale_line`, three
+`app.sale_tax_line` and one `app.stock_movement` (`qty_delta = -3`, `source_kind
+= SALE`) at the token's location; total **9,001 = 7,500 − 0 + 1,501** as an exact
+bigint identity; the till's own figure of 29,700 (a deliberately stale local price)
+was **not** written but **was** reported back as
+`priceCheck {matches:false, deltaMinor:"-20699"}` — the stale-price-list detector
+working, with money as decimal strings inside jsonb. Byte-identical re-POST →
+`duplicate`, one sale, one movement. Repeatable: 27 in-process conformance tests on
+every `pnpm test`, plus D6 in the drill report.
+
 ---
 
 ## 6. Remaining gaps before Phase 1 sign-off
 
-1. **RBAC permission matrix** — the composable permission→action mapping
-   (outlet staff cannot override a price or touch a credit limit), the
-   `user_location_scope`/`user_effective_permission` tables, and the sync-rule
-   swap from the interim token-claim location scope to table-driven scoping,
-   plus the §3.11.10 `sale_line` denormalisation so lines join the per-location
-   bucket. Sync rules are the authorization boundary and cannot be retrofitted.
-2. **Credit policy migration + Q4 human gate** — move the in-memory
+1. **THE SALE PATH IS NOT PERMISSION-GUARDED.** Read this before reading anything
+   else in this section.
+
+   The permission model is built, tested (99 db + 121 api tests) and enforced live
+   on the stock and credit routes (§1a). **`apps/api/src/routers/sales.ts` is
+   untouched**: `sales.createSale` is still a bare `tenantProcedure`, so **any valid
+   tenant bearer can record a cash or credit sale at any location in its `locs`
+   claim**, with no capability check and — critically — **no enforcement of the
+   `sale.record.credit` bound**. The template's "credit sales up to a limit"
+   (counter staff `max_order_value_minor: "0"`, outlet manager `"500000"`, regional
+   `"2000000"`) is **data that nothing reads**. A counter clerk can today open an
+   unbounded credit exposure through the sale path.
+
+   Why it was not fixed: `sales.ts`, `pipeline.ts`, `packages/contracts/src/sale.ts`
+   and `infra/powersync/sync_rules.yaml` were owned by two other concurrent sessions
+   during this pass and were deliberately not edited. This is a **concurrency
+   artefact, not a design decision.**
+
+   The exact follow-up patch, ready to apply in one edit:
+
+   ```ts
+   // apps/api/src/routers/sales.ts
+   // 1. import the middleware alongside what is already imported:
+   import { assertLocationInScope, requiresPermission, router, tenantProcedure } from '../trpc.js';
+
+   // 2. the capability follows the TENDER, which is platform vocabulary
+   //    ('CASH' | 'CREDIT'), never a tenant's words:
+   function salePermission(input: Record<string, unknown>): string | undefined {
+     const tender = input['tender'];
+     if (tender === 'CASH') return 'sale.record';
+     if (tender === 'CREDIT') return 'sale.record.credit';
+     return undefined;   // unrecognised => the middleware refuses; never a default
+   }
+
+   // 3. declare it AFTER .input(), so the location and the derived code come
+   //    from a payload zod has already validated:
+   createSale: tenantProcedure
+     .input(createSaleInput)
+     .use(requiresPermission({ code: salePermission, at: 'input' }))
+     .mutation(async ({ ctx, input }) => { /* body unchanged */ }),
+   ```
+
+   And **inside** the handler, once the pipeline has computed the server-priced
+   total — the bound must be checked against the server's figure, never the till's:
+
+   ```ts
+   if (input.tender === 'CREDIT') {
+     ctx.permissions.requireWithinAmount('sale.record.credit', input.locationId, totalMinor);
+   }
+   ```
+
+   `ctx.permissions` is the snapshot the middleware already resolved for this
+   request, so the call is synchronous and opens no second transaction inside
+   `runIdempotent` (see the transaction-discipline header in
+   `apps/api/src/permissions.ts`).
+
+   Two further items in the same package, both currently unguarded:
+   `sales.get` / `sales.recomputeCheck` need `sale.view`, and
+   `provisioning.applyTemplate` needs a decision recorded either way about
+   `admin.template.apply`.
+
+   Once `sales.ts` is guarded, extend `drill:rbac` with the pair that matters most:
+   counter staff **denied** a CREDIT sale above their `"0"` bound, outlet manager
+   **allowed** one below `"500000"` and **denied** one above it. Until that check
+   exists and passes over HTTP, the bound is not demonstrated.
+
+2. **Price override has no path — and therefore no check.** The good news, stated
+   precisely so nobody mistakes it for the item above: `createSale` never accepts a
+   price. A line carries `productId` and `qty`; the server resolves the unit price
+   from the tenant's price list. There is no override object, no
+   `UPDATE sale_line SET unit_price` endpoint, and D6 already proves the server's
+   figure wins over the till's claim (`server=9001 till=29700`). So the brief's
+   *first* hard prohibition holds **structurally** today. `sale.override_price`
+   exists in the catalogue guarding nothing, and the moment an override field is
+   added it must be wired to it — that is the one place a future change silently
+   breaks a guarantee that currently holds for free.
+
+3. **The credit-limit column has no database-level backstop.**
+   `02-security-and-access-control.md` §2.4 specifies that
+   `customer_account.credit_limit_minor` is protected by a column-level `REVOKE` on
+   `app_rw` **and a trigger that raises**. Neither exists. Today the only writer is
+   `credit.openAccount`, which *is* gated on `credit.limit.change` (verified live,
+   D8 check 2) — so the prohibition holds, but it holds on one application check
+   with no defence in depth underneath it. A second writer added later would
+   silently bypass it.
+
+4. **Sync rules still scope from the token claim, not `app.user_location_scope`.**
+   CLAUDE.md §2.6: sync rules are the authorization boundary. The table exists and
+   is correct; `infra/powersync/sync_rules.yaml` does not yet read it, and that file
+   was owned by another session this pass. Also outstanding from the original entry:
+   the §3.11.10 `sale_line` denormalisation so lines join the per-location bucket.
+5. **Credit policy migration + Q4 human gate** — move the in-memory
    `credit-policy` store into the effective-dated `app.credit_policy` migration,
    and obtain the accountant's confirmation of the five fee decisions. Until
    then every fee figure is provisional and the accrual fails closed.
-3. **Q8 document model** — Ghana e-VAT invoice issuance/clearance decision
+6. **Q8 document model** — Ghana e-VAT invoice issuance/clearance decision
    (`NEEDS-HUMAN`); the capture-side seam is built and marked.
-4. **Receipt-printing spike** — blocked on the thermal-printer hardware decision.
-5. **Real-device trial** — representative low-end Android tablets against this
+7. **Receipt-printing spike** — blocked on the thermal-printer hardware decision.
+8. **Real-device trial** — representative low-end Android tablets against this
    stack: OPFS persistence, worker behaviour, sync performance under field
    latency (the 60s budget was met at p95 212ms on localhost; the field number
    is the one that matters).
-6. **Receipt-number regression (03 §3.7.5, conflict class #14) — CLOSED
+9. **Receipt-number regression (03 §3.7.5, conflict class #14) — CLOSED
    2026-08-21.** Owner: `sync-architect`. Recorded here as the gap; this is
    what landed.
 
@@ -367,7 +764,7 @@ real-device trial (§3) is where field latency gets measured.
    `classifyRejection()` is therefore **unchanged**: the fix is upstream, and
    nothing on the drain path became more willing to discard a write.
 
-   *What landed.* Migration `0005_app_sequence_and_review.sql` adds
+   *What landed.* Migration `0006_app_sequence_and_review.sql` adds
    `app.sequence_counter` (server-side, row-locked, never synced, cannot
    rewind), `app.sequence_block` (one live block per device; ranges never
    overlap at a location; a trigger **refuses** a `consumed_upto` regression,
@@ -379,8 +776,10 @@ real-device trial (§3) is where field latency gets measured.
    range. A collision that already happened lands under §3.7.5's emergency
    form with the printed number preserved and its own severity-1 review, so
    the outbox drains. `packages/sequence` renders numbers for the server, the
-   device and the drills from ONE implementation. Drill **D6** proves the whole
-   path against the real stack with a genuine sqlite-file wipe.
+   device and the drills from ONE implementation. Drill **D7** proves the whole
+   path against the real stack with a genuine sqlite-file wipe. (It was written
+   as D6 and renumbered on merge: D6 is the drill that runs the PWA's OWN
+   payload end to end, and neither drill covers the other's hole.)
 
    *Two deliberate scope limits, both stated rather than hidden.* (a) §3.7.5's
    low-water **reserve block** (ask at 20% / a few days' throughput and hold a
@@ -390,13 +789,74 @@ real-device trial (§3) is where field latency gets measured.
    rarer; it does not affect regression detection. (b) `conflict_review` is
    §3.6.2's shape minus the `conflict_classes` registry, the escalation-step
    chain and the notification channels — those arrive with the credit-limit
-   classes and the RBAC permission tables that route the queue. Until then
-   reviews are read online (fail-closed) and `escalate_at` is a flat 24h.
+   classes. The RBAC permission tables that route the queue DO now exist
+   (migration `0005_rbac_permissions.sql`), so `required_permission` is the
+   catalogued `sync.conflict.review` rather than the uncatalogued
+   `sequence.review` this work-package invented for itself; until the queue's
+   own read path lands, reviews are read online (fail-closed) and `escalate_at`
+   is a flat 24h. (c) **The reconnect report has no trigger in the shipped
+   PWA.** Adoption is wired — `powersync.ts` drains with
+   `onResult: sequenceResultHandler(db)`, so an acked report becomes the block
+   the counter prints from — but nothing yet calls `enqueueBlockReport` when
+   the radio comes back, so in the app as shipped no report is queued. Both
+   halves ARE exercised end to end by
+   `packages/wire-conformance/test/sequence-client-to-api.test.ts` (hermetic,
+   every `pnpm test`) and by drill D7 (real stack, real socket, real wipe); what
+   is missing is the counter-side trigger, which belongs with the reconnect UX.
+   Until it lands, a device that is wiped keeps trading on self-issued,
+   device-tagged numbers — visibly exceptional and un-collidable — and the
+   server learns about it on the first report anyone queues. Listed here rather
+   than left to be discovered: this is exactly the shape of §0's ledger.
 
-7. Smaller but real: auth is a dev-grade HS256 flow (shared dev secret, static
+10. **Three of the five uploadable ops have no client at all.** `sale.create` is now
+   proven end to end from the PWA's own code. `stock.record_movement`,
+   `credit.open_account` and `credit.record_entry` are reachable on `/sync/upload`
+   and are exercised with contract-shaped payloads (`outbox-surface.test.ts`), but
+   **no PWA builder exists for them**, so there is nothing on the client to test
+   and the counter cannot record a stock adjustment or a credit transaction
+   offline. The declarations are now shared, and `outbox-surface.test.ts` fails the
+   moment `apps/web` grows a second uploadable kind without a conformance test for
+   it — but until those builders are written, "the write path works" means the sale
+   path works.
+
+11. **The conformance suite proves shape and effect, not the counter's UI.** It
+   drives `checkout()` and the outbox directly; nothing in it renders a React
+   component or clicks a button, and no test in this repository drives the PWA in a
+   real browser. A regression in the counter screen that never reaches
+   `checkout()` would still pass everything green above. Playwright against the
+   built PWA is the missing layer, and it belongs with the real-device trial (#5).
+
+12. **Tenant #1's best-ranked price list is tax-inclusive, and nothing can ring
+   it.** Surfaced by wiring device price-list provisioning (§0, row 5). The device
+   now resolves its default from the tenant's own configuration —
+   `price_list.priority` ("low wins"), `.location_id`, effective window — which for
+   tenant #1 settles on `RETAIL` (priority 10, `is_tax_inclusive = true`). Neither
+   side can price it: `sales.createSale` answers `PRECONDITION_FAILED:
+   tax-inclusive price lists are not yet supported`, and the counter's own
+   `lineNetMinor` (@erp/money) has no tax-extraction path either, so its local
+   total would be wrong too.
+
+   The client therefore **refuses at the till** with that reason rather than
+   binding the list (`status: 'unsupported'`,
+   `apps/web/src/data/session/device-price-list.ts`). Falling through to
+   `WHOLESALE` was rejected deliberately: it would charge every walk-in customer
+   off a list the tenant did not choose for them, silently, all day.
+
+   Verified on the live stack this pass: a device provisioned from a real
+   `dev-token` bearer resolves `RETAIL` and blocks; with `RETAIL` out of scope it
+   resolves `WHOLESALE`, ships `priceListCode: 'WHOLESALE'`, and the API **applies**
+   the sale (`PLVERIFY-651564`, server-priced 5000 net + 1000 tax = 6000). So the
+   provisioning path is proven end-to-end; **exact tax extraction from inclusive
+   shelf prices is the blocking work-package** before tenant #1 can ring a retail
+   sale at all. It is the POS pricing package, and it is a Phase 1 blocker, not a
+   deferral.
+
+13. Smaller but real: auth is a dev-grade HS256 flow (shared dev secret, static
    bearer in the PWA env) — the real login/credential flow is §8.2 work;
    `pnpm build` warns at ~600 kB main bundle (code-split before pilot).
 
 None of these gaps is hidden in a passing test suite: everything green above is
 green because the thing it tests genuinely works in the tested environment, and
-everything not yet demonstrable is listed here.
+everything not yet demonstrable is listed here. §0 is the standing correction to
+the habit that produced the last two bugs — a green suite is evidence about the
+paths it actually traverses and about nothing else.

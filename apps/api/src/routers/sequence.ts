@@ -32,55 +32,42 @@
  * a location with no counter row is refused rather than defaulted.
  */
 import { TRPCError } from '@trpc/server';
-import { z } from 'zod';
+import { syncBlockInput } from '@erp/contracts';
 import { deterministicUuid } from '@erp/db';
 import { blockEnd, nextNumber, remaining } from '@erp/sequence';
 import type { Queryable } from '../db.js';
 import { runIdempotent, type JsonValue } from '../pipeline.js';
 import { assertLocationInScope, router, tenantProcedure } from '../trpc.js';
-import { mutationEnvelope, zUuid } from '../wire.js';
 
 /** Conflict class #14 (03 §3.6, §3.7.5). */
 export const RECEIPT_REGRESSION_CLASS = 'SEQUENCE_CONSUMED_UPTO_REGRESSION';
 /** Severity 1: blocking. Never auto-resolves (§3.6.2 `escalate_only`). */
 export const SEVERITY_BLOCKING = 1;
-/** Routing is by PERMISSION, never by named individual (§3.6.2). */
-export const SEQUENCE_REVIEW_PERMISSION = 'sequence.review';
+/**
+ * Routing is by PERMISSION, never by named individual (§3.6.2).
+ *
+ * The code is `sync.conflict.review` from the platform catalogue
+ * (`packages/db/src/permissions.ts`, migration 0005), NOT a code this
+ * work-package minted for itself. This file originally wrote `sequence.review`
+ * into `conflict_review.required_permission`; the column is plain text with no
+ * foreign key, so nothing would have complained — and no user could ever have
+ * held it, which means every severity-1 receipt-number review would have
+ * routed to an empty queue and sat there unread. A permission a tenant cannot
+ * grant is a review nobody sees.
+ */
+export const SEQUENCE_REVIEW_PERMISSION = 'sync.conflict.review';
 /** §3.6.2 escalate_only step 1 — the tenant-configured chain lands with the
  *  conflict_classes registry; until then the first step is 24h. */
 const FIRST_ESCALATION_HOURS = 24;
 
-/** A non-negative decimal string of a sequence number. Never a JSON number:
- *  float64 stops being exact at 2^53 and a document number must not drift. */
-const zSeqNumber = z
-  .string()
-  .regex(/^\d+$/, 'expected a decimal string')
-  .transform((s) => BigInt(s));
-
-const blockReport = z
-  .object({
-    blockStart: zSeqNumber,
-    /** Highest number the device has ISSUED from this block; null = none. */
-    consumedUpto: zSeqNumber.nullable(),
-  })
-  .strict();
-
-const syncBlockInput = z
-  .object({
-    ...mutationEnvelope,
-    locationId: zUuid,
-    /** Pack + tenant vocabulary ('RECEIPT', …) — never a platform enum. */
-    sequenceKey: z.string().regex(/^[A-Z][A-Z0-9_]{0,31}$/),
-    /**
-     * The device's view of its current block, or null for "I hold no block".
-     * A wiped device reports null while the server still shows a live block —
-     * that mismatch IS the detection.
-     */
-    report: blockReport.nullable().default(null),
-    /** Ask for a block now (fresh device, or the current one is spent). */
-    wantBlock: z.boolean().default(true),
-  })
-  .strict();
+/**
+ * The input shape is NOT defined here. It lives in `@erp/contracts`
+ * (`packages/contracts/src/sequence.ts`), which `apps/web` imports too, so the
+ * device that builds a block report and the server that parses it read ONE
+ * declaration. `sequence.sync_block` is an uploadable device op; every one of
+ * those is registered in `deviceOpContracts`, and the conformance suite proves
+ * per kind that the router validates with that exact schema object.
+ */
 
 // ---------------------------------------------------------------------------
 // Detection

@@ -1,61 +1,54 @@
 /**
- * Wire primitives. Money and quantities cross the API as DECIMAL STRINGS of
- * scaled integer units (@erp/money serialize.ts is the contract): zod
- * validates the shape and transforms to bigint, so no monetary magnitude is
- * ever a JS `number` on either side of the boundary (ADR-0004).
+ * The API's view of the wire contract.
  *
- * Every input object schema in this package is `.strict()`: unknown keys are
- * REJECTED, not stripped. `tenant_id` in a payload is an attack, not an
- * input (CLAUDE.md §2.1) — a forged payload fails loudly at the zod gate,
- * and even if a variant slipped through, nothing ever reads it: the tenant
- * id used for every statement comes from the verified token.
+ * The primitives themselves NO LONGER LIVE HERE. They moved to
+ * `@erp/contracts`, which depends on zod alone and is imported by both this
+ * package and `apps/web`, so a client that builds the wrong payload shape
+ * fails at `tsc` instead of at the zod gate with a BAD_REQUEST from a till.
+ * That was the bug: two packages, two invented shapes, no shared definition.
+ *
+ * This module re-exports them so every router keeps importing `../wire.js`,
+ * and adds the pieces that are legitimately server-only.
+ *
+ * The discipline the contract carries, restated because it is the reason the
+ * package exists: money and quantities cross the API as DECIMAL STRINGS of
+ * scaled integer units and become `bigint` at the boundary (ADR-0004); every
+ * input object is `.strict()`, so a forged `tenant_id` fails loudly and a
+ * client cannot assert a price the server is the authority for (CLAUDE.md
+ * §2.1, §2.3, §2.5).
  */
-import { z } from 'zod';
 import { HLC_RE } from '@erp/db';
+import { HLC_WIRE_RE } from '@erp/contracts';
 
-const INT_RE = /^-?\d+$/;
-const NONNEG_INT_RE = /^\d+$/;
-
-/** Signed scaled-integer magnitude (money minor units, qty, rate_e4). */
-export const zScaledInt = z
-  .string()
-  .regex(INT_RE, 'expected a decimal string of scaled integer units')
-  .transform((s) => BigInt(s));
-
-/** Non-negative scaled-integer magnitude. */
-export const zScaledIntNonNeg = z
-  .string()
-  .regex(NONNEG_INT_RE, 'expected a non-negative decimal string of scaled integer units')
-  .transform((s) => BigInt(s));
-
-/** Strictly positive scaled-integer magnitude. */
-export const zScaledIntPos = zScaledIntNonNeg.refine((v) => v > 0n, 'must be > 0');
-
-export const zUuid = z.string().uuid();
-
-/** Business date — 'YYYY-MM-DD'. Human-asserted trading day (03 §3.4.2). */
-export const zBusinessDate = z
-  .string()
-  .regex(/^\d{4}-\d{2}-\d{2}$/, 'expected YYYY-MM-DD')
-  .refine((s) => !Number.isNaN(Date.parse(`${s}T00:00:00Z`)), 'not a calendar date');
-
-/** A device-asserted HLC — stored as claimed_hlc, UNTRUSTED (03 §3.4.1). */
-export const zClaimedHlc = z.string().regex(HLC_RE, 'malformed hlc');
+export {
+  HLC_WIRE_RE,
+  mutationEnvelope,
+  mutationEnvelopeSchema,
+  wire,
+  zBusinessDate,
+  zClaimedHlc,
+  zScaledInt,
+  zScaledIntNonNeg,
+  zScaledIntPos,
+  zUuid,
+  type MutationEnvelope,
+} from '@erp/contracts';
 
 /**
- * The idempotent-mutation envelope every write carries (CLAUDE.md §2.2):
- * a client-generated UUIDv7 idempotency key, the device's own clock
- * assertion (untrusted), and its wall-clock claim (display/forensics only).
+ * Drift guard, checked at module load.
+ *
+ * `@erp/db` generates the server's authoritative HLC; `@erp/contracts` states
+ * the format that crosses JSON. They are one format with two implementations,
+ * and `@erp/contracts` cannot import `@erp/db` (it is bundled for the
+ * browser). If they ever diverge, every device write is rejected as a
+ * malformed HLC — a silent, total outage of the write path. Better that the
+ * server refuses to boot.
  */
-export const mutationEnvelope = {
-  idempotencyKey: zUuid,
-  claimedHlc: zClaimedHlc.optional(),
-  clientWallAt: z.string().datetime({ offset: true }).optional(),
-};
-
-/** Serialize a bigint magnitude for a response DTO. */
-export function wire(v: bigint): string {
-  return v.toString(10);
+if (HLC_RE.source !== HLC_WIRE_RE.source) {
+  throw new Error(
+    `HLC format drift: @erp/db ${HLC_RE.source} !== @erp/contracts ${HLC_WIRE_RE.source}. ` +
+      'These are one wire format; reconcile packages/db/src/hlc.ts with packages/contracts/src/wire.ts.',
+  );
 }
 
 /** Add calendar days to a YYYY-MM-DD date, returning YYYY-MM-DD. */

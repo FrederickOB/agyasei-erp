@@ -1,20 +1,48 @@
 import { createRoot } from 'react-dom/client';
 import { App } from './App';
-import { openLocalDb } from './data/powersync';
+import { openLocalDb, readApiBearerToken } from './data/powersync';
 import { seedDevDataIfEmpty } from './data/seed';
+import { reconcileDeviceLocation } from './data/session/device-location';
+import { reconcileDevicePriceList } from './data/session/device-price-list';
 import { setupServiceWorker } from './sw/register';
 import './app.css';
 
 async function bootstrap(): Promise<void> {
   setupServiceWorker();
   const db = await openLocalDb();
-  // Dev convenience only: local-only mode seeds a placeholder catalogue and a
-  // placeholder CurrencySpec so the app is fully usable with zero backend.
+
+  // ── ORDER MATTERS, AND IT IS LOAD-BEARING ────────────────────────────────
+  // 1. The dev seed runs first. It is a FLOOR under a device with nothing —
+  //    placeholder catalogue, placeholder CurrencySpec, placeholder location —
+  //    so local-only mode is fully usable with zero backend.
   await seedDevDataIfEmpty(db);
+  // 2. Then the session reconciles, and in sync mode it OVERWRITES the
+  //    location the seed just wrote. That direction is not a preference: the
+  //    seeded location is a placeholder that matches no row the server knows,
+  //    and the API checks every write against the token's `locs` claim
+  //    (`assertLocationInScope`, apps/api/src/trpc.ts). A sale filed against
+  //    the placeholder is answered FORBIDDEN — every time, at a counter, hours
+  //    after the customer left. The token's location wins, always.
+  //
+  //    This runs on EVERY start, not once at install: a device re-assigned to
+  //    another location picks that up the next time it is switched on.
+  const bearerToken = readApiBearerToken();
+  const deviceLocation = await reconcileDeviceLocation(db, bearerToken);
+  // 3. Then the price list, AFTER the location — "which list applies here" has
+  //    no answer until "here" does. Same direction as step 2 and for the same
+  //    reason: the seed points this device at a placeholder list coded
+  //    'DEFAULT', which no tenant has, so a sale rung against it is recorded
+  //    locally and then refused at upload (`no price list DEFAULT in force`).
+  //    Unlike the location, the answer is not in the token — there is no
+  //    price-list claim — it is in the tenant's own synced configuration:
+  //    which lists cover this counter, in force today, ranked by the tenant.
+  const devicePriceList = await reconcileDevicePriceList(db, bearerToken);
 
   const container = document.getElementById('root');
   if (container === null) throw new Error('missing #root element');
-  createRoot(container).render(<App db={db} />);
+  createRoot(container).render(
+    <App db={db} deviceLocation={deviceLocation} devicePriceList={devicePriceList} />,
+  );
 }
 
 void bootstrap();
