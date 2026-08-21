@@ -1,0 +1,126 @@
+# yaml-language-server: $schema=https://unpkg.com/@powersync/service-sync-rules@latest/schema/sync_rules.json
+#
+# ============================================================================
+# SYNC RULES — THE TENANT ISOLATION BOUNDARY (03-offline-sync §3.2)
+#
+# This file decides which rows leave the server for a device. It is the tenant
+# boundary (ADR-0005), the RBAC boundary (CLAUDE.md §2.6) and the device-theft
+# blast radius. Changes here are reviewed by two people (§3.9).
+#
+# THREE INVIOLABLE RULES (§3.2.1):
+#   1. tenant_id comes ONLY from the signed token: request.jwt() ->> 'tid'.
+#      NEVER request.parameters() — that is client-supplied, hostile input.
+#   2. EVERY data query on a tenant-owned table repeats
+#      tenant_id = bucket.tenant_id, even where the bucket key already
+#      implies it. Defence in depth.
+#   3. A device holds one location's window, never the network's.
+#
+# DOWNLOAD-ONLY: the PowerSync service never accepts uploads. Every client
+# write goes through the API's idempotent pipeline over app.write_log
+# (server-stamped HLC). The client uploadData() posts to the API, never here.
+#
+# Token contract (fixed): HS256 with DEV_JWT_SECRET, aud "powersync",
+#   claim "tid"  = tenant uuid                (REQUIRED — no tid, no data)
+#   claim "location_id" = location uuid       (INTERIM, see note below)
+#
+# INTERIM MECHANISMS — honest deviations from §3.2.3, each fails CLOSED:
+#   a. §3.2.3 scopes location by the server-side user_location_scope table and
+#      permissions by user_effective_permission. Neither table exists yet
+#      (phase1-status: RBAC matrix not implemented). Until they land, location
+#      scope is the signed "location_id" claim — set SERVER-SIDE by the API
+#      from the user's assignment when it mints the (short-lived) PowerSync
+#      token. It is a token claim, not a client parameter. No claim → NULL
+#      bucket key → zero rows. When user_location_scope lands, swap the
+#      parameter queries here for the table-driven ones in §3.2.3.
+#   b. The credit book (customer_account, credit_entry) and the
+#      credit_allowance projection are NOT SYNCED AT ALL: the permission
+#      tables that §3.2.2 gates them on do not exist, so the fail-closed
+#      choice is no bucket, not an ungated one. Credit reads stay online
+#      through the API until then.
+#   c. sale_line / sale_tax_line do not yet carry the denormalised
+#      location_id that §3.11.10 requires precisely so they can join the
+#      location_ops bucket (a data query reads ONE table, no joins). Until
+#      that migration lands they sync in a TENANT-scoped bucket below —
+#      tenant isolation fully intact, location narrowing not yet. See
+#      tenant_sale_lines_interim.
+# ============================================================================
+
+bucket_definitions:
+  # ---- Tenant-wide reference data (§3.2.2 tenant_reference) ----------------
+  # The catalogue the counter needs: products, units, prices — one bucket per
+  # tenant, shared by every device of that tenant. 219 SKUs is small; splitting
+  # per location would multiply buckets for no benefit.
+  tenant_reference:
+    parameters: SELECT request.jwt() ->> 'tid' AS tenant_id
+    data:
+      - SELECT * FROM "app"."location"         WHERE tenant_id = bucket.tenant_id AND deleted_at IS NULL
+      - SELECT * FROM "app"."location_type"    WHERE tenant_id = bucket.tenant_id AND deleted_at IS NULL
+      - SELECT * FROM "app"."unit_of_measure"  WHERE tenant_id = bucket.tenant_id AND deleted_at IS NULL
+      - SELECT * FROM "app"."product_category" WHERE tenant_id = bucket.tenant_id AND deleted_at IS NULL
+      - SELECT * FROM "app"."product"          WHERE tenant_id = bucket.tenant_id AND deleted_at IS NULL
+      - SELECT * FROM "app"."product_uom"      WHERE tenant_id = bucket.tenant_id AND deleted_at IS NULL
+      - SELECT * FROM "app"."price_list"       WHERE tenant_id = bucket.tenant_id AND deleted_at IS NULL
+      - SELECT * FROM "app"."price_list_item"  WHERE tenant_id = bucket.tenant_id AND deleted_at IS NULL
+      - SELECT * FROM "app"."movement_reason"  WHERE tenant_id = bucket.tenant_id AND deleted_at IS NULL
+
+  # ---- Jurisdiction pack (tax rows the counter needs) ----------------------
+  # platform.* rows are platform-wide reference data keyed by jurisdiction,
+  # not tenant-owned rows (they have no tenant_id — rule 2 applies to
+  # tenant-owned tables). The bucket key is still DERIVED FROM THE TOKEN:
+  # tid → platform.tenant → jurisdiction_code, all server-side.
+  jurisdiction_pack:
+    parameters: SELECT jurisdiction_code FROM "platform"."tenant" WHERE id = (request.jwt() ->> 'tid')
+    data:
+      - SELECT code AS id, code, name, currency_code, currency_symbol,
+               minor_units_per_major, cash_rounding_unit_minor
+          FROM "platform"."jurisdiction"
+         WHERE code = bucket.jurisdiction_code
+      - SELECT jurisdiction_code || ':' || code AS id, jurisdiction_code, code,
+               name, input_deductible
+          FROM "platform"."tax_code"
+         WHERE jurisdiction_code = bucket.jurisdiction_code
+      - SELECT id, jurisdiction_code, tax_code, rate_bp, base_kind,
+               base_includes, rounding_level, rounding_mode, effective,
+               legal_reference, confirmed_by, confirmed_at
+          FROM "platform"."tax_rate"
+         WHERE jurisdiction_code = bucket.jurisdiction_code
+
+  # ---- Customers: IDENTITY ONLY (§3.2.2 tenant_customers) ------------------
+  # Explicit column list, never SELECT * — no balances, no limits, no ageing,
+  # no terms. The credit book itself is deliberately absent (interim note b).
+  tenant_customers:
+    parameters: SELECT request.jwt() ->> 'tid' AS tenant_id
+    data:
+      - SELECT id, tenant_id, code, name, phone, is_credit_customer, hlc, updated_at
+          FROM "app"."customer"
+         WHERE tenant_id = bucket.tenant_id AND deleted_at IS NULL
+
+  # ---- Per-location operational data (§3.2.2 location_ops) -----------------
+  # Location comes from the SIGNED token (interim note a), never from
+  # request.parameters(). Both keys repeated in every data query (rule 2).
+  # stock_movement is windowed per row via archived_at (§3.2.4): a row leaving
+  # the window leaves the bucket without the bucket key ever changing.
+  location_ops:
+    parameters: |
+      SELECT request.jwt() ->> 'tid' AS tenant_id,
+             request.jwt() ->> 'location_id' AS location_id
+    data:
+      - SELECT * FROM "app"."stock_movement"
+         WHERE tenant_id = bucket.tenant_id
+           AND location_id = bucket.location_id
+           AND archived_at IS NULL
+      - SELECT * FROM "app"."sale"
+         WHERE tenant_id = bucket.tenant_id
+           AND location_id = bucket.location_id
+
+  # ---- INTERIM: sale lines, tenant-scoped (see note c) ---------------------
+  # MUST move into location_ops as soon as the migration adding denormalised
+  # (tenant_id, location_id) to sale_line and sale_tax_line lands (§3.11.10).
+  # Isolation: the tenant predicate is present and token-derived; what this
+  # bucket lacks is the NARROWER location cut, acceptable only while the
+  # pilot runs a single live location.
+  tenant_sale_lines_interim:
+    parameters: SELECT request.jwt() ->> 'tid' AS tenant_id
+    data:
+      - SELECT * FROM "app"."sale_line"     WHERE tenant_id = bucket.tenant_id
+      - SELECT * FROM "app"."sale_tax_line" WHERE tenant_id = bucket.tenant_id

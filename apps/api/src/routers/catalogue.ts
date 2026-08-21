@@ -59,13 +59,13 @@ async function pricesFor(
      join app.price_list l on l.tenant_id = i.tenant_id and l.id = i.price_list_id
      join app.unit_of_measure u on u.tenant_id = i.tenant_id and u.id = i.uom_id
      where i.deleted_at is null and l.deleted_at is null
-       and i.product_id = any($1::uuid[])
+       and i.product_id = any(string_to_array($1, ',')::uuid[])
        and i.effective_from <= $2::date
        and (i.effective_to is null or i.effective_to > $2::date)
        and l.effective_from <= $2::date
        and (l.effective_to is null or l.effective_to > $2::date)
      order by l.priority, i.min_qty`,
-    [productIds as string[], onDate],
+    [productIds.join(','), onDate],
   );
   const map = new Map<string, PriceRow[]>();
   for (const row of res.rows) {

@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@erp/money": "workspace:*",
+    "@powersync/common": "^1.57.3",
     "@powersync/web": "^1.14.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
@@ -30,6 +31,7 @@
     "vite-plugin-pwa": "^0.21.1",
     "vite-plugin-top-level-await": "^1.4.4",
     "vite-plugin-wasm": "^3.3.0",
-    "vitest": "^3.2.4"
+    "vitest": "^3.2.4",
+    "workbox-window": "^7.3.0"
   }
 }

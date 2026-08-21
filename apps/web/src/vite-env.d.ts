@@ -5,12 +5,21 @@ declare const __BUILD_ID__: string;
 
 interface ImportMetaEnv {
   /**
-   * PowerSync sync-service endpoint. When ABSENT the app runs in local-only
-   * mode: the same local schema, no backend, fully usable in dev.
+   * API dev server base URL (fixed dev contract: http://localhost:3001).
+   * GET /sync/token mints the short-lived PowerSync client token;
+   * POST /sync/upload is the ONE write path into app.write_log.
    */
-  readonly VITE_SYNC_ENDPOINT?: string;
-  /** Development-only sync token. Real credential exchange is an online-only login flow (§8.2). */
-  readonly VITE_SYNC_TOKEN?: string;
+  readonly VITE_API_URL?: string;
+  /**
+   * PowerSync service URL (fixed dev contract: http://localhost:8080).
+   * Downloads ONLY — sync_rules.yaml buckets, scoped by the token's tid.
+   */
+  readonly VITE_POWERSYNC_URL?: string;
+  /**
+   * Development-only API bearer JWT (HS256, DEV_JWT_SECRET). Real credential
+   * exchange is an online-only login flow (§8.2). Never commit a real token.
+   */
+  readonly VITE_API_TOKEN?: string;
 }
 
 interface ImportMeta {

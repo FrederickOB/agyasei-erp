@@ -1,0 +1,150 @@
+/**
+ * The four offline states (§8.4): transition coverage for the explicit state
+ * machine, and the calm-wording contract — offline is never presented as an
+ * error, and "stuck" can only be entered while connectivity is present.
+ */
+import { describe, expect, it } from 'vitest';
+import {
+  DEFAULT_STUCK_THRESHOLD_MS,
+  SyncStatusMachine,
+  deriveSyncUiState,
+  statusLine,
+  type SyncUiState,
+} from '../src/state/sync-status';
+
+const T0 = Date.parse('2026-08-21T09:12:00.000Z');
+const MIN = 60_000;
+
+describe('deriveSyncUiState', () => {
+  it('offline with a queue is OFFLINE — calm, not stuck, however old the queue', () => {
+    const state = deriveSyncUiState({
+      online: false,
+      pendingCount: 14,
+      oldestQueuedAtMs: T0 - 10 * 60 * MIN, // ten hours old
+      nowMs: T0,
+      progress: null,
+    });
+    expect(state).toEqual({ kind: 'offline', pendingCount: 14 });
+  });
+
+  it('online with an empty queue is caught up', () => {
+    const state = deriveSyncUiState({
+      online: true,
+      pendingCount: 0,
+      oldestQueuedAtMs: null,
+      nowMs: T0,
+      progress: null,
+    });
+    expect(state.kind).toBe('online_synced');
+  });
+
+  it('online with a fresh queue is syncing', () => {
+    const state = deriveSyncUiState({
+      online: true,
+      pendingCount: 14,
+      oldestQueuedAtMs: T0 - MIN,
+      nowMs: T0,
+      progress: { sentCount: 9, batchSize: 14 },
+    });
+    expect(state.kind).toBe('syncing');
+  });
+
+  it('online with the oldest write past the threshold is STUCK', () => {
+    const state = deriveSyncUiState({
+      online: true,
+      pendingCount: 14,
+      oldestQueuedAtMs: T0 - DEFAULT_STUCK_THRESHOLD_MS,
+      nowMs: T0,
+      progress: null,
+    });
+    expect(state.kind).toBe('stuck');
+  });
+
+  it('just under the threshold is still syncing, not stuck', () => {
+    const state = deriveSyncUiState({
+      online: true,
+      pendingCount: 3,
+      oldestQueuedAtMs: T0 - DEFAULT_STUCK_THRESHOLD_MS + 1,
+      nowMs: T0,
+      progress: null,
+    });
+    expect(state.kind).toBe('syncing');
+  });
+});
+
+describe('SyncStatusMachine transitions', () => {
+  it('walks offline -> reconnect -> sending -> caught up', () => {
+    const m = new SyncStatusMachine({ nowMs: T0 });
+    expect(m.apply({ type: 'connectivity', online: false }).kind).toBe('offline');
+    expect(m.apply({ type: 'queue', pendingCount: 14, oldestQueuedAtMs: T0 - MIN }).kind).toBe(
+      'offline',
+    );
+    expect(m.apply({ type: 'connectivity', online: true }).kind).toBe('syncing');
+    m.apply({ type: 'progress', progress: { sentCount: 9, batchSize: 14 } });
+    expect(m.state.kind).toBe('syncing');
+    expect(m.apply({ type: 'queue', pendingCount: 0, oldestQueuedAtMs: null }).kind).toBe(
+      'online_synced',
+    );
+  });
+
+  it('becomes stuck only by AGEING while online, and calms back to offline on disconnect', () => {
+    const m = new SyncStatusMachine({ nowMs: T0 });
+    m.apply({ type: 'connectivity', online: true });
+    m.apply({ type: 'queue', pendingCount: 5, oldestQueuedAtMs: T0 });
+    expect(m.state.kind).toBe('syncing');
+    // Time passes with connectivity present and nothing draining.
+    expect(m.apply({ type: 'tick', nowMs: T0 + DEFAULT_STUCK_THRESHOLD_MS + MIN }).kind).toBe(
+      'stuck',
+    );
+    // Losing connectivity is NOT an escalation: back to calm offline.
+    expect(m.apply({ type: 'connectivity', online: false }).kind).toBe('offline');
+  });
+});
+
+describe('statusLine wording', () => {
+  const clock = (): string => '09:12';
+
+  it('matches the §8.4 table', () => {
+    expect(statusLine({ kind: 'online_synced' })).toBe('Online · all saved');
+    expect(statusLine({ kind: 'offline', pendingCount: 14 })).toBe('Offline · 14 sales waiting');
+    expect(
+      statusLine({
+        kind: 'syncing',
+        pendingCount: 14,
+        progress: { sentCount: 9, batchSize: 14 },
+      }),
+    ).toBe('Sending · 9 of 14');
+    expect(
+      statusLine(
+        { kind: 'stuck', pendingCount: 14, oldestQueuedAtMs: T0 },
+        { formatClock: clock },
+      ),
+    ).toBe('Not sending · 14 sales waiting since 09:12 — tell your manager');
+  });
+
+  it('uses honest local-only wording when no sync endpoint is configured', () => {
+    expect(statusLine({ kind: 'offline', pendingCount: 3 }, { localOnly: true })).toBe(
+      'Local only · 3 sales saved on this device',
+    );
+    expect(statusLine({ kind: 'online_synced' }, { localOnly: true })).toBe(
+      'Local only · all saved on this device',
+    );
+  });
+
+  it('never contains alarm words: offline is a state, not an error', () => {
+    const states: SyncUiState[] = [
+      { kind: 'online_synced' },
+      { kind: 'offline', pendingCount: 7 },
+      { kind: 'syncing', pendingCount: 7, progress: null },
+      { kind: 'stuck', pendingCount: 7, oldestQueuedAtMs: T0 },
+    ];
+    for (const state of states) {
+      for (const localOnly of [true, false]) {
+        const line = statusLine(state, { formatClock: clock, localOnly });
+        expect(line.toLowerCase()).not.toContain('error');
+        expect(line.toLowerCase()).not.toContain('fail');
+        expect(line.toLowerCase()).not.toContain('warning');
+      }
+    }
+  });
+});

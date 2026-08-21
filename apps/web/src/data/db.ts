@@ -20,6 +20,26 @@ export interface DbExecutor {
   getAll(sql: string, params?: readonly SqlValue[]): Promise<DbRow[]>;
 }
 
+/** Upload progress snapshot for the status bar's "Sending · x of y" (§8.4). */
+export interface UploadProgressSnapshot {
+  readonly sentCount: number;
+  readonly batchSize: number;
+}
+
+/**
+ * What the connector runtime exposes to the UI (§8.4): REAL connector
+ * connectivity (the PowerSync stream, not `navigator.onLine` guesswork) and
+ * upload progress while the outbox drains. Absent in local-only mode and in
+ * the node test adapter — consumers must fall back gracefully.
+ */
+export interface SyncStatusSource {
+  readonly connected: boolean;
+  /** Fires on connectivity change. Returns unsubscribe. */
+  onConnectivity(listener: (online: boolean) => void): () => void;
+  /** Fires during outbox drains; `null` marks the end of a pass. Returns unsubscribe. */
+  onProgress(listener: (progress: UploadProgressSnapshot | null) => void): () => void;
+}
+
 export interface LocalDb extends DbExecutor {
   /**
    * One local ACID transaction. Everything a sale needs commits or rolls back
@@ -30,6 +50,8 @@ export interface LocalDb extends DbExecutor {
   writeTransaction<T>(fn: (tx: DbExecutor) => Promise<T>): Promise<T>;
   /** Change notifications for live-ish reads (see DataBus). */
   readonly changes: DataBus;
+  /** Connector status feed — present only when a sync stack is configured. */
+  readonly sync?: SyncStatusSource;
 }
 
 /**

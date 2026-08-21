@@ -29,7 +29,8 @@ export interface CreditPolicy {
   feeOnFee: boolean;
   /** D-3 — day count; provisional default: 30E/360 pro-rata. */
   feeDayCount: FeeDayCount;
-  feeGraceDays: number;
+  /** Days past due before accrual starts — a day COUNT, not a money amount. */
+  feeGraceDays: number; // lint-money-ignore — calendar-day count, not minor units
   /** Ageing bucket upper bounds in days past due. Template: [30, 60, 90]. */
   ageingBucketDays: readonly number[];
   /** The §6.4.5 gate. null = UNCONFIRMED = the accrual refuses to post. */

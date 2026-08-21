@@ -2,15 +2,31 @@
   "name": "erp-platform",
   "private": true,
   "packageManager": "pnpm@9.15.9",
-  "engines": { "node": ">=20" },
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "build": "turbo run build",
     "test": "turbo run test",
     "typecheck": "turbo run typecheck",
-    "lint:money": "node tools/lint-money.mjs"
+    "lint:money": "node tools/lint-money.mjs",
+    "stack:up": "node infra/scripts/stack.mjs up",
+    "stack:down": "node infra/scripts/stack.mjs down",
+    "stack:reset": "node infra/scripts/stack.mjs reset",
+    "stack:bootstrap": "tsx infra/scripts/bootstrap.ts"
   },
   "devDependencies": {
+    "@erp/db": "workspace:*",
+    "@types/pg": "^8.11.10",
+    "pg": "^8.13.1",
+    "tsx": "^4.19.2",
     "turbo": "^2.3.3",
     "typescript": "^5.7.2"
+  },
+  "pnpm": {
+    "overrides": {
+      "@swc/core": "1.12.14",
+      "@swc/wasm": "1.12.14"
+    }
   }
 }
