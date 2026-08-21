@@ -73,3 +73,4 @@ Each phase ends with a working, demoable system and a sign-off gate.
 Originals live in `~/Documents/Agyasei/` (business plan, financial model, stock list, investor
 deck) and the brief at `~/Downloads/Prompt for Claude Code.docx`. Extracts in
 `docs/source-of-truth/` exist so nothing has to re-parse `.docx` and `.xlsx` — use those.
+# agyasei-erp
