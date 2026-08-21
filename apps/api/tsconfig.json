@@ -1,0 +1,16 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "types": ["node"],
+    "lib": ["ES2022"],
+    "baseUrl": ".",
+    "paths": {
+      "@erp/money": ["../../packages/money/src/index.ts"],
+      "@erp/db": ["../../packages/db/src/index.ts"],
+      "@erp/db/testing": ["../../packages/db/src/testing/harness.ts"],
+      "@erp/db/seed": ["../../packages/db/src/seed/index.ts"]
+    }
+  },
+  "include": ["src/**/*.ts", "test/**/*.ts", "vitest.config.ts"]
+}

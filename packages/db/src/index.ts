@@ -1,0 +1,14 @@
+/**
+ * @erp/db — schema source of truth, tenant machinery, seeds and the
+ * isolation test harness.
+ *
+ * The hand-written SQL in ./migrations is THE schema. src/schema.ts mirrors
+ * it for typed queries (Drizzle mirrors, never generates). Everything
+ * tenant-owned goes through tenantTable(), which makes omitting tenant_id
+ * structurally impossible (CLAUDE.md §2.1, ADR-0005).
+ */
+export { migrate, MIGRATIONS_DIR, type SqlClient, type MigrateResult } from './migrate.js';
+export { tenantTable, registeredAppTableNames, WRITE_ID_EXEMPT, appSchema, platformSchema } from './tenant-table.js';
+export * as schema from './schema.js';
+export { createHlcClock, hlcNodeFromName, randomHlcNode, HLC_RE, type HlcClock } from './hlc.js';
+export { uuidv7, deterministicUuid, sha256Hex } from './ids.js';

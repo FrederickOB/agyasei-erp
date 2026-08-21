@@ -88,7 +88,10 @@ create trigger stock_movement_append_only
 -- evaluated as the querying role, not the view owner (04 §4.2.5).
 create view app.stock_on_hand
   with (security_invoker = true) as
-select tenant_id, location_id, product_id, sum(qty_delta) as qty_on_hand
+select tenant_id, location_id, product_id,
+       -- sum(bigint) is numeric; cast back so no numeric type ever surfaces
+       -- from the app schema (ADR-0004 — one canonical integer type).
+       sum(qty_delta)::bigint as qty_on_hand
 from app.stock_movement
 group by 1, 2, 3;
 

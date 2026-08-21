@@ -1,0 +1,6 @@
+{
+  "build_id": "dev",
+  "min_client_schema": 1,
+  "max_client_schema": 1,
+  "cohort": "dev"
+}

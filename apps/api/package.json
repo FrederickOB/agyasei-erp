@@ -1,0 +1,29 @@
+{
+  "name": "@erp/api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "The write path and Phase 1 routers: Fastify + tRPC, server-stamped HLC, one idempotent write pipeline over app.write_log.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@erp/db": "workspace:*",
+    "@erp/money": "workspace:*",
+    "@trpc/server": "^11.0.0",
+    "fastify": "^5.2.0",
+    "jose": "^5.9.6",
+    "superjson": "^2.2.2",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "^0.2.17",
+    "@types/node": "^22.10.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}
