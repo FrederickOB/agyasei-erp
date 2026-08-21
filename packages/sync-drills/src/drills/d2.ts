@@ -13,6 +13,7 @@
  *   - app.write_log holds exactly ONE row per op key, and exactly one
  *     stock_movement row exists per op (ids are key-derived).
  */
+import type { RecordMovementInput } from '@erp/contracts';
 import { deterministicUuid } from '@erp/db';
 import { pollUntil } from '../device.js';
 import { movementOp, type DrillContext } from '../context.js';
@@ -29,7 +30,12 @@ export async function runD2(cx: DrillContext): Promise<DrillResult> {
   await Promise.all([cx.a1.disconnect(), cx.a2.disconnect()]);
 
   // -- offline writes on both sides, same SKU ------------------------------
-  const plan: { dev: 'a1' | 'a2'; delta: bigint; kind: string; reason: string }[] = [
+  const plan: {
+    dev: 'a1' | 'a2';
+    delta: bigint;
+    kind: RecordMovementInput['sourceKind'];
+    reason: string;
+  }[] = [
     { dev: 'a1', delta: 50n, kind: 'RECEIPT', reason: 'TRANSFER' },
     { dev: 'a1', delta: -20n, kind: 'WRITE_OFF', reason: 'DAMAGE' },
     { dev: 'a2', delta: 80n, kind: 'RECEIPT', reason: 'TRANSFER' },

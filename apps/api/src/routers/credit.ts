@@ -23,6 +23,7 @@
  */
 import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
+import { openAccountInput, recordEntryInput } from '@erp/contracts';
 import { deterministicUuid } from '@erp/db';
 import { mulDiv } from '@erp/money';
 import { days30, type CreditPolicy } from '../credit-policy.js';
@@ -35,41 +36,17 @@ import {
   mutationEnvelope,
   wire,
   zBusinessDate,
-  zScaledInt,
-  zScaledIntNonNeg,
   zUuid,
 } from '../wire.js';
 
-const openAccountInput = z
-  .object({
-    ...mutationEnvelope,
-    customerId: zUuid.optional(),
-    newCustomer: z
-      .object({ code: z.string().min(1).max(64), name: z.string().min(1), phone: z.string().optional() })
-      .strict()
-      .optional(),
-    termsDays: z.number().int().min(0).max(365),
-    /** Basis points per month, per ACCOUNT (ADR-0006). 2%/month = 200. */
-    feeRateBpPerMonth: z.number().int().min(0).max(10_000),
-    creditLimitMinor: zScaledIntNonNeg,
-  })
-  .strict()
-  .refine((v) => (v.customerId === undefined) !== (v.newCustomer === undefined), {
-    message: 'provide exactly one of customerId or newCustomer',
-  });
-
-const recordEntryInput = z
-  .object({
-    ...mutationEnvelope,
-    accountId: zUuid,
-    kind: z.enum(['CHARGE', 'PAYMENT', 'ADJUSTMENT', 'WRITE_OFF']), // FEE is accrual-only
-    /** SIGNED minor units: CHARGE > 0, PAYMENT/WRITE_OFF < 0 (ce_sign). */
-    amountMinor: zScaledInt.refine((v) => v !== 0n, 'amount must be non-zero'),
-    businessDate: zBusinessDate,
-    dueDate: zBusinessDate.optional(),
-    appliesToId: zUuid.optional(),
-  })
-  .strict();
+/**
+ * The two DEVICE-UPLOADABLE input shapes — `openAccountInput` and
+ * `recordEntryInput` — are not defined here. They live in `@erp/contracts`,
+ * the one declaration both sides of the wire import, so a device builder
+ * cannot be written against a shape this router will reject (see
+ * `packages/contracts/src/device-ops.ts` for why that rule exists). The
+ * query and accrual inputs below stay local: they are not device writes.
+ */
 
 interface EntryRow {
   id: string;

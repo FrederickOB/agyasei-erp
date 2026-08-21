@@ -18,6 +18,7 @@
  * No `@powersync/web` import here: this module is plain logic so the unit
  * tests can exercise it with a mocked fetch (no live service).
  */
+import { syncTokenResponse } from '@erp/contracts';
 
 export interface FetchedSyncToken {
   /** The PowerSync client JWT (opaque to us). */
@@ -111,14 +112,22 @@ export class CredentialCache {
       throw new TokenEndpointError(res.status, `token endpoint answered ${res.status}`);
     }
     const body: unknown = await res.json();
-    if (typeof body !== 'object' || body === null) {
-      throw new TokenEndpointError(res.status, 'token endpoint returned a non-object body');
+    // PARSED WITH THE CONTRACT, not with hand-rolled key extraction. The three
+    // keys used to be picked out of an `unknown` here and assembled by hand in
+    // `apps/api/src/sync.ts`, with no shared declaration between them — the
+    // same two-sides-one-shape gap that made every sale a BAD_REQUEST, in the
+    // download direction. A rename on the server is now a compile error there
+    // and a named parse failure here.
+    const parsed = syncTokenResponse.safeParse(body);
+    if (!parsed.success) {
+      throw new TokenEndpointError(
+        res.status,
+        `token endpoint body does not match the contract: ${parsed.error.issues
+          .map((i) => `${i.path.join('.') || '(root)'}: ${i.message}`)
+          .join('; ')}`,
+      );
     }
-    const token = (body as Record<string, unknown>)['token'];
-    const expiresAt = (body as Record<string, unknown>)['expires_at'];
-    if (typeof token !== 'string' || token.length === 0 || typeof expiresAt !== 'string') {
-      throw new TokenEndpointError(res.status, 'token endpoint body missing token/expires_at');
-    }
+    const { token, expires_at: expiresAt } = parsed.data;
     const expiresAtMs = Date.parse(expiresAt);
     if (Number.isNaN(expiresAtMs)) {
       throw new TokenEndpointError(res.status, `unparseable expires_at: ${expiresAt}`);

@@ -6,6 +6,7 @@ import { oneWholeUnit } from '../../lib/quantity';
 import { uuidv7 } from '../../lib/uuidv7';
 import type { LocalDb } from '../db';
 import type { ProductWithPrice } from '../queries/products';
+import { readActivePriceListId } from '../queries/session';
 
 export interface CreateCartOptions {
   readonly id?: string;
@@ -17,13 +18,21 @@ export interface CreateCartOptions {
  * Mint the cart. Its UUIDv7 id is the future sale id AND the idempotency key,
  * generated HERE — at cart creation, before the first line — not at the
  * moment "Complete" is tapped (§8.2).
+ *
+ * The cart also pins the price list it is being rung against, resolved from
+ * device configuration when the caller does not name one. The API prices by
+ * price-list CODE and the sale resolves the code from this id, so a cart with
+ * no list is a sale the server cannot price — better to carry it from the
+ * first line than to discover it at tender.
  */
 export async function createCart(db: LocalDb, options: CreateCartOptions = {}): Promise<string> {
   const id = options.id ?? uuidv7();
   const nowIso = options.nowIso ?? new Date().toISOString();
+  const priceListId =
+    options.priceListId !== undefined ? options.priceListId : await readActivePriceListId(db);
   await db.execute(
     `INSERT INTO cart (id, created_at, price_list_id, status) VALUES (?, ?, ?, 'open')`,
-    [id, nowIso, options.priceListId ?? null],
+    [id, nowIso, priceListId],
   );
   db.changes.notify();
   return id;

@@ -11,41 +11,19 @@
  */
 import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
+import { recordMovementInput } from '@erp/contracts';
 import { deterministicUuid } from '@erp/db';
 import type { Queryable } from '../db.js';
 import { runIdempotent } from '../pipeline.js';
 import { assertLocationInScope, router, tenantProcedure } from '../trpc.js';
-import { mutationEnvelope, wire, zBusinessDate, zScaledInt, zScaledIntPos, zUuid } from '../wire.js';
+import { wire, zUuid } from '../wire.js';
 
-/** Device-recordable movement kinds. SALE / SALE_RETURN movements are
- *  written by the sales document, never directly. */
-const DIRECT_KINDS = [
-  'OPENING',
-  'RECEIPT',
-  'RETURN_TO_SUPPLIER',
-  'TRANSFER_OUT',
-  'TRANSFER_IN',
-  'COUNT_ADJUST',
-  'WRITE_OFF',
-  'CORRECTION',
-] as const;
-
-const recordMovementInput = z
-  .object({
-    ...mutationEnvelope,
-    locationId: zUuid,
-    productId: zUuid,
-    /** SIGNED scaled integer in the product's STOCKING unit. */
-    qtyDelta: zScaledInt.refine((v) => v !== 0n, 'qty_delta must be non-zero'),
-    sourceKind: z.enum(DIRECT_KINDS),
-    /** Tenant-defined reason vocabulary — resolved, never branched on. */
-    reasonCode: z.string().min(1),
-    businessDate: zBusinessDate,
-    occurredAt: z.string().datetime({ offset: true }).optional(),
-    /** Inbound unit cost, e4 (minor units × 10⁴). */
-    unitCostE4: zScaledIntPos.optional(),
-  })
-  .strict();
+/**
+ * The INPUT SHAPE is not defined here. `recordMovementInput` lives in
+ * `@erp/contracts`, the one declaration both sides of the wire import, so a
+ * device builder cannot be written against a shape this router will reject
+ * (see `packages/contracts/src/device-ops.ts` for why that rule exists).
+ */
 
 export interface ProductStockInfo {
   productId: string;

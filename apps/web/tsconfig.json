@@ -12,6 +12,7 @@
     "types": ["vite/client", "vite-plugin-pwa/client", "node"],
     "baseUrl": ".",
     "paths": {
+      "@erp/contracts": ["../../packages/contracts/src/index.ts"],
       "@erp/money": ["../../packages/money/src/index.ts"]
     }
   },

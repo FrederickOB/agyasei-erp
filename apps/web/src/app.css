@@ -391,3 +391,110 @@ body {
 .money {
   font-variant-numeric: tabular-nums;
 }
+
+/* ---- a refused sale is WORK, not a toast (§8.5) ----
+   Permanent until the cashier acts on it: the cart is still there, the sale
+   was not recorded, and a message that faded would leave someone believing it
+   was. Attention colour, full width, above everything on the counter. */
+.sale-refused {
+  margin: 0 0 var(--gap);
+  padding: var(--gap);
+  border: 2px solid var(--attn);
+  border-radius: 8px;
+  background: var(--card);
+  color: var(--attn);
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+/* ---- device setup gate: a hard block, never a half-working till (§8.1) ----
+   Full screen, plain words, and the only actions offered are the ones the
+   session already permits. Text carries the meaning; colour reinforces it. */
+.device-gate {
+  padding: 24px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap);
+  max-width: 40rem;
+}
+.device-gate h1 {
+  margin: 0;
+  font-size: 1.4rem;
+}
+.device-gate h2 {
+  margin: var(--gap) 0 0;
+  font-size: 1.1rem;
+}
+.device-gate-message {
+  margin: 0;
+  padding: var(--gap);
+  border: 2px solid var(--attn);
+  border-radius: 8px;
+  background: var(--card);
+  color: var(--attn);
+  font-weight: 600;
+  line-height: 1.4;
+}
+.device-gate-choices {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap);
+}
+.device-gate-choice {
+  width: 100%;
+  min-height: var(--tap-min);
+  padding: var(--gap);
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  border: 2px solid var(--line);
+  border-radius: 8px;
+  background: var(--card);
+  color: inherit;
+  font: inherit;
+  text-align: left;
+}
+.device-gate-choice:disabled {
+  opacity: 0.6;
+}
+.device-gate-choice-name {
+  font-weight: 700;
+}
+.device-gate-choice-code {
+  font-size: 0.9rem;
+}
+.device-gate-note,
+.device-gate-error {
+  margin: 0;
+  line-height: 1.4;
+}
+.device-gate-error {
+  color: var(--attn);
+  font-weight: 600;
+}
+
+/* ---- a device that was re-bound says so, above the counter, until read ---- */
+.device-notice {
+  margin: 0;
+  padding: var(--gap);
+  display: flex;
+  align-items: center;
+  gap: var(--gap);
+  border-bottom: 2px solid var(--line);
+  background: var(--card);
+  line-height: 1.4;
+}
+.device-notice button {
+  min-height: 44px;
+  padding: 0 var(--gap);
+  border: 2px solid var(--line);
+  border-radius: 8px;
+  background: var(--paper);
+  color: inherit;
+  font: inherit;
+  font-weight: 600;
+}

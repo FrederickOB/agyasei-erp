@@ -9,15 +9,27 @@ import type { DbRow, LocalDb } from '../db';
 export interface RecordedSale {
   readonly id: string;
   readonly createdAt: string;
+  /** The device-allocated number printed on the customer's copy (03 §3.7.5). */
+  readonly receiptNo: string | null;
   readonly totalMinor: bigint;
+  /** Cash tendered and change — DEVICE-LOCAL, never on the wire (see checkout.ts). */
+  readonly tenderedMinor: bigint | null;
+  readonly changeMinor: bigint | null;
   readonly syncState: RecordSyncState;
+}
+
+function optionalBig(value: unknown): bigint | null {
+  return value === null || value === undefined ? null : BigInt(String(value));
 }
 
 function mapSale(row: DbRow): RecordedSale {
   return {
     id: String(row['id']),
     createdAt: String(row['created_at']),
+    receiptNo: row['receipt_no'] === null ? null : String(row['receipt_no']),
     totalMinor: BigInt(String(row['total_minor'])), // CAST AS TEXT -> bigint, once, here
+    tenderedMinor: optionalBig(row['tendered_minor']),
+    changeMinor: optionalBig(row['change_minor']),
     syncState: deriveRecordSyncState({
       server_ack_at: row['server_ack_at'] === null ? null : String(row['server_ack_at']),
       rejected_at: row['rejected_at'] === null ? null : String(row['rejected_at']),
@@ -27,8 +39,10 @@ function mapSale(row: DbRow): RecordedSale {
 
 export async function recentSales(db: LocalDb, limit = 20): Promise<RecordedSale[]> {
   const rows = await db.getAll(
-    `SELECT id, created_at, server_ack_at, rejected_at,
-            CAST(total_minor AS TEXT) AS total_minor
+    `SELECT id, created_at, server_ack_at, rejected_at, receipt_no,
+            CAST(total_minor AS TEXT) AS total_minor,
+            CAST(tendered_minor AS TEXT) AS tendered_minor,
+            CAST(change_minor AS TEXT) AS change_minor
        FROM outbox
       WHERE kind = 'sale'
       ORDER BY created_at DESC, id DESC
@@ -40,8 +54,10 @@ export async function recentSales(db: LocalDb, limit = 20): Promise<RecordedSale
 
 export async function getRecordedSale(db: LocalDb, saleId: string): Promise<RecordedSale | null> {
   const rows = await db.getAll(
-    `SELECT id, created_at, server_ack_at, rejected_at,
-            CAST(total_minor AS TEXT) AS total_minor
+    `SELECT id, created_at, server_ack_at, rejected_at, receipt_no,
+            CAST(total_minor AS TEXT) AS total_minor,
+            CAST(tendered_minor AS TEXT) AS tendered_minor,
+            CAST(change_minor AS TEXT) AS change_minor
        FROM outbox
       WHERE kind = 'sale' AND id = ?
       LIMIT 1`,

@@ -1,0 +1,30 @@
+{
+  "name": "@erp/contracts",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "The ONE client<->server wire contract. Zod schemas plus their inferred types, imported by apps/api AND apps/web so a shape disagreement is a compile error, not a runtime BAD_REQUEST. Depends on zod only: it must bundle for the browser.",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.2",
+    "vitest": "^3.2.4"
+  }
+}

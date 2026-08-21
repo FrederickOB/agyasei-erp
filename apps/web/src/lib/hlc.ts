@@ -27,6 +27,19 @@ export function randomDeviceNode(): string {
   return out;
 }
 
+/**
+ * The device node id carried inside a claimed HLC. Reading it back off the
+ * value being written keeps ONE source for "which device is this write from":
+ * the receipt number's device tag and the write's clock assertion can never
+ * disagree about the device that produced them.
+ */
+export function deviceNodeFromClaimedHlc(claimedHlc: string): string {
+  if (!CLAIMED_HLC_RE.test(claimedHlc)) {
+    throw new Error(`not a claimed HLC: ${claimedHlc}`);
+  }
+  return claimedHlc.slice(-32);
+}
+
 export function createClaimedHlcClock(
   node32hex: string,
   now: () => number = Date.now,

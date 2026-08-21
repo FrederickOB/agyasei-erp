@@ -9,7 +9,7 @@ import { recentSales } from '../../data/queries/sales';
 import { useLiveQuery } from '../../data/use-live-query';
 import { recordBadgeLabel } from '../../lib/badges';
 import { Money } from '../../money/Money';
-import { shortSaleNumber } from '../counter/ReceiptView';
+import { saleNumberLabel } from '../counter/ReceiptView';
 
 function timeOf(iso: string): string {
   const d = new Date(iso);
@@ -27,7 +27,7 @@ export function SalesList({ db }: { readonly db: LocalDb }): ReactNode {
     <ul className="sales-list" aria-label="Recent sales">
       {sales.map((sale) => (
         <li key={sale.id} className="sales-row">
-          <span className="sales-number">Sale {shortSaleNumber(sale.id)}</span>
+          <span className="sales-number">Sale {saleNumberLabel(sale)}</span>
           <span className="sales-time">{timeOf(sale.createdAt)}</span>
           <Money amount={sale.totalMinor} className="money sales-total" />
           <span className={`sync-badge badge-${sale.syncState}`}>

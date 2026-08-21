@@ -9,6 +9,12 @@
  *   B1     — tenant B (kumasi-builders) at MAIN: the isolation probe (D5).
  */
 import { rmSync, mkdirSync } from 'node:fs';
+import type {
+  CreateSaleInput,
+  MutationEnvelope,
+  OpenAccountInput,
+  RecordMovementInput,
+} from '@erp/contracts';
 import { DrillDevice, pollUntil } from './device.js';
 import { ServerDb } from './serverdb.js';
 import { DRILL_DATA_DIR, loadDevTenants, todayBusinessDate, type DevTenants } from './env.js';
@@ -35,13 +41,28 @@ export interface DrillContext {
   b1: DrillDevice;
 }
 
+/**
+ * A drill payload MINUS the write envelope — `DrillDevice.flushOutbox` supplies
+ * the idempotency key, the claimed HLC and the wall clock from the outbox row.
+ *
+ * TYPED AGAINST `@erp/contracts`, and that is the point of this file changing.
+ * These helpers used to return `Record<string, unknown>`: the drills invented
+ * their own idea of each payload, agreed with the server and with nothing else,
+ * which is why D1–D5 stayed green while every sale the PWA uploaded was
+ * rejected BAD_REQUEST. A drill payload that no longer matches the contract is
+ * now a compile error here — and D6 additionally runs the CLIENT's real
+ * builder, because a drill agreeing with the contract still does not prove the
+ * PWA does.
+ */
+type DrillPayload<T> = Omit<T, keyof MutationEnvelope>;
+
 export function saleOp(
   locationId: string,
   productId: string,
   receiptNo: string,
   businessDate: string,
   qty = '2',
-): Record<string, unknown> {
+): DrillPayload<CreateSaleInput> {
   return {
     locationId,
     priceListCode: 'WHOLESALE',
@@ -56,11 +77,24 @@ export function movementOp(
   locationId: string,
   productId: string,
   qtyDelta: string,
-  sourceKind: string,
+  sourceKind: RecordMovementInput['sourceKind'],
   reasonCode: string,
   businessDate: string,
-): Record<string, unknown> {
+): DrillPayload<RecordMovementInput> {
   return { locationId, productId, qtyDelta, sourceKind, reasonCode, businessDate };
+}
+
+export function openAccountOp(
+  code: string,
+  name: string,
+  creditLimitMinor: string,
+): DrillPayload<OpenAccountInput> {
+  return {
+    newCustomer: { code, name },
+    termsDays: 30,
+    feeRateBpPerMonth: 200,
+    creditLimitMinor,
+  };
 }
 
 export async function createContext(): Promise<DrillContext> {
@@ -105,12 +139,10 @@ export async function warmUp(cx: DrillContext): Promise<void> {
     'stock.record_movement',
     movementOp(cx.locA1, cx.productA.id, '500', 'OPENING', 'OPENING', cx.businessDate),
   );
-  await cx.a1.recordToOutbox('credit.open_account', {
-    newCustomer: { code: `CUST-A-${cx.runId}`, name: 'Drill Contractor A' },
-    termsDays: 30,
-    feeRateBpPerMonth: 200,
-    creditLimitMinor: '1000000',
-  });
+  await cx.a1.recordToOutbox(
+    'credit.open_account',
+    openAccountOp(`CUST-A-${cx.runId}`, 'Drill Contractor A', '1000000'),
+  );
   const acksA = await cx.a1.flushOutbox();
   // Tenant B: opening stock + a sale + a credit account, so tenant B has
   // rows in sale/sale_line/sale_tax_line/stock_movement/customer.
@@ -122,12 +154,10 @@ export async function warmUp(cx: DrillContext): Promise<void> {
     'sale.create',
     saleOp(cx.locB, cx.productB.id, `B-${cx.runId}-1`, cx.businessDate, '3'),
   );
-  await cx.b1.recordToOutbox('credit.open_account', {
-    newCustomer: { code: `CUST-B-${cx.runId}`, name: 'Drill Contractor B' },
-    termsDays: 30,
-    feeRateBpPerMonth: 200,
-    creditLimitMinor: '500000',
-  });
+  await cx.b1.recordToOutbox(
+    'credit.open_account',
+    openAccountOp(`CUST-B-${cx.runId}`, 'Drill Contractor B', '500000'),
+  );
   const acksB = await cx.b1.flushOutbox();
   const bad = [...acksA, ...acksB].filter((a) => a.status !== 'applied');
   if (bad.length > 0) {

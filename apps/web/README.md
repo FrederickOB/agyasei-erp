@@ -36,18 +36,43 @@ pnpm typecheck
 
 | Area | Where | Notes |
 |---|---|---|
-| Local schema (one definition) | `src/data/schema.ts` | Synced-shape `product`/`price`/`stock_snapshot`; local-only `cart`, `cart_line`, `outbox`, `local_config`. Same definition builds the PowerSync schema and the test DDL. |
+| **Wire contract** | `@erp/contracts` | The ONE client↔server declaration. `buildSalePayload` returns a value **typed as** `CreateSaleInput` and parses its own JSON with `createSaleInput` before the outbox insert, so a divergence is a compile error, then a counter-visible refusal — never a BAD_REQUEST at a till in Techiman. The upload envelope and the 500-op batch cap come from the same package. |
+| Local schema (one definition) | `src/data/schema.ts` | Synced-shape `product`/`price`/`stock_snapshot` + the synced bucket mirrors; local-only `cart`, `cart_line`, `outbox`, `sequence_block`, `local_config`. Same definition builds the PowerSync schema and the test DDL. |
+| Receipt numbers, offline | `src/lib/receipt-number.ts`, `src/data/sequence.ts` | Per-location blocks drawn down inside the checkout transaction, zero connectivity (03 §3.7.5). A server-allocated block prints bare; a self-issued one carries a device tag, because that is the only thing that makes it un-collidable between two tills that cannot see each other. Format is tenant configuration; the platform fallback carries no tenant's words. |
 | Money discipline | `src/data/queries/*`, `src/money/*` | Every money/qty column read as `CAST(col AS TEXT)` → `BigInt()`; display only via `@erp/money` `format()` with the CurrencySpec from `local_config`. A grep test bans literal symbols and tenant vocabulary. |
 | Four offline states | `src/state/sync-status.ts` | Explicit machine: online-synced / offline / syncing / **stuck**; calm permanent status bar, never a toast, never the word "error". |
 | Per-record badges | `src/lib/badges.ts`, sales list & receipt | `Waiting to send` / `Saved` / `Needs checking`, derived from data (`server_ack_at`, `rejected_at`). |
-| Atomic checkout | `src/data/mutations/checkout.ts` | One transaction: outbox insert + cart clear. Fault-injection test proves rollback of both sides. Q8 seam documented in the payload builder — sale capture only, no e-invoice issuance/clearance fields. |
+| Atomic checkout | `src/data/mutations/checkout.ts` | One transaction: receipt-number draw + outbox insert + cart clear. Fault-injection test proves rollback of all three — a failed sale burns no number. Q8 seam documented in the payload builder — sale capture only, no e-invoice issuance/clearance fields. |
+| Server is the pricing authority | `src/data/mutations/checkout.ts` | The wire carries product + quantity; the server reprices from the price list and tax table in force on `businessDate`. The till still computes its own total locally for display and the offline receipt, and puts it on the wire in exactly one place — `clientTotalMinor`, the contract's stale-price-list detector, which the server compares and never obeys. Cash tendered/change stay in local outbox columns. |
 | Version-gated SW updates | `src/sw/version-gate.ts`, `src/sw/register.ts` | `skipWaiting` off; the client asks `release.json` (stubbed in `public/`) which build to run before activating a waiting worker; applies only at a safe point. |
+
+## Device provisioning
+
+A sale needs to know where it is being rung. These live in `local_config` and
+are read by `src/data/queries/session.ts`; the dev seed writes them, and in
+production they are provisioned at enrolment from the verified session — never
+guessed, because a sale filed against the wrong outlet moves stock and cash at
+a counter that never saw it.
+
+| Key | What |
+|---|---|
+| `location_id` | The location this device trades at. Its `code` and `timezone` come from the synced `location` row; the trading day is derived in that timezone. |
+| `location_code` | Fallback code, used only until the synced row arrives. |
+| `price_list_id` | The list the counter sells from. The cart pins it; the sale sends the resolved **code**, which is how the API names a price list. |
+| `receipt_number_format` | `{template, width, prefix}` — jurisdiction pack + tenant override (03 §3.7.5). Absent it, a neutral platform fallback. |
+
+Missing any of these is a **refusal to record**, surfaced on the counter with
+the cart intact, not a default.
 
 ## Integration notes
 
-- `@erp/money` is declared `workspace:*` **and** aliased to its source
+- `@erp/contracts` and `@erp/money` are declared `workspace:*` **and** aliased to their source
   (`vite.config.ts` `resolve.alias`, `tsconfig.json` `paths`) so build, tests
-  and typecheck don't depend on the package's `dist/` being built first.
+  and typecheck don't depend on those packages' `dist/` being built first.
+- `tests/live-upload.smoke.ts` is **not** collected by vitest. With the stack
+  up and an API dev server on the current source, it ships a payload built by
+  the client's own `buildSalePayload`, through the client's own transport, to
+  the real `POST /sync/upload` — demonstrated, not asserted.
 - The live-query layer is a small change-bus (`src/data/db.ts`); swapping it
   for PowerSync incremental watch queries is contained inside `src/data/`.
 - Tests run the real SQL against real SQLite via `node:sqlite` (Node ≥ 22.5),
