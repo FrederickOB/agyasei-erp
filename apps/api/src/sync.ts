@@ -64,6 +64,19 @@ export type UploadAckStatus = 'applied' | 'duplicate' | 'rejected';
 export interface UploadAck {
   key: string;
   status: UploadAckStatus;
+  /**
+   * The mutation's stored response, for the few ops where the DEVICE cannot
+   * know the answer on its own. A sale needs nothing back — the device already
+   * holds every value it sent. A sequence-block report does: the server decides
+   * which numbers this device may use next, and after a regression that is a
+   * DIFFERENT block from the one the device asked about (03 §3.7.5).
+   *
+   * Deliberately not returned for every op: echoing a full sale DTO for each of
+   * up to 500 ops would bloat the batch response for nothing. Replays carry it
+   * too — the pipeline replays response_body verbatim, so a device that lost
+   * the answer to a network failure still learns its block on retry.
+   */
+  result?: unknown;
   /** Only on `rejected`. Prefixed with the TRPC error code so the client
    *  connector can apply the §3.3.4 retry taxonomy (e.g. a
    *  `CONFLICT: RETRY_LATER…` or `INTERNAL_SERVER_ERROR…` is retryable;
@@ -85,11 +98,18 @@ const DEVICE_OPS: Record<string, (caller: Caller, input: Record<string, unknown>
   'stock.record_movement': (c, i) => c.inventory.recordMovement(i as never),
   'credit.open_account': (c, i) => c.credit.openAccount(i as never),
   'credit.record_entry': (c, i) => c.credit.recordEntry(i as never),
+  // Report this device's sequence cursor and take a block (03 §3.7.5). It
+  // rides the same ordered outbox as every other write, so the report a device
+  // queues while offline reaches the server before the sales that follow it.
+  'sequence.sync_block': (c, i) => c.sequence.syncBlock(i as never),
 };
 
 /** Tenant identity never comes from a client payload (CLAUDE.md §2.1) —
  *  any spelling of it in an op payload is stripped and ignored. */
 const FORGED_IDENTITY_KEYS = ['tenant_id', 'tenantId', 'tid'] as const;
+
+/** Ops whose ack carries the stored response back (see UploadAck.result). */
+const RESULT_OPS: ReadonlySet<string> = new Set(['sequence.sync_block']);
 
 function reasonFrom(err: unknown): string {
   if (err instanceof TRPCError) return `${err.code}: ${err.message}`;
@@ -134,8 +154,9 @@ async function applyOne(
   try {
     // One transaction per op (runIdempotent: marker + effect commit
     // atomically); a throw rolls back that op alone — the batch continues.
-    await invoke(caller, input);
-    return { key, status: seen ? 'duplicate' : 'applied' };
+    const result = await invoke(caller, input);
+    const status: UploadAckStatus = seen ? 'duplicate' : 'applied';
+    return RESULT_OPS.has(op.kind) ? { key, status, result } : { key, status };
   } catch (err) {
     return { key, status: 'rejected', reason: reasonFrom(err) };
   }

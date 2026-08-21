@@ -12,11 +12,12 @@
  *     device only touches its local sqlite. flushOutbox() is only called on
  *     reconnect.
  */
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, rmSync } from 'node:fs';
 import { SignJWT } from 'jose';
 import { PowerSyncDatabase } from '@powersync/node';
 import type { PowerSyncBackendConnector } from '@powersync/node';
 import { uuidv7 } from '@erp/db';
+import { blockEnd, nextNumber, renderNumber } from '@erp/sequence';
 import { API_URL, DEV_JWT_SECRET, DRILL_DATA_DIR } from './env.js';
 import { buildDrillSchema } from './schema.js';
 
@@ -26,6 +27,8 @@ export interface UploadAck {
   key: string;
   status: 'applied' | 'duplicate' | 'rejected';
   reason?: string;
+  /** Present for RESULT_OPS (api/src/sync.ts) — today, the block report. */
+  result?: unknown;
 }
 
 export interface OutboxOp {
@@ -140,6 +143,121 @@ export class DrillDevice {
   async close(): Promise<void> {
     if (this.db) await this.db.close();
     this.db = null;
+  }
+
+  /**
+   * Destroy this device's local database and come back with a fresh one —
+   * the OPFS-eviction / PWA-reinstall case (03 §3.7.5, conflict class #14).
+   *
+   * The sqlite file is genuinely deleted, not truncated in memory: the device
+   * returns holding no outbox, no synced rows and — the part that matters — no
+   * `consumed_upto`, while the server still shows its block live. Its identity
+   * (device_id, user_id, tokens) survives, because a reinstall on the SAME
+   * enrolled device is the whole point.
+   */
+  async wipeLocalDatabase(): Promise<void> {
+    await this.close();
+    for (const suffix of ['', '-wal', '-shm']) {
+      rmSync(`${this.dbPath}${suffix}`, { force: true });
+    }
+    await this.open();
+  }
+
+  // ---- receipt numbers: consumed locally, allocated by the server ---------
+
+  /** The block this device is consuming, or null (a wipe leaves null). */
+  async currentBlock(locationId = this.locationId, sequenceKey = 'RECEIPT') {
+    const rows = await this.powersync.getAll<{
+      block_start: string;
+      block_size: number;
+      consumed_upto: string | null;
+      number_format: string;
+      number_prefix: string;
+      location_code: string;
+    }>(
+      `select block_start, block_size, consumed_upto, number_format, number_prefix, location_code
+         from sequence_block where sequence_key = ? and location_id = ? limit 1`,
+      [sequenceKey, locationId],
+    );
+    const row = rows[0];
+    if (!row) return null;
+    return {
+      blockStart: BigInt(row.block_start),
+      blockSize: row.block_size,
+      consumedUpto: row.consumed_upto === null ? null : BigInt(row.consumed_upto),
+      format: {
+        format: row.number_format,
+        prefix: row.number_prefix,
+        locationCode: row.location_code,
+      },
+    };
+  }
+
+  /** Adopt the block the server issued, replacing whatever was here. */
+  async adoptBlock(
+    block: { blockStart: string; blockSize: number },
+    format: { format: string; prefix: string; locationCode: string },
+    sequenceKey = 'RECEIPT',
+  ): Promise<void> {
+    await this.powersync.execute(
+      `delete from sequence_block where sequence_key = ? and location_id = ?`,
+      [sequenceKey, this.locationId],
+    );
+    await this.powersync.execute(
+      `insert into sequence_block
+         (id, sequence_key, location_id, block_start, block_size, consumed_upto,
+          number_format, number_prefix, location_code)
+       values (?, ?, ?, ?, ?, null, ?, ?, ?)`,
+      [
+        uuidv7(),
+        sequenceKey,
+        this.locationId,
+        block.blockStart,
+        block.blockSize,
+        format.format,
+        format.prefix,
+        format.locationCode,
+      ],
+    );
+  }
+
+  /** Issue the next receipt number locally. No network on this path. */
+  async takeReceiptNumber(sequenceKey = 'RECEIPT'): Promise<string> {
+    const block = await this.currentBlock(this.locationId, sequenceKey);
+    if (!block) throw new Error(`${this.name}: no receipt-number block — blocks are never self-issued`);
+    const n = nextNumber(block, block.consumedUpto);
+    if (n === null) throw new Error(`${this.name}: block spent (emergency form is covered elsewhere)`);
+    await this.powersync.execute(
+      `update sequence_block set consumed_upto = ? where sequence_key = ? and location_id = ?`,
+      [n.toString(10), sequenceKey, this.locationId],
+    );
+    return renderNumber(block.format, n);
+  }
+
+  /** The last number in this device's current block (for burn assertions). */
+  async currentBlockEnd(): Promise<bigint | null> {
+    const block = await this.currentBlock();
+    return block === null ? null : blockEnd(block);
+  }
+
+  /**
+   * Queue the reconnect report into the ORDERED outbox — the same queue the
+   * sales use, so it lands ahead of anything queued after it (§3.3).
+   */
+  async queueBlockReport(sequenceKey = 'RECEIPT'): Promise<string> {
+    const block = await this.currentBlock(this.locationId, sequenceKey);
+    return this.recordToOutbox('sequence.sync_block', {
+      locationId: this.locationId,
+      sequenceKey,
+      report:
+        block === null
+          ? null
+          : {
+              blockStart: block.blockStart.toString(10),
+              consumedUpto: block.consumedUpto?.toString(10) ?? null,
+            },
+      wantBlock: true,
+    });
   }
 
   // ---- offline writes: the outbox ---------------------------------------

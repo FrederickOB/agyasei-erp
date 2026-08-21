@@ -43,6 +43,19 @@
 #      that migration lands they sync in a TENANT-scoped bucket below —
 #      tenant isolation fully intact, location narrowing not yet. See
 #      tenant_sale_lines_interim.
+#   d. app.sequence_block, app.sequence_counter and app.conflict_review are
+#      NOT SYNCED, and this one is a DELIBERATE DEVIATION from §3.2.2's
+#      location_ops list rather than an unfinished piece. §3.7.5 makes
+#      `consumed_upto` device-local state that is REPORTED, never authoritative.
+#      Streaming the server's block rows down would hand the device a second,
+#      authoritative-looking copy of its own cursor — and a wiped device would
+#      resync it and believe it, which is exactly the stale-counter defect
+#      04 §4.7 deleted `document_number_range` for. The device learns its block
+#      from the allocation response (POST /sync/upload → sequence.sync_block),
+#      a far narrower channel than a bucket. conflict_review's own product
+#      surface (the badge, the queue screen) is §3.6.2 work and lands with the
+#      tenant_reviews bucket and the permission tables it depends on; until
+#      then reviews are read online, which fails closed.
 # ============================================================================
 
 bucket_definitions:

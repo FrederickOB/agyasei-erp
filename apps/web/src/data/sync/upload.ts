@@ -34,6 +34,13 @@ export interface UploadAck {
   readonly status: AckStatus;
   /** Only on `rejected`; prefixed with the server error code (see api/src/sync.ts). */
   readonly reason?: string;
+  /**
+   * The mutation's stored response, present only for the ops that need it
+   * (api/src/sync.ts RESULT_OPS) — today, the sequence-block report, because
+   * the server decides which numbers this device may use next and after a
+   * regression that is a different block from the one it asked about.
+   */
+  readonly result?: unknown;
 }
 
 /** One pending outbox row, as read from the local queue. */
@@ -65,6 +72,19 @@ export interface UploadTransport {
  * (CONFLICT/RETRY_LATER, UNAUTHORIZED, FORBIDDEN, TIMEOUT, TOO_MANY_REQUESTS,
  * INTERNAL_SERVER_ERROR, …) is retryable — §3.3.4: definitive rejection is
  * the narrow case, and the unknown case defaults to retry, never to loss.
+ *
+ * THIS SET IS DELIBERATELY NOT WIDENED FOR RECEIPT-NUMBER COLLISIONS, and the
+ * reason is worth stating because it looks like an easy fix. A duplicate
+ * `sale_receipt_uq` used to surface here as `INTERNAL_SERVER_ERROR: duplicate
+ * key value violates unique constraint`, which lands in the retryable bucket —
+ * so the op retried forever and the outlet's outbox never drained. Adding that
+ * prefix, or mapping the violation to BAD_REQUEST server-side, would dead-letter
+ * a real sale with the cash already in the till: exactly the loss §3.3.4 exists
+ * to prevent. The fix belongs upstream and is there now — the server allocates
+ * blocks, detects the `consumed_upto` regression on reconnect and burns the
+ * block (03 §3.7.5), and a collision that still arrives LANDS under the
+ * emergency form with a severity-1 review (api/src/routers/sales.ts). Nothing
+ * on this path needed to become more willing to discard a write.
  */
 const DEFINITIVE_PREFIXES: ReadonlySet<string> = new Set([
   'BAD_REQUEST',
@@ -94,6 +114,13 @@ export interface DrainOptions {
   readonly nowIso?: () => string;
   /** Feed for the status bar's "Sending · x of y" (§8.4); ends with null. */
   readonly onProgress?: (progress: DrainProgress | null) => void;
+  /**
+   * Called for each acked op whose ack carried a `result` (see UploadAck).
+   * Runs AFTER the settle transaction commits, so a throw here cannot undo an
+   * ack — an op the server applied stays applied. The sequence runtime uses
+   * this to adopt the block the server issued (data/sequence.ts adoptBlock).
+   */
+  readonly onResult?: (op: PendingOp, result: unknown) => void | Promise<void>;
 }
 
 export interface DrainReport {
@@ -145,6 +172,7 @@ export async function drainOutbox(
 ): Promise<DrainReport> {
   const nowIso = options.nowIso ?? ((): string => new Date().toISOString());
   const onProgress = options.onProgress ?? ((): void => undefined);
+  const results: { op: PendingOp; result: unknown }[] = [];
 
   const ops = await readPendingOps(db, options.batchLimit ?? MAX_UPLOAD_BATCH);
   if (ops.length === 0) {
@@ -196,6 +224,7 @@ export async function drainOutbox(
             WHERE id = ? AND server_ack_at IS NULL AND rejected_at IS NULL`,
           [stamp, op.id],
         );
+        if (ack.result !== undefined) results.push({ op, result: ack.result });
         completed += 1;
       } else if (classifyRejection(ack.reason) === 'definitive') {
         await tx.execute(
@@ -210,6 +239,13 @@ export async function drainOutbox(
       onProgress({ sentCount: completed + rejected, batchSize: ops.length });
     }
   });
+
+  // Results are applied AFTER the settle transaction: the acks are already
+  // durable, so a failure here costs the device an adoption it will redo on the
+  // next reconnect — never an ack it needs to keep.
+  if (options.onResult !== undefined) {
+    for (const { op, result } of results) await options.onResult(op, result);
+  }
 
   if (completed > 0 || rejected > 0) db.changes.notify();
   onProgress(null);

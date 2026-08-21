@@ -4,6 +4,7 @@ export { parseOutlets, OUTLETS_CSV_PATH, type OutletPlan, type OutletRow } from 
 export { seedGhanaJurisdiction, GHANA } from './ghana.js';
 export {
   applyTemplate,
+  applySequenceCounters,
   applyTenant1Locations,
   TEMPLATE_ID,
   TEMPLATE_VERSION,

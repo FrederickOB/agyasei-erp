@@ -380,6 +380,32 @@ export const LOCAL_TABLES: readonly LocalTableDef[] = [
     ],
   },
   {
+    // The device's CURRENT receipt-number block (03 §3.7.5). LOCAL-ONLY and
+    // deliberately so: the block is allocated server-side and handed to this
+    // device, and `consumed_upto` is device state that is REPORTED, never
+    // synced back down. Syncing a counter to a device is the defect 04 §4.7
+    // deleted `document_number_range` for.
+    //
+    // This table is exactly what a wipe destroys. When OPFS is evicted the row
+    // goes with it, the device reconnects holding nothing, and the server sees
+    // a live block it cannot account for — which is how the regression is
+    // caught (see data/sequence.ts).
+    name: 'sequence_block',
+    localOnly: true,
+    columns: [
+      t('sequence_key'),
+      t('location_id'),
+      i('block_start'), // CAST AS TEXT on read — a number, never a float64
+      i('block_size'),
+      i('consumed_upto'), // NULL until the first number is issued
+      t('number_format'), // tenant configuration, handed down by the server
+      t('number_prefix'),
+      t('location_code'),
+      t('issued_at'),
+      t('reported_at'),
+    ],
+  },
+  {
     name: 'outbox',
     localOnly: true,
     columns: [
@@ -416,5 +442,11 @@ export function localSchemaDdl(): string[] {
   stmts.push('CREATE UNIQUE INDEX idx_outbox_idempotency_key ON outbox (idempotency_key)');
   stmts.push('CREATE INDEX idx_cart_line_cart ON cart_line (cart_id)');
   stmts.push('CREATE INDEX idx_outbox_pending ON outbox (created_at)');
+  // One live block per (sequence_key, location) on this device — the local
+  // mirror of app.sequence_block's partial unique index. Holding two would
+  // make "the block I am consuming" ambiguous at the till.
+  stmts.push(
+    'CREATE UNIQUE INDEX idx_sequence_block_current ON sequence_block (sequence_key, location_id)',
+  );
   return stmts;
 }

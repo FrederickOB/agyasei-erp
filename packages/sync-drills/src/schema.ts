@@ -104,5 +104,20 @@ export function buildDrillSchema(): Schema {
       },
       { localOnly: true },
     ),
+    // The device's CURRENT receipt-number block — LOCAL ONLY (03 §3.7.5).
+    // This is exactly what OPFS eviction destroys, which is what D6 wipes.
+    sequence_block: new Table(
+      {
+        sequence_key: t,
+        location_id: t,
+        block_start: t, // decimal string — a number, never a float64
+        block_size: i,
+        consumed_upto: t,
+        number_format: t,
+        number_prefix: t,
+        location_code: t,
+      },
+      { localOnly: true },
+    ),
   });
 }

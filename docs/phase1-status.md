@@ -1,10 +1,10 @@
 # Phase 1 status — integration & QA report
 
-**Date:** 2026-08-21 (clean-slate verification pass) · **Author:** QA engineer
-**Verdict:** the whole workspace installs, builds, typechecks and passes — **234 tests, 30 files,
+**Date:** 2026-08-21 (clean-slate verification pass; gap #6 closed same day) · **Author:** QA engineer
+**Verdict:** the whole workspace installs, builds, typechecks and passes — **288 tests, 34 files,
 0 failures** — `tools/lint-money.mjs` is clean, and the Phase 1 sync stack now **reproduces from
 nothing**: `pnpm stack:reset` (docker volume destroyed, migrations + seed from scratch) followed by
-`pnpm --filter @erp/sync-drills drill` passes **5/5 drills against the real stack** — real
+`pnpm --filter @erp/sync-drills drill` passes **6/6 drills against the real stack** — real
 Postgres 16, real self-hosted PowerSync, real API, real `@powersync/node` devices with their own
 sqlite files. Nothing mocked, run twice from a destroyed volume on the final tree.
 
@@ -59,6 +59,13 @@ Postgres 16 — one DDL, two harnesses.
   fee rates `app.bp` (integer basis points).
 - Effective-dated `platform.tax_rate` with `base_kind` semantics and an
   overlap-forbidding constraint.
+- Human-facing document numbers are server-allocated blocks (migration 0005,
+  03 §3.7.5): `sequence_counter` (row-locked, never synced, never rewinds),
+  `sequence_block` (one live block per device by partial unique index; ranges
+  never overlap at a location; `consumed_upto` **cannot regress** — the trigger
+  refuses it), and `conflict_review` / `conflict_review_location` for the
+  severity-1 queue. `sale.receipt_no_claimed` preserves what a customer's paper
+  says when a collision forces the emergency form.
 - Every app table is defined through the `tenantTable()` factory (18 tables +
   `write_log` explicitly registered): `tenant_id`, UUIDv7 `id`, write-spine FK,
   HLC and soft-delete columns are injected structurally — omitting them is
@@ -74,13 +81,13 @@ Postgres 16 — one DDL, two harnesses.
 - `seed` (15) — the "Construction materials distribution — Ghana" template applies
   as ordinary editable rows (ADR-0006); templates never seed prices
 
-### `apps/api` — 44 tests (8 files), typecheck clean
+### `apps/api` — 71 tests (10 files), typecheck clean
 Fastify + tRPC write path, now with the sync seam wired. Verified-token identity
 (`tid` is the **only** source of tenant identity; roles are opaque tenant-defined
 strings, never branched on), one idempotent pipeline over `app.write_log` with
-server-stamped HLC, tax engine honouring `base_kind`/`base_includes`, five tRPC
-routers (provisioning, catalogue, sales, inventory, credit), and two plain
-Fastify sync routes beside the tRPC mount (`src/sync.ts`):
+server-stamped HLC, tax engine honouring `base_kind`/`base_includes`, six tRPC
+routers (provisioning, catalogue, sales, inventory, credit, sequence), and two
+plain Fastify sync routes beside the tRPC mount (`src/sync.ts`):
 
 - `GET /sync/token` — exchanges the API bearer for a short-lived PowerSync client
   token (aud `powersync`, `tid` from the **verified** session — never a request field)
@@ -107,8 +114,15 @@ and tax computation exist; **no** invoice issuance/clearance fields.
 - `sync-token` (5) — refuses unauthenticated calls; tid only from the verified session
 - `sync-upload` (6) — ordered batch processing, per-op ack (`applied`/`duplicate`/
   rejection), idempotent replay through the one pipeline
+- `sequence-regression` (20) — 03 §3.7.5 / conflict class #14: server block
+  allocation from the tenant's own format (a location with no counter row is
+  refused, never defaulted), the three regression shapes
+  (`LOST_CURSOR`, `CONSUMED_UPTO_REGRESSION`, `UNKNOWN_BLOCK`), burn + reissue +
+  severity-1 review naming the overlap range, stale reports deduplicated, the
+  database refusing a regression directly, the collision landing path, and
+  tenant isolation across all four new read paths
 
-### `apps/web` — 88 tests (13 files), build (Vite + PWA) + typecheck clean
+### `apps/web` — 101 tests (14 files), build (Vite + PWA) + typecheck clean
 Installable PWA shell and POS skeleton, now with the full sync connector
 (`src/data/sync/`: `credentials.ts`, `upload.ts`, `transport.ts`, `runtime.ts`,
 wired through `src/data/powersync.ts`). `fetchCredentials` exchanges the dev API
@@ -124,9 +138,14 @@ proving checkout is a single ACID transaction.
 - `sync-credentials` (7) · `sync-upload` (13) · `sync-transport` (6) · `sync-runtime` (6)
 - `no-hardcoded-vocabulary` (4) — greps the built app for tenant #1 vocabulary
   used as logic
+- `sequence` (13) — the till half of §3.7.5: numbers issued with no network on
+  the path, cursor advancing in the *same* transaction that mints the number,
+  exhaustion falling to the emergency form rather than stopping trading, a wiped
+  device reporting "I hold nothing" truthfully, and adoption of a replacement
+  block after a burn
 
 ### `packages/sync-drills` — the executable acceptance demonstrations
-`pnpm --filter @erp/sync-drills drill` runs the five Phase 1 drills against the
+`pnpm --filter @erp/sync-drills drill` runs the six Phase 1 drills against the
 **real stack** (auto-spawns the API on :3001 if absent, tears it down after).
 Each "device" is an `@powersync/node` client with its own sqlite file and its own
 tokens; writes go solely outbox → `POST /sync/upload`; the drill connector
@@ -225,7 +244,7 @@ pnpm --filter @erp/web test         # real SQLite via node:sqlite + jsdom for co
 
 # The real stack + acceptance drills (reproducible from nothing):
 pnpm stack:reset                    # docker down -v → up → migrate → seed 2 tenants
-pnpm --filter @erp/sync-drills drill  # 5 drills; spawns the API on :3001 if absent
+pnpm --filter @erp/sync-drills drill  # 6 drills; spawns the API on :3001 if absent
 pnpm --filter @erp/api dev:stack    # API dev server on :3001 (for manual use)
 
 # POS dev server:
@@ -247,7 +266,7 @@ vitest process ever hangs at exit, it is PGlite/wasm teardown: the api config pi
 ## 5. Acceptance criteria — demonstrated, with the measured numbers
 
 All figures are from the final clean-slate run (2026-08-21, `stack:reset` from a
-destroyed docker volume, then `drill`): **5/5 drills PASS**, full log in
+destroyed docker volume, then `drill`): **6/6 drills PASS**, full log in
 `docs/sync-drill-report.md`. The run was performed twice from a clean slate on
 2026-08-21; both passed. Localhost latencies are of course optimistic versus
 field conditions — what the drills prove is *correctness* of the offline→sync
@@ -326,7 +345,55 @@ real-device trial (§3) is where field latency gets measured.
    stack: OPFS persistence, worker behaviour, sync performance under field
    latency (the 60s budget was met at p95 212ms on localhost; the field number
    is the one that matters).
-6. Smaller but real: auth is a dev-grade HS256 flow (shared dev secret, static
+6. **Receipt-number regression (03 §3.7.5, conflict class #14) — CLOSED
+   2026-08-21.** Owner: `sync-architect`. Recorded here as the gap; this is
+   what landed.
+
+   *The defect.* Every block was self-issued by the device, so a device whose
+   local database was wiped mid-block (OPFS eviction, PWA reinstall on the same
+   enrolled device) restarted its cursor and reissued numbers it had already
+   printed. `sale_receipt_uq` rejected the second sale with a raw
+   `INTERNAL_SERVER_ERROR: duplicate key value violates unique constraint`,
+   which `classifyRejection()` in `apps/web/src/data/sync/upload.ts` classes
+   RETRYABLE — so the op retried forever, the outlet's outbox never drained,
+   and the till went dark for uploads while looking merely "stuck".
+   Reproduced before the fix by uploading two sales carrying the same
+   `receiptNo` under different idempotency keys.
+
+   *Neither cheap answer was taken.* Mapping the constraint violation to
+   `BAD_REQUEST` dead-letters a real sale with the cash already in the till —
+   the loss path §3.3.4 exists to prevent. Renumbering silently hands a
+   customer a number another customer already holds and tells nobody.
+   `classifyRejection()` is therefore **unchanged**: the fix is upstream, and
+   nothing on the drain path became more willing to discard a write.
+
+   *What landed.* Migration `0005_app_sequence_and_review.sql` adds
+   `app.sequence_counter` (server-side, row-locked, never synced, cannot
+   rewind), `app.sequence_block` (one live block per device; ranges never
+   overlap at a location; a trigger **refuses** a `consumed_upto` regression,
+   so the application cannot paper over one), `app.conflict_review` +
+   `app.conflict_review_location`, and `app.sale.receipt_no_claimed`.
+   `sequence.syncBlock` (`apps/api/src/routers/sequence.ts`) is the reconnect
+   conversation: it detects the regression, burns the remainder of the block,
+   issues a fresh one and opens a **severity-1** review naming the overlap
+   range. A collision that already happened lands under §3.7.5's emergency
+   form with the printed number preserved and its own severity-1 review, so
+   the outbox drains. `packages/sequence` renders numbers for the server, the
+   device and the drills from ONE implementation. Drill **D6** proves the whole
+   path against the real stack with a genuine sqlite-file wipe.
+
+   *Two deliberate scope limits, both stated rather than hidden.* (a) §3.7.5's
+   low-water **reserve block** (ask at 20% / a few days' throughput and hold a
+   spare) is not implemented: a device holds exactly one live block, and a
+   block that runs out mid-partition falls to the emergency form, which is the
+   behaviour §3.7.5 already specifies for that case. The reserve makes it
+   rarer; it does not affect regression detection. (b) `conflict_review` is
+   §3.6.2's shape minus the `conflict_classes` registry, the escalation-step
+   chain and the notification channels — those arrive with the credit-limit
+   classes and the RBAC permission tables that route the queue. Until then
+   reviews are read online (fail-closed) and `escalate_at` is a flat 24h.
+
+7. Smaller but real: auth is a dev-grade HS256 flow (shared dev secret, static
    bearer in the PWA env) — the real login/credential flow is §8.2 work;
    `pnpm build` warns at ~600 kB main bundle (code-split before pilot).
 

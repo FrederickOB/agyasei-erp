@@ -15,6 +15,7 @@ import { runD2 } from './drills/d2.js';
 import { runD3 } from './drills/d3.js';
 import { runD4 } from './drills/d4.js';
 import { runD5 } from './drills/d5.js';
+import { runD6 } from './drills/d6.js';
 import { API_URL, DATABASE_URL, POWERSYNC_URL } from './env.js';
 
 function sh(cmd: string): string {
@@ -42,6 +43,7 @@ async function main(): Promise<void> {
       { id: 'D3', title: 'HQ view', fn: runD3 },
       { id: 'D4', title: 'idempotent retry', fn: runD4 },
       { id: 'D5', title: 'tenant isolation at the sync layer', fn: runD5 },
+      { id: 'D6', title: 'receipt-number regression (wipe mid-block, reissue)', fn: runD6 },
     ];
     for (const d of drills) {
       console.log(`\n--- ${d.id}: ${d.title} ---`);
@@ -79,7 +81,7 @@ async function main(): Promise<void> {
   const reportPath = writeReport(results, environment);
   const failed = results.filter((r) => !r.pass);
   console.log(`\n=== ${results.length - failed.length}/${results.length} drills passed — report: ${reportPath} ===`);
-  if (failed.length > 0 || results.length !== 5) {
+  if (failed.length > 0 || results.length !== 6) {
     console.error(`FAILED drills: ${failed.map((r) => r.id).join(', ') || '(missing drills)'}`);
     // Report is on disk (sync write); exit hard so lingering sqlite worker
     // threads cannot keep a failed run's process alive.
