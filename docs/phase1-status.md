@@ -128,6 +128,7 @@ context. No permission claim is read from the token, and `role` is never touched
 | `session.permissions` | no | n/a | reads only the caller's own grants; a UX affordance, explicitly not a control |
 | **`sales.createSale`** | **yes** | ❌ **NO** | **see §6 item 1 — the sale path is unguarded** |
 | `sales.get` / `sales.recomputeCheck` | no | ❌ no | `sale.view` exists in the catalogue and is never checked |
+| **`sequence.syncBlock`** (new, PR #4) | **yes** | **scope only** | No capability check. `assertLocationInScope` holds, so a device cannot report or take a block at a location its token does not scope — but any valid tenant bearer at an in-scope location may burn a block and open a severity-1 review. Arguably inherent to being an enrolled device rather than a delegable capability; recorded here so the choice is visible rather than implied. Revisit with §6 item 1. |
 | `catalogue.list` / `search` / `detail` | no | ❌ no | `catalogue.view` exists and is never checked |
 | `provisioning.applyTemplate` | yes | ❌ no | `admin.template.apply` exists and is never checked. Defensible — this is the bootstrap edge that *creates* the roles there would be something to check against — but it is a mutation any valid tenant bearer can call. |
 | `provisioning.createTenant` | yes | operator | platform-operator plane, not tenant RBAC |
@@ -236,7 +237,7 @@ shape disagreement a compile error instead of a `BAD_REQUEST` at a till in Techi
   key and refuses all three spellings of tenant identity; movement/credit money as strings; no
   `SALE` movement kind and no `FEE` entry kind on the device surface; the `/sync/token` shape
 
-### `packages/wire-conformance` — 31 tests (3 files), typecheck clean
+### `packages/wire-conformance` — 35 tests (4 files), typecheck clean
 **A probe package whose only job is to prove the two sides agree.** No production code imports it.
 It exists because it is the only place that can import `apps/web`'s sources *and* `apps/api`'s:
 the PWA resolves modules as a bundler would and its imports carry no file extensions, which
@@ -260,6 +261,38 @@ the PWA resolves modules as a bundler would and its imports carry no file extens
   registry kind is really dispatched (an empty payload must be `BAD_REQUEST`, never
   `UNKNOWN_KIND`); an unknown kind is per-op `UNKNOWN_KIND` without taking the batch with it; one
   contract-shaped payload per kind is accepted end to end; the batch cap is enforced on both sides.
+- `session-scope` (4) — the device reads the *same* location scope the API enforces, out of a real
+  API-signed token: one location, many locations in the same order, and an empty claim scoping the
+  device nowhere. The fourth pins the rule that matters — the client reads the claim **without
+  verifying it**, and that is all it is trusted for; enforcement is the server's.
+- `sequence-client-to-api` (4) — **added by this merge**, and the reason §0's *Sequence reporting*
+  ledger row could be closed rather than merely noted. PR #4's reconnect half was reachable from its own unit
+  test and from no production module; the only way to prove it is wired is to drive the PWA's own
+  `buildBlockReport` → outbox → `httpUploadTransport` → `sequence.syncBlock` → Postgres. Asserts
+  the router parses the PWA's payload with the *same* `syncBlockInput` object the contract exports
+  (identity, not shape-alike); that a real server block is carried back through the outbox result
+  and the till then prints from it; and that a wiped cursor is detected on reconnect — old block
+  `REGRESSION_BURN`ed, fresh block strictly above it, severity-1 review opened. The review's
+  `required_permission` is asserted against the **catalogue** (`sync.conflict.review`), not against
+  itself — the assertion PR #4 lacked, which is why its invented `sequence.review` code went
+  unnoticed.
+
+### `packages/sequence` — 14 tests (1 file), build + typecheck clean
+**Receipt-number rendering and block arithmetic, shared by server and till so a number cannot be
+formatted two ways.** Arrived with PR #4. Pure and dependency-free — which is what lets both the
+Node server and the browser till import the one implementation.
+
+- `format` (14) — three groups. **`renderNumber`**: the §3.7.5 template; a second tenant's format
+  is *another value, not another code path* (§2.9 as an executable assertion); an unknown
+  placeholder or a missing `{n}` slot raises at the counter rather than on a printed receipt; a
+  number exceeding the declared width raises instead of silently wrapping; and it carries exactly
+  past 2^53 — a receipt number is `bigint`, never a float64. **Emergency form**: the
+  device-derived suffix, plus a discriminator so two emergency numbers from one device stay
+  distinct — this is what lets a collision be stored on a unique number while `receipt_no_claimed`
+  keeps the number the customer is actually holding. **Block arithmetic**: a block spans
+  `[start, start+size-1]`, issues from the start, and is *spent* rather than wrapped at the end;
+  replacement is requested by **days of observed throughput**, falling back to 20% only when the
+  till has no history.
 
 ### `packages/money` — 56 tests (4 files), build + typecheck clean
 The platform's single money module (ADR-0004). `bigint` minor units with runtime
@@ -522,12 +555,13 @@ Prereqs: Node ≥ 20, pnpm 9 (`corepack enable`), Docker.
 pnpm install                # from the repo root
 pnpm build                  # turbo: tsc for @erp/money, Vite+PWA for @erp/web
 pnpm typecheck              # all packages
-pnpm test                   # all suites (535 tests; PGlite suites take ~30s)
+pnpm test                   # all suites (616 tests, 51 files; PGlite suites take ~30s)
 pnpm lint:money             # ADR-0004 money-type lint
 
-# Per package (dependency order contracts → money → db → api → web → conformance):
+# Per package (dependency order contracts → money → sequence → db → api → web → conformance):
 pnpm --filter @erp/contracts test    # zod only; no db, no network, no wasm
 pnpm --filter @erp/money test
+pnpm --filter @erp/sequence test     # pure receipt-number rendering + block arithmetic
 pnpm --filter @erp/db test           # hermetic — real DDL on PGlite, no external Postgres
 pnpm --filter @erp/api test          # same harness, drives the tRPC routers + sync routes
 pnpm --filter @erp/web test          # real SQLite via node:sqlite + jsdom for components
