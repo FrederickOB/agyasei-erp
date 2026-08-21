@@ -164,6 +164,30 @@ export async function openLocalDb(): Promise<LocalDb> {
     return base;
   }
 
+  // ── DOWNLOADS MUST RING THE CHANGE BUS TOO ───────────────────────────────
+  // `db.changes` is notified by local mutations, so until now a row that
+  // ARRIVED over the sync stream changed the database without any live read
+  // hearing about it. That is invisible for a catalogue that hydrates before
+  // anyone looks, and load-bearing for the setup gates: a device waiting for
+  // its price lists (data/session/device-price-list.ts) would sit blocked
+  // until someone reloaded the till, even though the rows it was waiting for
+  // had landed. Same for a location gate showing bare ids until the `location`
+  // rows arrive to name them.
+  //
+  // Scoped to the SYNCED tables on purpose. Including `outbox` would have each
+  // drain's ack writes re-notify the bus, which re-triggers the runtime that
+  // just wrote them; the loop converges (a drain with nothing to do is a
+  // no-op) but there is no reason to spin it.
+  const syncedTables = LOCAL_TABLES.filter((t) => !t.localOnly).map((t) => t.name);
+  ps.onChange(
+    {
+      onChange: () => {
+        changes.notify();
+      },
+    },
+    { tables: syncedTables },
+  );
+
   const transport = httpUploadTransport({ apiUrl: env.apiUrl, apiToken: env.apiToken });
   // The runtime drains against the same LocalDb seam the app writes through,
   // so ack marking rides the same change bus the badges re-render from.

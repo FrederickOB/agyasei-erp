@@ -120,10 +120,19 @@ describe('tenant isolation through the API', () => {
     expect(onHandA.qtyOnHand).toBe('100');
     expect(onHandB.qtyOnHand).toBe('77');
 
-    // A cannot even name B's rows: the product does not resolve.
+    // A cannot even name B's rows. Asked at A's OWN outlet — where A is
+    // unquestionably permitted — B's product does not resolve at all: it is
+    // RLS that makes it invisible, not the permission check.
+    await expect(
+      callerA.inventory.onHand({ locationId: outletA.id, productId: productB.id }),
+    ).rejects.toMatchObject({ code: 'NOT_FOUND' });
+
+    // And B's LOCATION is refused before any row is read: `stock.view` is a
+    // capability AT A PLACE, and A holds it at no place of B's. Two
+    // independent controls, either of which alone would be enough here.
     await expect(
       callerA.inventory.onHand({ locationId: outletB.id, productId: productB.id }),
-    ).rejects.toMatchObject({ code: 'NOT_FOUND' });
+    ).rejects.toMatchObject({ code: 'FORBIDDEN' });
   });
 
   it('credit: exposure aggregates only this tenant; a foreign account is not found', async () => {

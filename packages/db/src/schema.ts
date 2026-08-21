@@ -369,3 +369,106 @@ export const staff = tenantTable('staff', {
   hiredOn: date('hired_on'),
   endedOn: date('ended_on'),
 });
+
+// ---------------------------------------------------------------------------
+// Access control (0005). See that migration's header for the one decision
+// that shapes all of it: the PERMISSION CATALOGUE IS GLOBAL PLATFORM DATA
+// (platform.permission, no tenant_id); everything a tenant OWNS — roles,
+// their composition, users, assignments, the location closure — is in `app`
+// through the tenant pattern, with RLS enabled and forced.
+// ---------------------------------------------------------------------------
+
+/**
+ * The platform's vocabulary of atomic capabilities. GLOBAL — no tenant_id,
+ * because a permission code is a server-side check, not a label, and a
+ * tenant-minted code would resolve while granting nothing (02 §2.4).
+ */
+export const permission = platformSchema.table('permission', {
+  code: text('code').primaryKey(),
+  domain: text('domain').notNull(),
+  description: text('description').notNull(),
+  isSensitive: boolean('is_sensitive').notNull(),
+  requiresFreshAuthorization: boolean('requires_fresh_authorization').notNull(),
+  /** Shape of role_permission.bound, or null. Money inside is a STRING. */
+  boundSchema: jsonb('bound_schema'),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull(),
+});
+
+/**
+ * Derived transitive closure of app.location.parent_id, including the
+ * depth-0 self row. Maintained by trigger; the adjacency list is the truth.
+ * It exists so the SYNC boundary can resolve a user's locations without a
+ * recursive CTE (02 §2.5).
+ */
+export const locationClosure = tenantTable(
+  'location_closure',
+  {
+    ancestorId: uuid('ancestor_id').notNull(),
+    descendantId: uuid('descendant_id').notNull(),
+    depth: integer('depth').notNull(),
+  },
+  (t) => [
+    uniqueIndex('location_closure_uq').on(t.tenantId, t.ancestorId, t.descendantId),
+    index('location_closure_desc_ix').on(t.tenantId, t.descendantId, t.ancestorId),
+  ],
+);
+
+/**
+ * A tenant-owned, tenant-named, editable role. `name` is the TENANT's word
+ * for one of the TENANT's jobs and no platform code reads it (CLAUDE.md
+ * §2.9). `is_owner` is a capability statement, not a name: the one role that
+ * holds the whole catalogue by construction.
+ */
+export const role = tenantTable('role', {
+  name: text('name').notNull(),
+  description: text('description').notNull(),
+  isOwner: boolean('is_owner').notNull(),
+  originTemplateId: text('origin_template_id'),
+  originRef: text('origin_ref'),
+});
+
+/** The composition. Additive only — there are no deny rules (02 §2.4). */
+export const rolePermission = tenantTable(
+  'role_permission',
+  {
+    roleId: uuid('role_id').notNull(),
+    permissionCode: text('permission_code').notNull(),
+    /** Bound object; money members are decimal STRINGS (ADR-0004). */
+    bound: jsonb('bound'),
+  },
+  (t) => [index('role_permission_role_ix').on(t.tenantId, t.roleId)],
+);
+
+/** The login identity the token's `uid` claim names. */
+export const userAccount = tenantTable(
+  'user_account',
+  {
+    username: text('username').notNull(),
+    displayName: text('display_name').notNull(),
+    staffId: uuid('staff_id'),
+    status: text('status').notNull(),
+  },
+  (t) => [index('user_account_staff_ix').on(t.tenantId, t.staffId)],
+);
+
+/**
+ * A user holds a ROLE at a SCOPE NODE, effective-dated. Several rows per
+ * user are normal and are the point: resolution is the union of grants PER
+ * LOCATION, so a permission granted at one location never leaks to another.
+ * `id` is what audit_event.grant_id points at.
+ */
+export const userRoleAssignment = tenantTable(
+  'user_role_assignment',
+  {
+    userId: uuid('user_id').notNull(),
+    roleId: uuid('role_id').notNull(),
+    /** ANY node in the tenant's tree, at any depth — never an outlet id. */
+    scopeLocationId: uuid('scope_location_id').notNull(),
+    effectiveFrom: timestamp('effective_from', { withTimezone: true }).notNull(),
+    effectiveTo: timestamp('effective_to', { withTimezone: true }),
+  },
+  (t) => [
+    index('user_role_assignment_user_ix').on(t.tenantId, t.userId, t.scopeLocationId),
+    index('user_role_assignment_role_ix').on(t.tenantId, t.roleId),
+  ],
+);

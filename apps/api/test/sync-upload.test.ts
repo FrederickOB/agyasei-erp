@@ -94,9 +94,15 @@ beforeAll(async () => {
   await h.seedWholesalePrice(tenantA, productId, 55_000_000n); // GH₵55.00/unit, e4
 
   app = await buildServer({ deps: h.deps, jwtSecret: JWT_SECRET });
+  // A PROVISIONED principal, not merely a signed token: every gated write
+  // resolves its permissions server-side from app.user_role_assignment
+  // (apps/api/src/permissions.ts). This file is about the upload envelope, so
+  // it grants breadth and leaves who-may-do-what to test/rbac.test.ts.
+  const uploaderUid = uuidv7();
+  await h.grantOwner(tenantA, uploaderUid);
   bearerA = await signDevToken(JWT_SECRET, {
     tid: tenantA,
-    uid: uuidv7(),
+    uid: uploaderUid,
     role: 'outlet-staff',
     locs: [outletId],
   });

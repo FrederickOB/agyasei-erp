@@ -3,6 +3,7 @@ import { App } from './App';
 import { openLocalDb, readApiBearerToken } from './data/powersync';
 import { seedDevDataIfEmpty } from './data/seed';
 import { reconcileDeviceLocation } from './data/session/device-location';
+import { reconcileDevicePriceList } from './data/session/device-price-list';
 import { setupServiceWorker } from './sw/register';
 import './app.css';
 
@@ -25,11 +26,23 @@ async function bootstrap(): Promise<void> {
   //
   //    This runs on EVERY start, not once at install: a device re-assigned to
   //    another location picks that up the next time it is switched on.
-  const deviceLocation = await reconcileDeviceLocation(db, readApiBearerToken());
+  const bearerToken = readApiBearerToken();
+  const deviceLocation = await reconcileDeviceLocation(db, bearerToken);
+  // 3. Then the price list, AFTER the location — "which list applies here" has
+  //    no answer until "here" does. Same direction as step 2 and for the same
+  //    reason: the seed points this device at a placeholder list coded
+  //    'DEFAULT', which no tenant has, so a sale rung against it is recorded
+  //    locally and then refused at upload (`no price list DEFAULT in force`).
+  //    Unlike the location, the answer is not in the token — there is no
+  //    price-list claim — it is in the tenant's own synced configuration:
+  //    which lists cover this counter, in force today, ranked by the tenant.
+  const devicePriceList = await reconcileDevicePriceList(db, bearerToken);
 
   const container = document.getElementById('root');
   if (container === null) throw new Error('missing #root element');
-  createRoot(container).render(<App db={db} deviceLocation={deviceLocation} />);
+  createRoot(container).render(
+    <App db={db} deviceLocation={deviceLocation} devicePriceList={devicePriceList} />,
+  );
 }
 
 void bootstrap();

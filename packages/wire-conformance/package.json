@@ -7,7 +7,8 @@
   "scripts": {
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
-    "drill:live": "tsx src/live-client-drill.ts"
+    "drill:live": "tsx src/live-client-drill.ts",
+    "drill:rbac": "tsx src/live-rbac-drill.ts"
   },
   "dependencies": {
     "@erp/api": "workspace:*",
@@ -22,6 +23,7 @@
     "typescript": "^5.7.2",
     "vitest": "^3.2.4",
     "@types/pg": "^8.11.10",
-    "tsx": "^4.19.2"
+    "tsx": "^4.19.2",
+    "jose": "^5.9.6"
   }
 }

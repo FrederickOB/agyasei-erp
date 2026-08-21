@@ -126,6 +126,18 @@ export async function createContext(): Promise<DrillContext> {
   const b1 = new DrillDevice('device-b1', tenants.tenantB.id, locB);
   await Promise.all([a1.open(), a2.open(), a3.open(), b1.open()]);
 
+  // Every device's user must EXIST and hold authority before it can write:
+  // the API re-derives permissions from app.effective_permission on every
+  // request, so a signed token belonging to nobody is refused at the first
+  // guarded route. See ServerDb.provisionDevicePrincipal for what is granted
+  // and — more importantly — what is deliberately not relaxed.
+  await Promise.all([
+    server.provisionDevicePrincipal(tenants.tenantA.id, a1.userId, a1.name),
+    server.provisionDevicePrincipal(tenants.tenantA.id, a2.userId, a2.name),
+    server.provisionDevicePrincipal(tenants.tenantA.id, a3.userId, a3.name),
+    server.provisionDevicePrincipal(tenants.tenantB.id, b1.userId, b1.name),
+  ]);
+
   return { tenants, server, businessDate, runId, productA, productB, locA1, locA3, locB, a1, a2, a3, b1 };
 }
 

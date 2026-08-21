@@ -12,3 +12,24 @@ export { tenantTable, registeredAppTableNames, WRITE_ID_EXEMPT, appSchema, platf
 export * as schema from './schema.js';
 export { createHlcClock, hlcNodeFromName, randomHlcNode, HLC_RE, type HlcClock } from './hlc.js';
 export { uuidv7, deterministicUuid, sha256Hex } from './ids.js';
+export {
+  PERMISSION_CODES,
+  BRIEF_RESTRICTED_PERMISSIONS,
+  effectivePermissions,
+  hasPermissionAt,
+  hasPermissionAnywhere,
+  locationsFor,
+  permissionCodesAt,
+  boundAt,
+  authorize,
+  mergeBounds,
+  catalogueDrift,
+  type PermissionCode,
+  type PermissionQueryable,
+  type Bound,
+  type MaybeBound,
+  type EffectivePermissionRow,
+  type EffectivePermissions,
+  type ResolvedGrant,
+  type Decision,
+} from './permissions.js';

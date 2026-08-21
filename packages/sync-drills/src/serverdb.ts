@@ -9,6 +9,7 @@
  */
 import pg from 'pg';
 import { createHlcClock, hlcNodeFromName, uuidv7, sha256Hex, type HlcClock } from '@erp/db';
+import { provisionPrincipal } from '@erp/db/seed';
 import { DATABASE_URL } from './env.js';
 
 export interface Queryable {
@@ -16,6 +17,25 @@ export interface Queryable {
     sql: string,
     params?: unknown[],
   ): Promise<{ rows: R[] }>;
+}
+
+/**
+ * The shape `@erp/db`'s seed helpers take. Structurally the same query
+ * function as `Queryable` above, minus the `pg.QueryResultRow` constraint on
+ * the row type — so the two are not assignable and an adapter is honest work
+ * rather than a cast that hides a real difference.
+ */
+interface DbQueryable {
+  query<T = Record<string, unknown>>(sql: string, params?: unknown[]): Promise<{ rows: T[] }>;
+}
+
+function asDbQueryable(tx: Queryable): DbQueryable {
+  return {
+    query: async <T,>(sql: string, params?: unknown[]) => {
+      const r = await tx.query(sql, params);
+      return { rows: r.rows as T[] };
+    },
+  };
 }
 
 export class ServerDb {
@@ -48,6 +68,53 @@ export class ServerDb {
     } finally {
       client.release();
     }
+  }
+
+  /**
+   * Give a drill device's user an identity and authority in the tenant.
+   *
+   * ═══════════════════════════════════════════════════════════════════════
+   * WHY THE DRILLS NEED THIS, AND WHY IT GRANTS THE OWNER ROLE
+   * ═══════════════════════════════════════════════════════════════════════
+   * Each DrillDevice mints a fresh random `uid`. The API resolves permissions
+   * per request from `app.effective_permission`, so a signed token belonging
+   * to nobody authorises nothing: before this existed, every drill died at
+   * warm-up with `FORBIDDEN: PERMISSION_DENIED: stock.adjust is not held by
+   * this user`, and the unit suites never noticed because the API test
+   * harness grants its identities the owner role by default.
+   *
+   * The role granted is the tenant's OWNER role, at the tenant ROOT, and that
+   * is a deliberate statement about what these drills are for: D1-D6 are
+   * about SYNC — partitions, conflict reconciliation, idempotent replay,
+   * cross-location visibility, tenant isolation on the device — and an
+   * authorisation refusal in the middle of one of them would be noise, not a
+   * finding. Who may do what is demonstrated where it belongs: over real HTTP
+   * in `@erp/wire-conformance`'s RBAC drill, and in the
+   * `packages/db` + `apps/api` permission suites.
+   *
+   * What this does NOT relax is location scope. The device's token still
+   * carries only its OWN `locs`, so `assertLocationInScope` constrains every
+   * write exactly as before, and D3's cross-location and D5's cross-tenant
+   * assertions are untouched — RLS and the tenant GUC are a different control
+   * that no role can widen.
+   */
+  async provisionDevicePrincipal(tenantId: string, userId: string, name: string): Promise<void> {
+    await this.withTenant(tenantId, async (tx) => {
+      await provisionPrincipal(asDbQueryable(tx), tenantId, {
+        userId,
+        // The FULL uid is in the handle on purpose. A device NAME repeats
+        // every run while its uid does not, and `user_account.username` is
+        // unique per tenant, so a fixed handle turns the second run into a
+        // duplicate-key crash instead of a drill result. A uuidv7 PREFIX is
+        // not enough either: the leading 8 hex characters are the top 32 bits
+        // of a 48-bit millisecond timestamp, so two runs inside the same ~65
+        // second window share them — which is exactly how this was found.
+        username: `drill-${name}-${userId}`,
+        displayName: `Drill device ${name}`,
+        // roleRef omitted => the tenant's is_owner role. Never resolved by
+        // name; `app.role.name` is the tenant's word and nothing reads it.
+      });
+    });
   }
 
   /** A STOCKED, sellable product whose default sell unit is its stocking
