@@ -4,9 +4,11 @@
  *
  *   1. reads the cart and its lines,
  *   2. refuses a replayed idempotency key,
- *   3. inserts the outbox row (the pending write destined for the one write
+ *   3. draws the next receipt number from this device's block (03 §3.7.5),
+ *   4. builds the upload payload and PARSES IT against the wire contract,
+ *   5. inserts the outbox row (the pending write destined for the one write
  *      registry, `app.write_log`),
- *   4. deletes the cart and its lines.
+ *   6. deletes the cart and its lines.
  *
  * All-or-nothing: a crash or a mid-transaction failure leaves EITHER the cart
  * (nothing recorded) OR the sale (cart gone) — never both, never neither.
@@ -14,13 +16,54 @@
  * design that makes double-ringing structurally hard. Nothing here awaits a
  * socket; completion is single-digit milliseconds.
  *
+ * ═══════════════════════════════════════════════════════════════════════════
+ * THE SERVER IS THE PRICING AUTHORITY — and this file used to deny it.
+ * ═══════════════════════════════════════════════════════════════════════════
+ * The previous payload was invented here rather than imported: `kind`,
+ * `sale_id`, `price_list_id`, `total_minor`, `unit_price_e4`,
+ * `line_total_minor`, a nested `tender` object. The API's `.strict()` schema
+ * required `locationId`, `priceListCode`, `receiptNo`, `businessDate` and a
+ * `'CASH' | 'CREDIT'` tender and rejected everything else — so EVERY sale this
+ * PWA uploaded was a BAD_REQUEST, and no test caught it because the sync
+ * drills built their own API-shaped payloads instead of the client's.
+ *
+ * The payload is now constructed as `CreateSaleInput` from `@erp/contracts` —
+ * the same declaration the API parses. A future divergence is a compile error
+ * here, not a rejection at a till in Techiman with no developer nearby.
+ *
+ * What the wire carries: WHAT WAS SOLD — product, quantity, unit, location,
+ * receipt number, business date, tender kind. What it does NOT carry: unit
+ * prices, line totals or a sale total as FACTS. The server reprices from the
+ * price list in force on the business date and computes tax from the
+ * effective-dated rate rows in force on that same date (CLAUDE.md §2.5). A
+ * device four days offline holds a price list that may have moved; its
+ * arithmetic is a claim, never a source.
+ *
+ * What the counter still does locally, because it must: compute the total, the
+ * tax-exclusive line amounts and the change, with the radio off, in bigint —
+ * the customer is standing there. That figure goes on the wire in exactly one
+ * place, `clientTotalMinor`, which the contract defines as the stale-price-list
+ * DETECTOR: the server compares it against its own repriced total, records the
+ * comparison, and writes its own figure regardless.
+ *
+ * Cash tendered and change stay DEVICE-LOCAL, in outbox columns. The contract
+ * refuses them today because the server has nowhere to put them until
+ * `app.cash_session` and `app.sale_tender` land, and a field the server
+ * silently drops is worse than one it refuses.
+ *
  * Money: totals are computed in TypeScript over bigint via @erp/money — never
  * in SQL, where SUM() would come back as float64 (§8.3).
  */
+import { createSaleInput, type CreateSaleInput } from '@erp/contracts';
 import { add, compare, lineNetMinor, serializeMoney, sub } from '@erp/money';
-import type { ClaimedHlcClock } from '../../lib/hlc';
+import { assertBusinessDate, businessDateFor } from '../../lib/business-date';
+import { deviceNodeFromClaimedHlc, type ClaimedHlcClock } from '../../lib/hlc';
+import type { ReceiptNumberFormat } from '../../lib/receipt-number';
+import { uuidv7 } from '../../lib/uuidv7';
 import type { DbExecutor, LocalDb } from '../db';
-import { getCartLines, getOpenCart, type CartLineRow } from '../queries/cart';
+import { getCartLines, getOpenCart, type CartLineRow, type CartRow } from '../queries/cart';
+import { readDeviceLocation, readReceiptFormat, resolvePriceListCode } from '../queries/session';
+import { allocateReceiptNumber } from '../sequence';
 
 export class EmptyCartError extends Error {
   constructor() {
@@ -43,88 +86,237 @@ export class ShortTenderError extends Error {
   }
 }
 
+/**
+ * The device cannot name where it is, what list it priced against, or who the
+ * credit sale is for. Recording anyway would file the sale against the wrong
+ * outlet or have the server reprice it from the wrong list — so the sale is
+ * refused BEFORE the cart is cleared. The cart survives, in front of a human,
+ * with a sentence a counter can act on.
+ */
+export class SaleContextIncompleteError extends Error {
+  constructor(readonly missing: string) {
+    super(missing);
+    this.name = 'SaleContextIncompleteError';
+  }
+}
+
+/**
+ * The payload does not satisfy the wire contract. Thrown BEFORE the outbox
+ * insert, so the malformed sale is caught at the counter — where it can be
+ * re-rung with the customer still there — rather than silently rejected hours
+ * later at sync. The cart is untouched: nothing is dropped.
+ */
+export class SalePayloadInvalidError extends Error {
+  constructor(readonly issues: readonly string[]) {
+    super(`sale payload does not match the wire contract: ${issues.join('; ')}`);
+    this.name = 'SalePayloadInvalidError';
+  }
+}
+
 /** Extended line amount, rounded ONCE on the extended amount (§4.13 via @erp/money). */
 export function lineTotalMinor(line: CartLineRow): bigint {
   return lineNetMinor(line.qtyScaled, line.qtyScale, line.unitPriceE4, 'half-up');
 }
 
-/** Cart total: exact bigint sum of line totals. */
+/**
+ * Cart total: exact bigint sum of line totals.
+ *
+ * LOCAL DISPLAY AND THE OFFLINE RECEIPT — that is its whole job, plus the
+ * `clientTotalMinor` claim the server compares against. It is not, and must
+ * never become, the figure `app.sale.total_minor` is written from.
+ */
 export function cartTotalMinor(lines: readonly CartLineRow[]): bigint {
   let sum = 0n;
   for (const line of lines) sum = add(sum, lineTotalMinor(line));
   return sum;
 }
 
+/** Cash or credit. The contract's enum, spelled once. */
+export type TenderKind = CreateSaleInput['tender'];
+
 export interface SalePayloadInput {
+  /** The cart id — the sale id AND the idempotency key (§8.2). */
   readonly saleId: string;
-  readonly priceListId: string | null;
+  readonly locationId: string;
+  /** The price list's CODE. The API names lists by code, not by row id. */
+  readonly priceListCode: string;
+  /** Device-allocated, per-location, minted offline (03 §3.7.5). */
+  readonly receiptNo: string;
+  /** The trading day this sale reprices and taxes against. */
+  readonly businessDate: string;
+  readonly tender: TenderKind;
+  /** Required for a credit sale; absent for a walk-in. */
+  readonly customerId?: string | undefined;
+  /** The device's untrusted clock assertion for this write. */
+  readonly claimedHlc?: string | undefined;
   readonly createdAt: string;
   readonly lines: readonly CartLineRow[];
   readonly tenderedMinor: bigint;
 }
 
 export interface BuiltSalePayload {
+  /** The exact bytes the outbox stores and the transport ships. */
   readonly payloadJson: string;
+  /** The same value, typed as the contract's input. */
+  readonly payload: CreateSaleInput;
   readonly totalMinor: bigint;
   readonly changeMinor: bigint;
 }
 
 /**
- * The upload payload. Every monetary value crosses JSON as a decimal STRING of
- * minor units (@erp/money serializeMoney) — a JSON number is a float64 in
- * every consumer and never carries money (ADR-0004).
+ * Build the upload payload and prove it against the contract.
  *
  * ─── Q8 SEAM (docs/open-questions.md Q8 — e-invoice clearance regime,
  * NEEDS-HUMAN) ─────────────────────────────────────────────────────────────
- * This payload captures the sale and has room for computed tax lines
- * (`tax_lines`, populated from the jurisdiction pack's effective-dated rate
- * rows once they sync to the device). It deliberately carries NO invoice
- * issuance or clearance surface: no certified-invoicing identifiers, no
- * device/SDC fields, no QR payload, no clearance status. When Q8 resolves,
- * issuance belongs in the jurisdiction-pack / POS document layer — extend the
- * payload there, not here.
+ * This payload captures the SALE. It deliberately carries no invoice issuance
+ * or clearance surface: no certified-invoicing identifiers, no device/SDC
+ * fields, no QR payload, no clearance status — the contract has none either,
+ * for the same reason. When Q8 resolves, issuance is a SEPARATE document and
+ * contract; extend it there, not here.
  * ──────────────────────────────────────────────────────────────────────────
  */
 export function buildSalePayload(input: SalePayloadInput): BuiltSalePayload {
   if (input.lines.length === 0) throw new EmptyCartError();
+
   const totalMinor = cartTotalMinor(input.lines);
-  if (compare(input.tenderedMinor, totalMinor) < 0) throw new ShortTenderError();
-  const changeMinor = sub(input.tenderedMinor, totalMinor);
-  const payload = {
-    kind: 'sale',
-    sale_id: input.saleId,
-    price_list_id: input.priceListId,
-    created_at: input.createdAt,
+  // Cash is counted against the LOCAL total: the customer is standing there
+  // and the server is not reachable. The server's repriced figure may differ,
+  // which is precisely what `clientTotalMinor` exists to surface.
+  const isCash = input.tender === 'CASH';
+  if (isCash && compare(input.tenderedMinor, totalMinor) < 0) throw new ShortTenderError();
+  const changeMinor = isCash ? sub(input.tenderedMinor, totalMinor) : 0n;
+
+  // TYPED AS THE CONTRACT. Add a key the API does not accept, or drop one it
+  // requires, and this stops compiling — which is the entire point of the
+  // annotation. Do not widen it.
+  const payload: CreateSaleInput = {
+    idempotencyKey: input.saleId,
+    ...(input.claimedHlc !== undefined ? { claimedHlc: input.claimedHlc } : {}),
+    clientWallAt: input.createdAt,
+    locationId: input.locationId,
+    priceListCode: input.priceListCode,
+    receiptNo: input.receiptNo,
+    businessDate: input.businessDate,
+    occurredAt: input.createdAt,
+    tender: input.tender,
+    ...(input.customerId !== undefined && input.customerId !== null
+      ? { customerId: input.customerId }
+      : {}),
     lines: input.lines.map((line) => ({
-      seq: line.seq,
-      product_id: line.productId,
-      name: line.name,
-      uom_label: line.uomLabel,
-      qty_scale: line.qtyScale, // digit count — not a monetary magnitude
-      qty_scaled: line.qtyScaled.toString(),
-      unit_price_e4: line.unitPriceE4.toString(),
-      line_total_minor: serializeMoney(lineTotalMinor(line)),
+      productId: line.productId,
+      // Scaled integer in the selling unit's scale, as a decimal STRING —
+      // a JSON number is a float64 in every consumer (ADR-0004).
+      qty: line.qtyScaled.toString(),
+      // uomCode is deliberately OMITTED: the device's catalogue projection
+      // carries a unit LABEL, not a unit code, and shipping a label where the
+      // server expects a code is a silent mispricing. Omitted means "the
+      // product's default sell unit", which is the unit this cart was priced
+      // in. It starts being sent when the catalogue read layer is re-pointed
+      // at product_uom / unit_of_measure (see the note in data/schema.ts).
+      lineDiscountMinor: '0',
     })),
-    tax_lines: [] as const, // Q8 seam — see the comment block above
-    total_minor: serializeMoney(totalMinor),
-    tender: {
-      kind: 'cash',
-      tendered_minor: serializeMoney(input.tenderedMinor),
-      change_minor: serializeMoney(changeMinor),
-    },
+    // The till's BELIEF, never authoritative — the contract's stale-price-list
+    // detector. The server compares it with its own repriced total, records
+    // the comparison and writes its own figure regardless.
+    clientTotalMinor: serializeMoney(totalMinor),
   };
-  return { payloadJson: JSON.stringify(payload), totalMinor, changeMinor };
+
+  // Prove the exact BYTES, not the object: round-tripping through JSON is
+  // what the server receives, and it is where an undefined, a bigint or a
+  // non-finite number would show up.
+  let payloadJson: string;
+  try {
+    payloadJson = JSON.stringify(payload);
+  } catch (err) {
+    throw new SalePayloadInvalidError([
+      `payload is not serialisable: ${err instanceof Error ? err.message : String(err)}`,
+    ]);
+  }
+  const parsed = createSaleInput.safeParse(JSON.parse(payloadJson));
+  if (!parsed.success) {
+    throw new SalePayloadInvalidError(
+      parsed.error.issues.map((i) => `${i.path.join('.') || '(root)'}: ${i.message}`),
+    );
+  }
+
+  return { payloadJson, payload, totalMinor, changeMinor };
 }
+
+// ---------------------------------------------------------------------------
+// The sale's context — read from local state, never invented
+// ---------------------------------------------------------------------------
+
+export interface SaleContext {
+  readonly locationId: string;
+  readonly locationCode: string;
+  readonly priceListCode: string;
+  readonly businessDate: string;
+  readonly receiptFormat: ReceiptNumberFormat;
+}
+
+/**
+ * Gather what the contract requires from what the device already holds. Each
+ * failure names the missing piece in words a counter can act on — the sale is
+ * refused, not guessed at, and the cart is still intact when it throws.
+ */
+export async function loadSaleContext(
+  tx: DbExecutor,
+  cart: CartRow,
+  occurredAt: string,
+  businessDateOverride?: string,
+): Promise<SaleContext> {
+  const location = await readDeviceLocation(tx);
+  if (location === null) {
+    throw new SaleContextIncompleteError(
+      'This device has no location assigned. It must be set up before it can record a sale.',
+    );
+  }
+  if (location.code.length === 0) {
+    throw new SaleContextIncompleteError(
+      'This location has no code yet — waiting for setup data to arrive.',
+    );
+  }
+  const priceListCode = await resolvePriceListCode(tx, cart.priceListId);
+  if (priceListCode === null) {
+    throw new SaleContextIncompleteError(
+      'The price list for this sale is not recognised on this device.',
+    );
+  }
+  return {
+    locationId: location.id,
+    locationCode: location.code,
+    priceListCode,
+    businessDate:
+      businessDateOverride === undefined
+        ? businessDateFor(occurredAt, location.timeZone)
+        : assertBusinessDate(businessDateOverride),
+    receiptFormat: await readReceiptFormat(tx),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Checkout
+// ---------------------------------------------------------------------------
 
 export interface CheckoutInput {
   readonly cartId: string;
   readonly tenderedMinor: bigint;
   readonly hlc: ClaimedHlcClock;
   readonly nowIso?: string;
+  /** Defaults to CASH — the walk-in counter's overwhelming case. */
+  readonly tender?: TenderKind;
+  /** Required for CREDIT; the customer the sale is billed to. */
+  readonly customerId?: string;
+  /** An asserted trading day (a day-open control); derived from the location otherwise. */
+  readonly businessDate?: string;
+  /** Id minter for a newly issued sequence block. Injected for deterministic tests. */
+  readonly newId?: () => string;
 }
 
 export interface CheckoutResult {
   readonly saleId: string;
+  /** The number printed on the customer's copy. */
+  readonly receiptNo: string;
   readonly totalMinor: bigint;
   readonly changeMinor: bigint;
 }
@@ -132,6 +324,12 @@ export interface CheckoutResult {
 export async function checkout(db: LocalDb, input: CheckoutInput): Promise<CheckoutResult> {
   const nowIso = input.nowIso ?? new Date().toISOString();
   const claimedHlc = input.hlc.next();
+  const tender: TenderKind = input.tender ?? 'CASH';
+  const newId = input.newId ?? uuidv7;
+
+  if (tender === 'CREDIT' && input.customerId === undefined) {
+    throw new SaleContextIncompleteError('A credit sale needs a customer.');
+  }
 
   const result = await db.writeTransaction(async (tx: DbExecutor) => {
     const cart = await getOpenCart(tx);
@@ -149,9 +347,28 @@ export async function checkout(db: LocalDb, input: CheckoutInput): Promise<Check
     ]);
     if (duplicate.length > 0) throw new DuplicateSaleError(input.cartId);
 
+    const context = await loadSaleContext(tx, cart, nowIso, input.businessDate);
+
+    // The number is drawn INSIDE this transaction: a checkout that rolls back
+    // burns none, a checkout that commits can never re-issue one.
+    const receipt = await allocateReceiptNumber(tx, {
+      locationId: context.locationId,
+      locationCode: context.locationCode,
+      deviceNode: deviceNodeFromClaimedHlc(claimedHlc),
+      format: context.receiptFormat,
+      nowIso,
+      newId,
+    });
+
     const built = buildSalePayload({
       saleId: input.cartId,
-      priceListId: cart.priceListId,
+      locationId: context.locationId,
+      priceListCode: context.priceListCode,
+      receiptNo: receipt.receiptNo,
+      businessDate: context.businessDate,
+      tender,
+      customerId: input.customerId,
+      claimedHlc,
       createdAt: nowIso,
       lines,
       tenderedMinor: input.tenderedMinor,
@@ -159,15 +376,19 @@ export async function checkout(db: LocalDb, input: CheckoutInput): Promise<Check
 
     await tx.execute(
       `INSERT INTO outbox
-         (id, idempotency_key, claimed_hlc, kind, payload, total_minor,
-          created_at, server_ack_at, rejected_at, reject_reason)
-       VALUES (?, ?, ?, 'sale', ?, CAST(? AS INTEGER), ?, NULL, NULL, NULL)`,
+         (id, idempotency_key, claimed_hlc, kind, payload, total_minor, receipt_no,
+          tendered_minor, change_minor, created_at, server_ack_at, rejected_at, reject_reason)
+       VALUES (?, ?, ?, 'sale', ?, CAST(? AS INTEGER), ?,
+               CAST(? AS INTEGER), CAST(? AS INTEGER), ?, NULL, NULL, NULL)`,
       [
         input.cartId,
         input.cartId,
         claimedHlc,
         built.payloadJson,
         built.totalMinor.toString(),
+        receipt.receiptNo,
+        input.tenderedMinor.toString(),
+        built.changeMinor.toString(),
         nowIso,
       ],
     );
@@ -176,6 +397,7 @@ export async function checkout(db: LocalDb, input: CheckoutInput): Promise<Check
 
     return {
       saleId: input.cartId,
+      receiptNo: receipt.receiptNo,
       totalMinor: built.totalMinor,
       changeMinor: built.changeMinor,
     };

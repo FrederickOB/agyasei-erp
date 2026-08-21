@@ -12,6 +12,7 @@ export default defineConfig({
       { find: '@erp/db/seed', replacement: p('../../packages/db/src/seed/index.ts') },
       { find: '@erp/db', replacement: p('../../packages/db/src/index.ts') },
       { find: '@erp/money', replacement: p('../../packages/money/src/index.ts') },
+      { find: '@erp/contracts', replacement: p('../../packages/contracts/src/index.ts') },
     ],
   },
   test: {

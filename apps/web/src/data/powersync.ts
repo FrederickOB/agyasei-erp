@@ -78,6 +78,19 @@ export function syncConfigured(): boolean {
   return readSyncEnv() !== null;
 }
 
+/**
+ * The device's API bearer, or `null` when there is none (local-only mode).
+ *
+ * Read separately from `readSyncEnv()` on purpose: enrolment needs only the
+ * bearer, and a device that holds a session but has not been pointed at a sync
+ * service should still bind itself to the right location rather than fall back
+ * to dev placeholders.
+ */
+export function readApiBearerToken(): string | null {
+  const token = import.meta.env.VITE_API_TOKEN;
+  return typeof token === 'string' && token.length > 0 ? token : null;
+}
+
 // ---------------------------------------------------------------------------
 // Connector — credentials from the API, uploads through the API
 // ---------------------------------------------------------------------------

@@ -390,10 +390,50 @@ export const LOCAL_TABLES: readonly LocalTableDef[] = [
       t('kind'), // 'sale' (skeleton); adjustments/transfers/payments later
       t('payload'), // JSON; every monetary value is a decimal STRING of minor units
       i('total_minor'), // for the sales list — CAST AS TEXT on read
+      // The device-allocated human-facing number this sale was rung under
+      // (03 §3.7.5). Denormalised out of `payload` because the receipt screen,
+      // the recent-sales list and a reprint all need it without parsing JSON.
+      t('receipt_no'),
+      // Cash tender is DEVICE-LOCAL state, deliberately not on the wire: the
+      // sale contract has nowhere to put it server-side until app.cash_session
+      // and app.sale_tender land (see the design note in
+      // packages/contracts/src/sale.ts), and a field the server silently drops
+      // is worse than one it refuses. Cash-up reads these columns.
+      i('tendered_minor'), // CAST AS TEXT on read
+      i('change_minor'), // CAST AS TEXT on read
       t('created_at'),
       t('server_ack_at'), // NULL until the server acks; drives the §8.5 badge
       t('rejected_at'),
       t('reject_reason'),
+    ],
+  },
+  {
+    // Device-allocated human-facing sequence numbers (03 §3.7.5). LOCAL-ONLY
+    // and consumed with ZERO connectivity — a block is drawn down inside the
+    // same local transaction that writes the sale, so a rolled-back checkout
+    // burns no number and a committed one can never re-issue it.
+    //
+    // `source` is the whole safety argument. A 'server' block is one the
+    // server allocated under a row lock on a per-(tenant, location,
+    // sequence_key) counter: ranges are disjoint by construction, so the
+    // printed number needs no device tag. A 'device' block is one this device
+    // self-issued because no server-allocated block was on hand — its range
+    // overlaps every other device's, so disjointness has to come from the
+    // identifier itself and the formatter appends the device tag. Both are
+    // "per-device blocks, monotonic within a device, gaps expected", which is
+    // exactly what §3.7.5 chooses; only the source of disjointness differs.
+    name: 'sequence_block',
+    localOnly: true,
+    columns: [
+      t('sequence_key'), // 'RECEIPT' | 'INVOICE' | … — pack + tenant data, not an enum
+      t('location_id'),
+      t('device_node'), // this device's 32-hex HLC node id
+      t('source'), // 'server' | 'device'
+      i('block_start'), // CAST AS TEXT on read — a counter, same discipline
+      i('block_size'),
+      i('consumed_upto'), // NULL until the first number is drawn
+      t('issued_at'),
+      t('exhausted_at'), // set when the last number in the block is consumed
     ],
   },
 ];
@@ -416,5 +456,16 @@ export function localSchemaDdl(): string[] {
   stmts.push('CREATE UNIQUE INDEX idx_outbox_idempotency_key ON outbox (idempotency_key)');
   stmts.push('CREATE INDEX idx_cart_line_cart ON cart_line (cart_id)');
   stmts.push('CREATE INDEX idx_outbox_pending ON outbox (created_at)');
+  // One live block per (sequence_key, location) on this device: the partial
+  // index makes "two open blocks for the same counter" unrepresentable rather
+  // than merely unlikely, so a number can never be drawn from a stale block.
+  stmts.push(
+    `CREATE UNIQUE INDEX idx_sequence_block_open
+       ON sequence_block (sequence_key, location_id)
+     WHERE exhausted_at IS NULL`,
+  );
+  stmts.push(
+    'CREATE INDEX idx_sequence_block_range ON sequence_block (sequence_key, location_id, block_start)',
+  );
   return stmts;
 }

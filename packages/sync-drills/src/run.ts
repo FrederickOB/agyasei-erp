@@ -1,7 +1,7 @@
 /**
  * The Phase 1 sync drill harness — `pnpm --filter @erp/sync-drills drill`.
  *
- * Runs D1–D5 in order against the REAL stack (infra/README.md): docker
+ * Runs D1–D6 in order against the REAL stack (infra/README.md): docker
  * Postgres 16 on :5433, self-hosted PowerSync on :8080, the API dev server
  * on :3001 (reused if already running, spawned otherwise). Writes
  * docs/sync-drill-report.md and exits non-zero if ANY assertion fails.
@@ -15,7 +15,11 @@ import { runD2 } from './drills/d2.js';
 import { runD3 } from './drills/d3.js';
 import { runD4 } from './drills/d4.js';
 import { runD5 } from './drills/d5.js';
+import { runD6 } from './drills/d6.js';
 import { API_URL, DATABASE_URL, POWERSYNC_URL } from './env.js';
+
+/** Every drill must run. A missing one is a failure, not a quiet 5/5. */
+const DRILL_COUNT = 6;
 
 function sh(cmd: string): string {
   try {
@@ -42,6 +46,7 @@ async function main(): Promise<void> {
       { id: 'D3', title: 'HQ view', fn: runD3 },
       { id: 'D4', title: 'idempotent retry', fn: runD4 },
       { id: 'D5', title: 'tenant isolation at the sync layer', fn: runD5 },
+      { id: 'D6', title: "the PWA's own payload, end to end", fn: runD6 },
     ];
     for (const d of drills) {
       console.log(`\n--- ${d.id}: ${d.title} ---`);
@@ -79,7 +84,7 @@ async function main(): Promise<void> {
   const reportPath = writeReport(results, environment);
   const failed = results.filter((r) => !r.pass);
   console.log(`\n=== ${results.length - failed.length}/${results.length} drills passed — report: ${reportPath} ===`);
-  if (failed.length > 0 || results.length !== 5) {
+  if (failed.length > 0 || results.length !== DRILL_COUNT) {
     console.error(`FAILED drills: ${failed.map((r) => r.id).join(', ') || '(missing drills)'}`);
     // Report is on disk (sync write); exit hard so lingering sqlite worker
     // threads cannot keep a failed run's process alive.

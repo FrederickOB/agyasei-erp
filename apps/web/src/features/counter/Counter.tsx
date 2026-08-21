@@ -15,6 +15,8 @@ import {
   cartTotalMinor,
   checkout,
   DuplicateSaleError,
+  SaleContextIncompleteError,
+  SalePayloadInvalidError,
 } from '../../data/mutations/checkout';
 import { getCartLines, getOpenCart, type CartLineRow } from '../../data/queries/cart';
 import { getOrCreateDeviceNode } from '../../data/queries/config';
@@ -32,9 +34,27 @@ type CounterMode =
 
 const UNDO_MS = 5000;
 
+/**
+ * A refused sale is WORK, not a toast (§8.5, and the frontend brief: conflicts
+ * and refusals surface as something a person can act on, never as a message
+ * that disappears). The cart is still there when this shows — the sale can be
+ * re-rung or the device fixed; nothing has been dropped.
+ */
+function refusalMessage(err: unknown): string {
+  if (err instanceof SaleContextIncompleteError) return err.message;
+  if (err instanceof SalePayloadInvalidError) {
+    // Caught HERE, at the counter, rather than as a silent rejection hours
+    // later at sync. The detail is for whoever is called; the first line is
+    // for the person holding the cash.
+    return `This sale cannot be recorded and was not taken. Call support with: ${err.issues.join('; ')}`;
+  }
+  return `This sale was not recorded: ${err instanceof Error ? err.message : String(err)}`;
+}
+
 export function Counter({ db }: { readonly db: LocalDb }): ReactNode {
   const [mode, setMode] = useState<CounterMode>({ step: 'cart' });
   const [removed, setRemoved] = useState<RemovedLine | null>(null);
+  const [refusal, setRefusal] = useState<string | null>(null);
   const undoTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const hlcRef = useRef<ClaimedHlcClock | null>(null);
 
@@ -108,6 +128,7 @@ export function Counter({ db }: { readonly db: LocalDb }): ReactNode {
     (tenderedMinor: bigint) => {
       const hlc = hlcRef.current;
       if (cartId === null || hlc === null) return;
+      setRefusal(null);
       void checkout(db, { cartId, tenderedMinor, hlc })
         .then((result) => {
           setMode({ step: 'receipt', saleId: result.saleId, changeMinor: result.changeMinor });
@@ -121,7 +142,9 @@ export function Counter({ db }: { readonly db: LocalDb }): ReactNode {
             setMode({ step: 'receipt', saleId: err.saleId, changeMinor: null });
             return;
           }
-          throw err;
+          // Everything else stays on screen with the cart intact. A refusal
+          // that vanished would leave a cashier believing a sale was taken.
+          setRefusal(refusalMessage(err));
         });
     },
     [db, cartId],
@@ -138,18 +161,29 @@ export function Counter({ db }: { readonly db: LocalDb }): ReactNode {
     );
   }
 
+  const refusalBanner =
+    refusal === null ? null : (
+      <p className="sale-refused" role="alert">
+        {refusal}
+      </p>
+    );
+
   if (mode.step === 'tender') {
     return (
-      <TenderPanel
-        totalMinor={totalMinor}
-        onBack={() => setMode({ step: 'cart' })}
-        onComplete={onCompleteSale}
-      />
+      <>
+        {refusalBanner}
+        <TenderPanel
+          totalMinor={totalMinor}
+          onBack={() => setMode({ step: 'cart' })}
+          onComplete={onCompleteSale}
+        />
+      </>
     );
   }
 
   return (
     <div className="counter">
+      {refusalBanner}
       <ProductSearch products={products ?? []} onAdd={onAdd} />
       <CartPanel
         lines={lines ?? []}

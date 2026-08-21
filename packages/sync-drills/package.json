@@ -3,12 +3,13 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Executable Phase 1 sync acceptance drills against the REAL stack: real Postgres (docker :5433), real self-hosted PowerSync (:8080), real API (:3001). Nothing mocked — each 'device' is an @powersync/node client with its own sqlite file and its own token.",
+  "description": "Executable Phase 1 sync acceptance drills against the REAL stack: real Postgres (docker :5433), real self-hosted PowerSync (:8080), real API (:3001). Nothing mocked \u2014 each 'device' is an @powersync/node client with its own sqlite file and its own token.",
   "scripts": {
     "drill": "tsx src/run.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@erp/contracts": "workspace:*",
     "@erp/db": "workspace:*",
     "@powersync/common": "^2.1.0",
     "@powersync/node": "^0.21.0",

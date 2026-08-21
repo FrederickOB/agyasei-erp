@@ -65,6 +65,11 @@ export default defineConfig({
   ],
   resolve: {
     alias: {
+      // The ONE wire contract (packages/contracts). Aliased to SOURCE for the
+      // same reason as @erp/money: `vite build`, `tsc` and vitest all see the
+      // definitions the API parses against, with no build-order dependency.
+      // zod is the package's only dependency and bundles for the browser.
+      '@erp/contracts': path.resolve(here, '../../packages/contracts/src/index.ts'),
       '@erp/money': path.resolve(here, '../../packages/money/src/index.ts'),
     },
   },

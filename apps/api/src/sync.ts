@@ -28,8 +28,14 @@
 import type { FastifyInstance } from 'fastify';
 import { SignJWT } from 'jose';
 import { TRPCError } from '@trpc/server';
-import { z } from 'zod';
-import { HLC_RE } from '@erp/db';
+import type { z } from 'zod';
+import {
+  uploadBodySchema,
+  uploadOpSchema,
+  type DeviceOpKind,
+  type SyncTokenResponse,
+  type UploadAck,
+} from '@erp/contracts';
 import { createContextFromHeader, type ContextOptions } from './context.js';
 import { appRouter } from './routers/index.js';
 import { createCallerFactory, type Context } from './trpc.js';
@@ -41,35 +47,14 @@ type Caller = ReturnType<typeof makeCaller>;
 // POST /sync/upload
 // ---------------------------------------------------------------------------
 
-const uploadOpSchema = z
-  .object({
-    /** Client-generated UUIDv7 — THE idempotency key (write_log.id). */
-    idempotency_key: z.string().uuid(),
-    /** Device HLC assertion. Stored as claimed_hlc, UNTRUSTED (§3.4.1). */
-    claimed_hlc: z.string().regex(HLC_RE, 'malformed hlc').optional(),
-    /** Device wall clock. Display/forensics only. */
-    client_wall_at: z.string().datetime({ offset: true }).optional(),
-    /** write_log.op discriminator — see DEVICE_OPS. */
-    kind: z.string().min(1),
-    /** The mutation input minus the envelope; validated by the mutation's own strict schema. */
-    payload: z.record(z.unknown()),
-  })
-  .strict();
-
-const uploadBodySchema = z
-  .object({ ops: z.array(uploadOpSchema).min(1).max(500) })
-  .strict();
-
-export type UploadAckStatus = 'applied' | 'duplicate' | 'rejected';
-export interface UploadAck {
-  key: string;
-  status: UploadAckStatus;
-  /** Only on `rejected`. Prefixed with the TRPC error code so the client
-   *  connector can apply the §3.3.4 retry taxonomy (e.g. a
-   *  `CONFLICT: RETRY_LATER…` or `INTERNAL_SERVER_ERROR…` is retryable;
-   *  `BAD_REQUEST`/`UNKNOWN_KIND` are definitive → dead-letter). */
-  reason?: string;
-}
+/**
+ * The envelope schema and the ack types are NOT defined here. They live in
+ * `@erp/contracts` (`packages/contracts/src/upload.ts`) alongside the batch
+ * cap, so `apps/web`'s outbox drain builds exactly what this route parses
+ * instead of hand-rolling a second copy of the same JSON — the same failure
+ * that made every sale payload a BAD_REQUEST, one layer out.
+ */
+export { type UploadAck, type UploadAckStatus } from '@erp/contracts';
 
 /**
  * The device-originated write surface. Kinds are the write_log `op`
@@ -80,7 +65,9 @@ export interface UploadAck {
  * untyped from the wire and the mutation's own `.strict()` input schema is
  * the validator — a malformed payload is a per-op rejection, not a crash.
  */
-const DEVICE_OPS: Record<string, (caller: Caller, input: Record<string, unknown>) => Promise<unknown>> = {
+type DeviceOpHandler = (caller: Caller, input: Record<string, unknown>) => Promise<unknown>;
+
+const DEVICE_OPS: Record<DeviceOpKind, DeviceOpHandler> = {
   'sale.create': (c, i) => c.sales.createSale(i as never),
   'stock.record_movement': (c, i) => c.inventory.recordMovement(i as never),
   'credit.open_account': (c, i) => c.credit.openAccount(i as never),
@@ -102,7 +89,11 @@ async function applyOne(
   op: z.infer<typeof uploadOpSchema>,
 ): Promise<UploadAck> {
   const key = op.idempotency_key;
-  const invoke = DEVICE_OPS[op.kind];
+  // `kind` arrives as a free string so an unrecognised one is a per-op
+  // UNKNOWN_KIND ack rather than a whole-batch envelope rejection (§3.3.4).
+  // The TABLE, however, is keyed by the contract's DeviceOpKind union: adding
+  // a kind to @erp/contracts without wiring it here is a compile error.
+  const invoke = (DEVICE_OPS as Record<string, DeviceOpHandler | undefined>)[op.kind];
   if (!invoke) {
     return { key, status: 'rejected', reason: `UNKNOWN_KIND: '${op.kind}' is not an uploadable operation` };
   }
@@ -219,10 +210,14 @@ export async function registerSyncRoutes(
       .setExpirationTime(expS)
       .sign(encoder.encode(secret));
 
-    return reply.code(200).send({
+    // TYPED AS THE CONTRACT the PWA parses (`@erp/contracts` sync-token.ts).
+    // Renaming a key here without renaming it there used to be a silent,
+    // fleet-wide loss of the download path; now it is a compile error.
+    const body: SyncTokenResponse = {
       token,
       expires_at: new Date(expS * 1000).toISOString(),
       endpoint,
-    });
+    };
+    return reply.code(200).send(body);
   });
 }
