@@ -1,0 +1,13 @@
+{
+  "note": "Local dev-stack tenants, recreated identically by pnpm stack:reset.",
+  "tenantA": {
+    "id": "01911111-1111-7111-8111-111111111111",
+    "slug": "agyasei-jnr",
+    "legalName": "Agyasei Jnr & Company Limited"
+  },
+  "tenantB": {
+    "id": "01922222-2222-7222-8222-222222222222",
+    "slug": "kumasi-builders",
+    "legalName": "Kumasi Builders Supply Ltd"
+  }
+}

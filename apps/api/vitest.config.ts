@@ -16,7 +16,9 @@ export default defineConfig({
   },
   test: {
     include: ['test/**/*.test.ts'],
-    // PGlite boots a full Postgres in WASM; give it room.
+    // PGlite boots a full Postgres in WASM; give it room. forks (the
+    // default pool, pinned explicitly) so wasm teardown never hangs exit.
+    pool: 'forks',
     testTimeout: 120_000,
     hookTimeout: 180_000,
     fileParallelism: true,

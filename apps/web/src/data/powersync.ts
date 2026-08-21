@@ -1,0 +1,178 @@
+/**
+ * The device database: PowerSync-managed SQLite (wasm, OPFS-persisted, driven
+ * from a worker — §8.1). We do not hand-roll sync (CLAUDE.md §2.2).
+ *
+ * LOCAL-ONLY MODE: when the sync env is not configured the database opens
+ * with the SAME schema and simply never connects. The app is fully usable in
+ * dev with zero backend — which is also an honest rehearsal of the product's
+ * normal condition, offline.
+ *
+ * SYNC MODE (all three env vars set — see env.example):
+ *
+ *   VITE_POWERSYNC_URL  the self-hosted PowerSync service (downloads ONLY —
+ *                       its sync_rules.yaml buckets are the tenant boundary),
+ *   VITE_API_URL        the API dev server: GET /sync/token mints the
+ *                       short-lived PowerSync client token (aud "powersync",
+ *                       tid from the VERIFIED session), POST /sync/upload is
+ *                       the ONE write path into app.write_log,
+ *   VITE_API_TOKEN      dev-only API bearer; real credential exchange is the
+ *                       online login flow (§8.2).
+ *
+ * The connector splits exactly as 03-offline-sync §3.3 requires: downloads
+ * stream from the sync service under the token's tid; uploads drain the
+ * local outbox to the API and complete ONLY on a per-key server ack
+ * (src/data/sync/upload.ts). The sync service never sees a write.
+ */
+import { column, PowerSyncDatabase, Schema, Table } from '@powersync/web';
+import type { ColumnsType, PowerSyncBackendConnector } from '@powersync/web';
+import { DataBus, type DbExecutor, type DbRow, type LocalDb, type SqlValue } from './db';
+import { LOCAL_TABLES, type LocalTableDef } from './schema';
+import { CredentialCache } from './sync/credentials';
+import { SyncRuntime } from './sync/runtime';
+import { httpUploadTransport } from './sync/transport';
+import { drainOutbox } from './sync/upload';
+
+function toPowerSyncTable(def: LocalTableDef): Table {
+  const columns: ColumnsType = {};
+  for (const c of def.columns) {
+    columns[c.name] = c.type === 'integer' ? column.integer : column.text;
+  }
+  return new Table(columns, { localOnly: def.localOnly });
+}
+
+export function buildPowerSyncSchema(): Schema {
+  const tables: Record<string, Table> = {};
+  for (const def of LOCAL_TABLES) tables[def.name] = toPowerSyncTable(def);
+  return new Schema(tables);
+}
+
+// ---------------------------------------------------------------------------
+// Environment — the fixed dev contract (infra/README, env.example)
+// ---------------------------------------------------------------------------
+
+export interface SyncEnv {
+  readonly apiUrl: string;
+  readonly powersyncUrl: string;
+  readonly apiToken: string;
+}
+
+/** The sync env, or null → local-only fallback. All three are required. */
+export function readSyncEnv(): SyncEnv | null {
+  const apiUrl = import.meta.env.VITE_API_URL;
+  const powersyncUrl = import.meta.env.VITE_POWERSYNC_URL;
+  const apiToken = import.meta.env.VITE_API_TOKEN;
+  if (
+    typeof apiUrl !== 'string' ||
+    apiUrl.length === 0 ||
+    typeof powersyncUrl !== 'string' ||
+    powersyncUrl.length === 0 ||
+    typeof apiToken !== 'string' ||
+    apiToken.length === 0
+  ) {
+    return null;
+  }
+  return { apiUrl, powersyncUrl, apiToken };
+}
+
+export function syncConfigured(): boolean {
+  return readSyncEnv() !== null;
+}
+
+// ---------------------------------------------------------------------------
+// Connector — credentials from the API, uploads through the API
+// ---------------------------------------------------------------------------
+
+/**
+ * fetchCredentials: GET /sync/token, cached until near expiry
+ * (sync/credentials.ts). uploadData: drain the outbox through the runtime.
+ * PowerSync itself will rarely invoke uploadData (synced tables are read-only
+ * on the device, so its CRUD queue stays empty) — the runtime schedules
+ * drains off the change bus — but if it ever does, the same single-flight
+ * drain runs: a batch is never completed without a server ack, from any path.
+ */
+export function buildConnector(env: SyncEnv, runtime: SyncRuntime): PowerSyncBackendConnector {
+  const credentials = new CredentialCache({
+    apiUrl: env.apiUrl,
+    apiToken: env.apiToken,
+    powersyncUrl: env.powersyncUrl,
+  });
+  return {
+    async fetchCredentials() {
+      const fresh = await credentials.get();
+      return {
+        endpoint: fresh.endpoint,
+        token: fresh.token,
+        expiresAt: new Date(fresh.expiresAtMs),
+      };
+    },
+    async uploadData() {
+      await runtime.drainNow();
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Open
+// ---------------------------------------------------------------------------
+
+export async function openLocalDb(): Promise<LocalDb> {
+  const ps = new PowerSyncDatabase({
+    schema: buildPowerSyncSchema(),
+    database: { dbFilename: 'erp-local.db' },
+  });
+  await ps.init();
+
+  const changes = new DataBus();
+  const wrapExecutor = (target: {
+    execute: (sql: string, params?: unknown[]) => Promise<unknown>;
+    getAll: <T>(sql: string, params?: unknown[]) => Promise<T[]>;
+  }): DbExecutor => ({
+    async execute(sql: string, params?: readonly SqlValue[]): Promise<void> {
+      await target.execute(sql, params === undefined ? undefined : [...params]);
+    },
+    async getAll(sql: string, params?: readonly SqlValue[]): Promise<DbRow[]> {
+      return target.getAll<DbRow>(sql, params === undefined ? undefined : [...params]);
+    },
+  });
+
+  const root = wrapExecutor(ps);
+  const base: Omit<LocalDb, 'sync'> = {
+    execute: root.execute,
+    getAll: root.getAll,
+    async writeTransaction<T>(fn: (tx: DbExecutor) => Promise<T>): Promise<T> {
+      return ps.writeTransaction(async (tx) => fn(wrapExecutor(tx)));
+    },
+    changes,
+  };
+
+  const env = readSyncEnv();
+  if (env === null) {
+    // Local-only fallback: same schema, no connection, no runtime.
+    return base;
+  }
+
+  const transport = httpUploadTransport({ apiUrl: env.apiUrl, apiToken: env.apiToken });
+  // The runtime drains against the same LocalDb seam the app writes through,
+  // so ack marking rides the same change bus the badges re-render from.
+  const runtime = new SyncRuntime({
+    drain: (onProgress) => drainOutbox(base, transport, { onProgress }),
+    subscribeChanges: (listener) => changes.subscribe(listener),
+  });
+
+  const db: LocalDb = { ...base, sync: runtime };
+
+  // The four offline states follow the ACTUAL connector status (§8.4).
+  ps.registerListener({
+    statusChanged: (status) => {
+      runtime.setConnected(status.connected);
+    },
+  });
+  // Radio back → try the queue immediately, ahead of the retry timer.
+  if (typeof window !== 'undefined') {
+    window.addEventListener('online', () => void runtime.drainNow());
+  }
+
+  await ps.connect(buildConnector(env, runtime));
+  runtime.start();
+  return db;
+}

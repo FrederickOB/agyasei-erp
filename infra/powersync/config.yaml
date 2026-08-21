@@ -1,0 +1,59 @@
+# yaml-language-server: $schema=https://unpkg.com/@powersync/service-schema@latest/json-schema/powersync-config.json
+#
+# PowerSync service configuration — LOCAL DEV ONLY.
+# Values marked !env are substituted from PS_-prefixed environment variables
+# set in infra/docker-compose.yml (which in turn takes them from the
+# `pnpm stack:up` wrapper / infra/.env.example).
+
+_type: self-hosted
+
+telemetry:
+  disable_telemetry_sharing: true
+
+# Source database replication: the erp Postgres, reached in-network as
+# postgres:5432 (the SAME container that is localhost:5433 on the host).
+replication:
+  connections:
+    - type: postgresql
+      uri: !env PS_DATA_SOURCE_URI
+      sslmode: disable # dev-only, private compose network
+
+# Sync-bucket storage: Postgres storage (open edition, service >= 1.3.8) in a
+# DEDICATED database (powersync_storage) on the same dev cluster — no MongoDB
+# container needed. The service creates and owns a `powersync` schema there.
+storage:
+  type: postgresql
+  uri: !env PS_STORAGE_URI
+  sslmode: disable
+
+# The PowerSync API/sync port — fixed by the environment contract at 8080.
+port: 8080
+
+# THE isolation boundary: bucket definitions live in their own reviewed file.
+sync_config:
+  path: /config/sync_rules.yaml
+
+# Client (device) authentication.
+# One dev HS256 secret is shared by API-issued tokens and this validation:
+# env DEV_JWT_SECRET (default "dev-secret-change-me"). PS_JWT_K is
+# base64url(DEV_JWT_SECRET) — derived by infra/scripts/stack.mjs.
+# Tokens must carry aud "powersync" and claim "tid" (tenant uuid).
+# No `kid` is pinned here so dev tokens do not need a kid header; if the
+# issuer sets one anyway, PowerSync still tries this single key.
+client_auth:
+  jwks:
+    keys:
+      - kty: 'oct'
+        alg: 'HS256'
+        k: !env PS_JWT_K
+  audience: ['powersync']
+
+# Local admin/diagnostics API token (dev only).
+api:
+  tokens:
+    - erp_dev_admin_token
+
+system:
+  logging:
+    level: info
+    format: text

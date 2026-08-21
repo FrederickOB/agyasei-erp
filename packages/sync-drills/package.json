@@ -1,0 +1,26 @@
+{
+  "name": "@erp/sync-drills",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Executable Phase 1 sync acceptance drills against the REAL stack: real Postgres (docker :5433), real self-hosted PowerSync (:8080), real API (:3001). Nothing mocked — each 'device' is an @powersync/node client with its own sqlite file and its own token.",
+  "scripts": {
+    "drill": "tsx src/run.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@erp/db": "workspace:*",
+    "@powersync/common": "^2.1.0",
+    "@powersync/node": "^0.21.0",
+    "better-sqlite3": "^12.2.0",
+    "jose": "^5.9.6",
+    "pg": "^8.13.1"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.12",
+    "@types/node": "^22.10.2",
+    "@types/pg": "^8.11.10",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  }
+}
