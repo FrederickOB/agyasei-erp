@@ -25,6 +25,7 @@ import type { AckStatus, PendingOp, UploadAck, UploadResult, UploadTransport } f
  */
 export const WIRE_KINDS: Readonly<Record<string, DeviceOpKind>> = {
   sale: 'sale.create',
+  sequence_block: 'sequence.sync_block',
 };
 
 export function wireKind(kind: string): string {
@@ -66,10 +67,12 @@ function parseAcks(body: unknown): UploadAck[] | null {
     if (typeof key !== 'string') return null;
     if (status !== 'applied' && status !== 'duplicate' && status !== 'rejected') return null;
     const reason = rec['reason'];
+    const result = rec['result'];
     parsed.push({
       key,
       status: status as AckStatus,
       ...(typeof reason === 'string' ? { reason } : {}),
+      ...(result === undefined ? {} : { result }),
     });
   }
   return parsed;

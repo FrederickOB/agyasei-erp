@@ -422,6 +422,17 @@ export const LOCAL_TABLES: readonly LocalTableDef[] = [
     // identifier itself and the formatter appends the device tag. Both are
     // "per-device blocks, monotonic within a device, gaps expected", which is
     // exactly what §3.7.5 chooses; only the source of disjointness differs.
+    // LOCAL-ONLY, and that is the second half of the safety argument: a
+    // counter is never synced DOWN to a device (04 §4.7 deleted
+    // `document_number_range` for exactly that defect), so `consumed_upto` is
+    // device state that is REPORTED and compared server-side, never
+    // authoritative here.
+    //
+    // This table is also precisely what a wipe destroys. Evict OPFS, or
+    // reinstall the PWA on the same enrolled device, and the row goes with it
+    // while the server still shows the block live — which is how the
+    // regression is detected (`data/sequence.ts` buildBlockReport, and
+    // `sequence.syncBlock` on the server).
     name: 'sequence_block',
     localOnly: true,
     columns: [
@@ -432,8 +443,22 @@ export const LOCAL_TABLES: readonly LocalTableDef[] = [
       i('block_start'), // CAST AS TEXT on read — a counter, same discipline
       i('block_size'),
       i('consumed_upto'), // NULL until the first number is drawn
+      // The tenant's rendering configuration, as the SERVER handed it down with
+      // the block (app.sequence_counter.number_format / .number_prefix, and the
+      // location's own code). NULL on a self-issued block, which has none.
+      //
+      // It lives on the BLOCK rather than in device configuration so a block
+      // and the format its numbers were printed under cannot drift apart: a
+      // reprint of yesterday's receipt must render what the customer is holding.
+      t('number_format'),
+      t('number_prefix'),
+      t('location_code'),
       t('issued_at'),
       t('exhausted_at'), // set when the last number in the block is consumed
+      // The cursor value this device last TOLD the server about, stamped when
+      // the reconnect report is queued. Not the same thing as consumed_upto:
+      // the gap between the two is the window a wipe would hide.
+      t('reported_at'),
     ],
   },
 ];

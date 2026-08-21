@@ -1,12 +1,24 @@
 # Phase 1 status — integration & QA report
 
-**Date:** 2026-08-21 (RBAC enforcement pass) · **Author:** QA engineer
-**Verdict:** the whole workspace installs, builds, typechecks and passes — **535 tests, 46 files,
-0 failures** — `tools/lint-money.mjs` is clean, `pnpm --filter @erp/sync-drills drill` passes
-**6/6 drills (54 checks) against the real stack**, and the new
-`pnpm --filter @erp/wire-conformance drill:rbac` passes **13/13 authorization checks over real
-HTTP**: real Postgres 16, real self-hosted PowerSync, real API on :3001, real `@powersync/node`
-devices with their own sqlite files. Nothing mocked.
+**Date:** 2026-08-21 (merge of the RBAC/contracts pass with the receipt-number
+regression pass) · **Author:** QA engineer
+**Verdict:** two independent work-packages are now one tree. From `origin/main`:
+the `@erp/contracts` shared wire contract, RBAC enforcement resolved per request
+from the database, device price-list provisioning, and the wire-conformance
+suite. From PR #4: receipt-number regression detection — server-allocated
+blocks, burn-and-reissue on reconnect, the conflict-review queue, and the
+collision landing path that stops the outbox wedging.
+
+**Post-merge verification, on the merged tree:** the whole workspace installs,
+builds, typechecks and passes — **616 tests, 51 files, 0 failures** across seven
+packages — `tools/lint-money.mjs` is clean, and `pnpm stack:reset` (docker
+volume destroyed, six migrations + seed from scratch) followed by
+`pnpm --filter @erp/sync-drills drill` passes **7/7 drills against the real
+stack**: real Postgres 16, real self-hosted PowerSync, real API, real
+`@powersync/node` devices with their own sqlite files. D6 (the PWA's own
+payload) and D7 (receipt-number regression, with a genuine sqlite-file wipe)
+both pass in the same tree, which is the thing neither branch could show on its
+own. Per-package figures below are post-merge counts.
 
 Acceptance criteria **1, 2, 4 and 5 are demonstrated, not asserted** — measured numbers in §5.
 Criterion 3 remains tested-at-API-level with the Q4 human gate outstanding.
@@ -20,7 +32,7 @@ the gap is item 1 of §6. This is not a Phase 1 sign-off: the remaining gaps are
 
 ## 0. Read this before trusting the drill suite again
 
-**A green suite has now failed SEVEN times to notice that a written path had never been executed.**
+**A green suite has now failed EIGHT times to notice that a written path had never been executed.**
 The count is kept here deliberately, and it goes up, because the pattern is the project's most
 reliable defect source: code is written, unit-tested against a harness that agrees with it, and
 never once run against the real stack.
@@ -33,6 +45,7 @@ never once run against the real stack.
 | **Price list** | The device's price-list selection and the server's resolution disagreed. | green | Both sides tested against a fixture, neither against the other. |
 | **Device price list** | `writeActivePriceListId` was written and never called from anywhere. The only writer of `local_config.price_list_id` was the dev seed, which points it at a placeholder list coded `DEFAULT`. Tenant #1's lists are `RETAIL` and `WHOLESALE`, so in sync mode every sale went up as `priceListCode: 'DEFAULT'` and the API answered `PRECONDITION_FAILED: no price list DEFAULT in force` — **recorded at the counter, rejected at upload**, which is the worst of the three outcomes because the till believed it had sold. | green | Identical shape to the device-enrolment row two above it, and missed the same way: `tests/helpers/fixtures.ts` provisions a device with `priceListCode: 'DEFAULT'` and seeds a matching list, so every unit test agreed with the client about a code the server has never heard of. `tests/live-upload.smoke.ts` *did* hit the real API — with `order by priority desc`, which quietly selects the one list the API can price, so it never exercised what a device would actually choose. |
 | **Currency spec** | The currency the client assumed and the one the server used were never compared. | green | No shared declaration existed to compare them against. |
+| **Sequence reporting (this merge)** | Two halves of PR #4 were written and reachable by nothing. (a) `apps/web/src/data/sequence.ts`'s whole reconnect half — `buildBlockReport`, `enqueueBlockReport`, adoption — was imported by its own unit test and by **no production module**: `powersync.ts` drained the outbox with no `onResult`, and `checkout` allocated numbers through a different function entirely. (b) the review it opens routed on `required_permission = 'sequence.review'`, a code absent from `platform.permission`; the column has no FK, so nothing complained and **no user could ever have held it** — every severity-1 receipt-number review would have landed in a queue nobody could read. | its own suite: green | The unit test imported the module directly, so "does anything call this?" was never asked; and the permission string was asserted against itself (`expect(required_permission).toBe('sequence.review')`) rather than against the catalogue. |
 | **RBAC enforcement (this pass)** | Permission checks were added to the API's stock and credit routes with **535 unit tests green**. On the live stack: migration `0005` had never been applied, so `app.effective_permission` did not exist; `applyTemplate` seeds roles but deliberately seeds **no users and no role assignments**, so every tenant had 5 roles and **0 grants**; and every drill device mints a fresh random `uid`. The result: **the entire Phase 1 acceptance drill suite died at warm-up** with `FORBIDDEN: PERMISSION_DENIED: stock.adjust is not held by this user`, and `pnpm dev:token` produced a bearer that no guarded route would accept. | 535/535 PASS | `apps/api/test/util.ts` grants every test identity the **owner role by default** (`identityFor(..., grant: 'owner')`). Every API test therefore ran as a principal holding the whole catalogue, so no test could observe that no real principal existed. The drills would have caught it in one run — they were not run, because they need docker. |
 
 One root cause, stated once: **both sides were only ever tested against a third thing that agreed
@@ -53,10 +66,12 @@ What changed, so the next one is caught:
 - **Drill D6** — the same journey over a real socket against the deployed stack, so the failures an
   in-process harness cannot see (CORS preflight, a dev server on stale code, seed data that does
   not match the contract) are caught too. One of each, from now on.
-- **A pin on the client's write surface.** `apps/web` can upload exactly one kind today
-  (`sale.create`). `outbox-surface.test.ts` fails the moment a second appears without a test that
-  drives *its* real builder against *its* real parser.
-- **Drill D7 — `pnpm --filter @erp/wire-conformance drill:rbac`.** Thirteen authorization checks
+- **A pin on the client's write surface.** `apps/web` can upload two kinds today
+  (`sale.create` and `sequence.sync_block`). `outbox-surface.test.ts` fails the moment another
+  appears without a test that drives *its* real builder against *its* real parser — and it did
+  fail, on this merge, the moment the sequence report joined the vocabulary. The answer was
+  `sequence-client-to-api.test.ts`, not a wider allow-list.
+- **Drill D8 — `pnpm --filter @erp/wire-conformance drill:rbac`.** Thirteen authorization checks
   over a real socket against the deployed stack: every refusal paired with a positive control on
   the same route with the same payload, so "denied" can never mean "the route is broken for
   everyone". It is the check that would have caught this pass's failure in one run.
@@ -92,7 +107,7 @@ this is not a sign-off.
 - **`app.effective_permission`** (`security_invoker`) — one row per *(user, code, location)*. A
   permission is never a bare capability; it is always a capability **at a place**.
 - **The two hard prohibitions are the ABSENCE of rows**, not a branch: the counter role simply does
-  not carry `sale.override_price` or `credit.limit.change`. Verified live — see D7 check 7, where a
+  not carry `sale.override_price` or `credit.limit.change`. Verified live — see D8 check 7, where a
   counter-staff principal carrying `role: "head_of_operations"` in its own server-signed token is
   refused exactly as before.
 
@@ -113,6 +128,7 @@ context. No permission claim is read from the token, and `role` is never touched
 | `session.permissions` | no | n/a | reads only the caller's own grants; a UX affordance, explicitly not a control |
 | **`sales.createSale`** | **yes** | ❌ **NO** | **see §6 item 1 — the sale path is unguarded** |
 | `sales.get` / `sales.recomputeCheck` | no | ❌ no | `sale.view` exists in the catalogue and is never checked |
+| **`sequence.syncBlock`** (new, PR #4) | **yes** | **scope only** | No capability check. `assertLocationInScope` holds, so a device cannot report or take a block at a location its token does not scope — but any valid tenant bearer at an in-scope location may burn a block and open a severity-1 review. Arguably inherent to being an enrolled device rather than a delegable capability; recorded here so the choice is visible rather than implied. Revisit with §6 item 1. |
 | `catalogue.list` / `search` / `detail` | no | ❌ no | `catalogue.view` exists and is never checked |
 | `provisioning.applyTemplate` | yes | ❌ no | `admin.template.apply` exists and is never checked. Defensible — this is the bootstrap edge that *creates* the roles there would be something to check against — but it is a mutation any valid tenant bearer can call. |
 | `provisioning.createTenant` | yes | operator | platform-operator plane, not tenant RBAC |
@@ -221,7 +237,7 @@ shape disagreement a compile error instead of a `BAD_REQUEST` at a till in Techi
   key and refuses all three spellings of tenant identity; movement/credit money as strings; no
   `SALE` movement kind and no `FEE` entry kind on the device surface; the `/sync/token` shape
 
-### `packages/wire-conformance` — 31 tests (3 files), typecheck clean
+### `packages/wire-conformance` — 35 tests (4 files), typecheck clean
 **A probe package whose only job is to prove the two sides agree.** No production code imports it.
 It exists because it is the only place that can import `apps/web`'s sources *and* `apps/api`'s:
 the PWA resolves modules as a bundler would and its imports carry no file extensions, which
@@ -245,6 +261,38 @@ the PWA resolves modules as a bundler would and its imports carry no file extens
   registry kind is really dispatched (an empty payload must be `BAD_REQUEST`, never
   `UNKNOWN_KIND`); an unknown kind is per-op `UNKNOWN_KIND` without taking the batch with it; one
   contract-shaped payload per kind is accepted end to end; the batch cap is enforced on both sides.
+- `session-scope` (4) — the device reads the *same* location scope the API enforces, out of a real
+  API-signed token: one location, many locations in the same order, and an empty claim scoping the
+  device nowhere. The fourth pins the rule that matters — the client reads the claim **without
+  verifying it**, and that is all it is trusted for; enforcement is the server's.
+- `sequence-client-to-api` (4) — **added by this merge**, and the reason §0's *Sequence reporting*
+  ledger row could be closed rather than merely noted. PR #4's reconnect half was reachable from its own unit
+  test and from no production module; the only way to prove it is wired is to drive the PWA's own
+  `buildBlockReport` → outbox → `httpUploadTransport` → `sequence.syncBlock` → Postgres. Asserts
+  the router parses the PWA's payload with the *same* `syncBlockInput` object the contract exports
+  (identity, not shape-alike); that a real server block is carried back through the outbox result
+  and the till then prints from it; and that a wiped cursor is detected on reconnect — old block
+  `REGRESSION_BURN`ed, fresh block strictly above it, severity-1 review opened. The review's
+  `required_permission` is asserted against the **catalogue** (`sync.conflict.review`), not against
+  itself — the assertion PR #4 lacked, which is why its invented `sequence.review` code went
+  unnoticed.
+
+### `packages/sequence` — 14 tests (1 file), build + typecheck clean
+**Receipt-number rendering and block arithmetic, shared by server and till so a number cannot be
+formatted two ways.** Arrived with PR #4. Pure and dependency-free — which is what lets both the
+Node server and the browser till import the one implementation.
+
+- `format` (14) — three groups. **`renderNumber`**: the §3.7.5 template; a second tenant's format
+  is *another value, not another code path* (§2.9 as an executable assertion); an unknown
+  placeholder or a missing `{n}` slot raises at the counter rather than on a printed receipt; a
+  number exceeding the declared width raises instead of silently wrapping; and it carries exactly
+  past 2^53 — a receipt number is `bigint`, never a float64. **Emergency form**: the
+  device-derived suffix, plus a discriminator so two emergency numbers from one device stay
+  distinct — this is what lets a collision be stored on a unique number while `receipt_no_claimed`
+  keeps the number the customer is actually holding. **Block arithmetic**: a block spans
+  `[start, start+size-1]`, issues from the start, and is *spent* rather than wrapped at the end;
+  replacement is requested by **days of observed throughput**, falling back to 20% only when the
+  till has no history.
 
 ### `packages/money` — 56 tests (4 files), build + typecheck clean
 The platform's single money module (ADR-0004). `bigint` minor units with runtime
@@ -273,6 +321,13 @@ Postgres 16 — one DDL, two harnesses.
   fee rates `app.bp` (integer basis points).
 - Effective-dated `platform.tax_rate` with `base_kind` semantics and an
   overlap-forbidding constraint.
+- Human-facing document numbers are server-allocated blocks (migration 0005,
+  03 §3.7.5): `sequence_counter` (row-locked, never synced, never rewinds),
+  `sequence_block` (one live block per device by partial unique index; ranges
+  never overlap at a location; `consumed_upto` **cannot regress** — the trigger
+  refuses it), and `conflict_review` / `conflict_review_location` for the
+  severity-1 queue. `sale.receipt_no_claimed` preserves what a customer's paper
+  says when a collision forces the emergency form.
 - Every app table is defined through the `tenantTable()` factory (18 tables +
   `write_log` explicitly registered): `tenant_id`, UUIDv7 `id`, write-spine FK,
   HLC and soft-delete columns are injected structurally — omitting them is
@@ -288,13 +343,14 @@ Postgres 16 — one DDL, two harnesses.
 - `seed` (15) — the "Construction materials distribution — Ghana" template applies
   as ordinary editable rows (ADR-0006); templates never seed prices
 
-### `apps/api` — 121 tests (11 files), typecheck clean
+### `apps/api` — 143 tests (12 files), typecheck clean
 Fastify + tRPC write path, now with the sync seam wired. Verified-token identity
 (`tid` is the **only** source of tenant identity; roles are opaque tenant-defined
 strings, never branched on), one idempotent pipeline over `app.write_log` with
-server-stamped HLC, tax engine honouring `base_kind`/`base_includes`, five tRPC
-routers (provisioning, catalogue, sales, inventory, credit), and two plain
-Fastify sync routes beside the tRPC mount (`src/sync.ts`):
+server-stamped HLC, tax engine honouring `base_kind`/`base_includes`, seven tRPC
+routers (provisioning, session, catalogue, sales, inventory, credit, sequence),
+and two
+plain Fastify sync routes beside the tRPC mount (`src/sync.ts`):
 
 - `GET /sync/token` — exchanges the API bearer for a short-lived PowerSync client
   token (aud `powersync`, `tid` from the **verified** session — never a request field)
@@ -321,8 +377,15 @@ and tax computation exist; **no** invoice issuance/clearance fields.
 - `sync-token` (5) — refuses unauthenticated calls; tid only from the verified session
 - `sync-upload` (6) — ordered batch processing, per-op ack (`applied`/`duplicate`/
   rejection), idempotent replay through the one pipeline
+- `sequence-regression` (20) — 03 §3.7.5 / conflict class #14: server block
+  allocation from the tenant's own format (a location with no counter row is
+  refused, never defaulted), the three regression shapes
+  (`LOST_CURSOR`, `CONSUMED_UPTO_REGRESSION`, `UNKNOWN_BLOCK`), burn + reissue +
+  severity-1 review naming the overlap range, stale reports deduplicated, the
+  database refusing a regression directly, the collision landing path, and
+  tenant isolation across all four new read paths
 
-### `apps/web` — 148 tests (16 files), build (Vite + PWA) + typecheck clean
+### `apps/web` — 189 tests (18 files), build (Vite + PWA) + typecheck clean
 Installable PWA shell and POS skeleton, now with the full sync connector
 (`src/data/sync/`: `credentials.ts`, `upload.ts`, `transport.ts`, `runtime.ts`,
 wired through `src/data/powersync.ts`). `fetchCredentials` exchanges the dev API
@@ -338,9 +401,14 @@ proving checkout is a single ACID transaction.
 - `sync-credentials` (7) · `sync-upload` (13) · `sync-transport` (6) · `sync-runtime` (6)
 - `no-hardcoded-vocabulary` (4) — greps the built app for tenant #1 vocabulary
   used as logic
+- `sequence` (13) — the till half of §3.7.5: numbers issued with no network on
+  the path, cursor advancing in the *same* transaction that mints the number,
+  exhaustion falling to the emergency form rather than stopping trading, a wiped
+  device reporting "I hold nothing" truthfully, and adoption of a replacement
+  block after a burn
 
 ### `packages/sync-drills` — the executable acceptance demonstrations
-`pnpm --filter @erp/sync-drills drill` runs the **six** Phase 1 drills against the
+`pnpm --filter @erp/sync-drills drill` runs the **seven** Phase 1 drills against the
 **real stack** (auto-spawns the API on :3001 if absent, tears it down after).
 D1–D5: each "device" is an `@powersync/node` client with its own sqlite file and
 its own tokens; writes go solely outbox → `POST /sync/upload`; the drill connector
@@ -487,12 +555,13 @@ Prereqs: Node ≥ 20, pnpm 9 (`corepack enable`), Docker.
 pnpm install                # from the repo root
 pnpm build                  # turbo: tsc for @erp/money, Vite+PWA for @erp/web
 pnpm typecheck              # all packages
-pnpm test                   # all suites (535 tests; PGlite suites take ~30s)
+pnpm test                   # all suites (616 tests, 51 files; PGlite suites take ~30s)
 pnpm lint:money             # ADR-0004 money-type lint
 
-# Per package (dependency order contracts → money → db → api → web → conformance):
+# Per package (dependency order contracts → money → sequence → db → api → web → conformance):
 pnpm --filter @erp/contracts test    # zod only; no db, no network, no wasm
 pnpm --filter @erp/money test
+pnpm --filter @erp/sequence test     # pure receipt-number rendering + block arithmetic
 pnpm --filter @erp/db test           # hermetic — real DDL on PGlite, no external Postgres
 pnpm --filter @erp/api test          # same harness, drives the tRPC routers + sync routes
 pnpm --filter @erp/web test          # real SQLite via node:sqlite + jsdom for components
@@ -500,9 +569,9 @@ pnpm --filter @erp/wire-conformance test   # the PWA's real payload vs the API's
 
 # The real stack + acceptance drills (reproducible from nothing):
 pnpm stack:reset                    # docker down -v → up → migrate → seed 2 tenants
-pnpm --filter @erp/sync-drills drill  # 6 drills / 54 checks; spawns the API on :3001 if absent
+pnpm --filter @erp/sync-drills drill  # 7 drills; spawns the API on :3001 if absent
 pnpm --filter @erp/wire-conformance drill:live   # D6 alone, against the running stack
-pnpm --filter @erp/wire-conformance drill:rbac   # D7 — 13 authorization checks over real HTTP
+pnpm --filter @erp/wire-conformance drill:rbac   # D8 — 13 authorization checks over real HTTP
 pnpm dev:token --role counter_staff  # a bearer for a REAL provisioned principal;
                                     # refs: counter_staff, outlet_manager,
                                     # regional_manager, accounts, head_of_operations
@@ -526,9 +595,12 @@ vitest process ever hangs at exit, it is PGlite/wasm teardown: the api config pi
 
 ## 5. Acceptance criteria — demonstrated, with the measured numbers
 
-All figures are from the runs on 2026-08-21: **6/6 drills PASS**, full log in
-`docs/sync-drill-report.md` (D1–D5 first measured on a clean-slate `stack:reset`
-run; D6 added in the contract-conformance pass and run against the same stack). The run was performed twice from a clean slate on
+All figures are from the POST-MERGE clean-slate run (2026-08-21,
+`pnpm stack:reset` from a destroyed docker volume, then `drill`): **7/7 drills
+PASS**, full log in `docs/sync-drill-report.md`. Both drills that neither branch
+could run together are in it — D6 (the PWA's own payload end to end) and D7
+(receipt-number regression, wipe mid-block, reissue). The run was performed
+twice from a clean slate on
 2026-08-21; both passed. Localhost latencies are of course optimistic versus
 field conditions — what the drills prove is *correctness* of the offline→sync
 path and that the 60s budget is met with enormous headroom in the lab; the
@@ -684,7 +756,7 @@ every `pnpm test`, plus D6 in the drill report.
    `customer_account.credit_limit_minor` is protected by a column-level `REVOKE` on
    `app_rw` **and a trigger that raises**. Neither exists. Today the only writer is
    `credit.openAccount`, which *is* gated on `credit.limit.change` (verified live,
-   D7 check 2) — so the prohibition holds, but it holds on one application check
+   D8 check 2) — so the prohibition holds, but it holds on one application check
    with no defence in depth underneath it. A second writer added later would
    silently bypass it.
 
@@ -704,31 +776,73 @@ every `pnpm test`, plus D6 in the drill report.
    stack: OPFS persistence, worker behaviour, sync performance under field
    latency (the 60s budget was met at p95 212ms on localhost; the field number
    is the one that matters).
-9. **Receipt-number regression is undetected, and it wedges the queue.** Found by
-   running D6 twice. `03-offline-sync` §3.7.5 requires that a device reporting a
-   `consumed_upto` regression has the remainder of its block burned, a fresh block
-   issued, and a **severity-1 review opened naming the overlap range** (conflict
-   class #14); §3.9 lists "wipe a device's local DB mid-block, reissue" as a named
-   drill. None of that exists. There is no `sequence_block` table server-side and
-   no allocation endpoint — every block today is self-issued by the device
-   (`apps/web/src/data/sequence.ts` says so in its own seam note). What happens
-   instead: the second sale carrying a repeated receipt number is answered
-   `INTERNAL_SERVER_ERROR: duplicate key value violates unique constraint
-   "sale_receipt_uq"`, and the client's §3.3.4 taxonomy
-   (`classifyRejection`) classes `INTERNAL_SERVER_ERROR` as **retryable** — so the
-   op is retried forever and the outlet's queue never drains. Reproduce: run
-   `pnpm --filter @erp/wire-conformance drill:live` with a fixed `deviceNode`
-   instead of the per-run random one.
+9. **Receipt-number regression (03 §3.7.5, conflict class #14) — CLOSED
+   2026-08-21.** Owner: `sync-architect`. Recorded here as the gap; this is
+   what landed.
 
-   **Not fixed here, deliberately.** The two cheap patches are both wrong: mapping
-   the constraint violation to `BAD_REQUEST` would dead-letter a real sale (the
-   loss path §3.3.4 exists to avoid), and silently renumbering would hand a
-   customer a receipt number a different customer already holds. The correct fix is
-   the mechanism §3.7.5 specifies — server-side blocks, regression detection on
-   reconnect, and the review queue — which is a work-package for `sync-architect`,
-   not a patch. Recorded here rather than papered over.
+   *The defect.* Every block was self-issued by the device, so a device whose
+   local database was wiped mid-block (OPFS eviction, PWA reinstall on the same
+   enrolled device) restarted its cursor and reissued numbers it had already
+   printed. `sale_receipt_uq` rejected the second sale with a raw
+   `INTERNAL_SERVER_ERROR: duplicate key value violates unique constraint`,
+   which `classifyRejection()` in `apps/web/src/data/sync/upload.ts` classes
+   RETRYABLE — so the op retried forever, the outlet's outbox never drained,
+   and the till went dark for uploads while looking merely "stuck".
+   Reproduced before the fix by uploading two sales carrying the same
+   `receiptNo` under different idempotency keys.
 
-10. **Three of the four uploadable ops have no client at all.** `sale.create` is now
+   *Neither cheap answer was taken.* Mapping the constraint violation to
+   `BAD_REQUEST` dead-letters a real sale with the cash already in the till —
+   the loss path §3.3.4 exists to prevent. Renumbering silently hands a
+   customer a number another customer already holds and tells nobody.
+   `classifyRejection()` is therefore **unchanged**: the fix is upstream, and
+   nothing on the drain path became more willing to discard a write.
+
+   *What landed.* Migration `0006_app_sequence_and_review.sql` adds
+   `app.sequence_counter` (server-side, row-locked, never synced, cannot
+   rewind), `app.sequence_block` (one live block per device; ranges never
+   overlap at a location; a trigger **refuses** a `consumed_upto` regression,
+   so the application cannot paper over one), `app.conflict_review` +
+   `app.conflict_review_location`, and `app.sale.receipt_no_claimed`.
+   `sequence.syncBlock` (`apps/api/src/routers/sequence.ts`) is the reconnect
+   conversation: it detects the regression, burns the remainder of the block,
+   issues a fresh one and opens a **severity-1** review naming the overlap
+   range. A collision that already happened lands under §3.7.5's emergency
+   form with the printed number preserved and its own severity-1 review, so
+   the outbox drains. `packages/sequence` renders numbers for the server, the
+   device and the drills from ONE implementation. Drill **D7** proves the whole
+   path against the real stack with a genuine sqlite-file wipe. (It was written
+   as D6 and renumbered on merge: D6 is the drill that runs the PWA's OWN
+   payload end to end, and neither drill covers the other's hole.)
+
+   *Two deliberate scope limits, both stated rather than hidden.* (a) §3.7.5's
+   low-water **reserve block** (ask at 20% / a few days' throughput and hold a
+   spare) is not implemented: a device holds exactly one live block, and a
+   block that runs out mid-partition falls to the emergency form, which is the
+   behaviour §3.7.5 already specifies for that case. The reserve makes it
+   rarer; it does not affect regression detection. (b) `conflict_review` is
+   §3.6.2's shape minus the `conflict_classes` registry, the escalation-step
+   chain and the notification channels — those arrive with the credit-limit
+   classes. The RBAC permission tables that route the queue DO now exist
+   (migration `0005_rbac_permissions.sql`), so `required_permission` is the
+   catalogued `sync.conflict.review` rather than the uncatalogued
+   `sequence.review` this work-package invented for itself; until the queue's
+   own read path lands, reviews are read online (fail-closed) and `escalate_at`
+   is a flat 24h. (c) **The reconnect report has no trigger in the shipped
+   PWA.** Adoption is wired — `powersync.ts` drains with
+   `onResult: sequenceResultHandler(db)`, so an acked report becomes the block
+   the counter prints from — but nothing yet calls `enqueueBlockReport` when
+   the radio comes back, so in the app as shipped no report is queued. Both
+   halves ARE exercised end to end by
+   `packages/wire-conformance/test/sequence-client-to-api.test.ts` (hermetic,
+   every `pnpm test`) and by drill D7 (real stack, real socket, real wipe); what
+   is missing is the counter-side trigger, which belongs with the reconnect UX.
+   Until it lands, a device that is wiped keeps trading on self-issued,
+   device-tagged numbers — visibly exceptional and un-collidable — and the
+   server learns about it on the first report anyone queues. Listed here rather
+   than left to be discovered: this is exactly the shape of §0's ledger.
+
+10. **Three of the five uploadable ops have no client at all.** `sale.create` is now
    proven end to end from the PWA's own code. `stock.record_movement`,
    `credit.open_account` and `credit.record_entry` are reachable on `/sync/upload`
    and are exercised with contract-shaped payloads (`outbox-surface.test.ts`), but

@@ -296,6 +296,10 @@ export const sale = tenantTable(
     customerId: uuid('customer_id'),
     priceListId: uuid('price_list_id').notNull(),
     receiptNo: text('receipt_no').notNull(),
+    /** What the customer's paper says when it differs from receipt_no — a
+     *  #14 collision landing under the emergency form (03 §3.7.5). NULL is
+     *  the normal case. */
+    receiptNoClaimed: text('receipt_no_claimed'),
     businessDate: date('business_date').notNull(),
     occurredAt: timestamp('occurred_at', { withTimezone: true }).notNull(),
     voidsSaleId: uuid('voids_sale_id'),
@@ -369,6 +373,107 @@ export const staff = tenantTable('staff', {
   hiredOn: date('hired_on'),
   endedOn: date('ended_on'),
 });
+
+// ---------------------------------------------------------------------------
+// Human-facing document numbers, allocated offline (03 §3.7.5), and the
+// review queue their failure mode reports into (03 §3.6.2). Mirrors
+// migrations/0006_app_sequence_and_review.sql.
+// ---------------------------------------------------------------------------
+
+/**
+ * The server-side allocation counter. NEVER synced to a device — 04 §4.7
+ * deleted `document_number_range` precisely because a device-readable counter
+ * is read back stale after a reset.
+ */
+export const sequenceCounter = tenantTable(
+  'sequence_counter',
+  {
+    /** Pack + tenant vocabulary ('RECEIPT', …). Never a hard-coded enum. */
+    sequenceKey: text('sequence_key').notNull(),
+    locationId: uuid('location_id').notNull(),
+    /** Next block_start to hand out. Only ever advances. */
+    nextStart: bigint('next_start', { mode: 'bigint' }).notNull(),
+    blockSize: integer('block_size').notNull(),
+    /** e.g. '{location_code}-{prefix}-{n:06d}' — tenant configuration. */
+    numberFormat: text('number_format').notNull(),
+    numberPrefix: text('number_prefix').notNull(),
+    originTemplateId: text('origin_template_id'),
+    originRef: text('origin_ref'),
+  },
+  (t) => [
+    uniqueIndex('sequence_counter_uq').on(t.tenantId, t.sequenceKey, t.locationId),
+  ],
+);
+
+/** One allocated range held by one device. */
+export const sequenceBlock = tenantTable(
+  'sequence_block',
+  {
+    sequenceKey: text('sequence_key').notNull(),
+    locationId: uuid('location_id').notNull(),
+    deviceId: uuid('device_id').notNull(),
+    blockStart: bigint('block_start', { mode: 'bigint' }).notNull(),
+    blockSize: integer('block_size').notNull(),
+    /** Device-reported high-water mark. Never authoritative; never regresses. */
+    consumedUpto: bigint('consumed_upto', { mode: 'bigint' }),
+    reportedAt: timestamp('reported_at', { withTimezone: true }),
+    issuedAt: timestamp('issued_at', { withTimezone: true }).notNull(),
+    exhaustedAt: timestamp('exhausted_at', { withTimezone: true }),
+    closedReason: text('closed_reason'),
+  },
+  (t) => [
+    uniqueIndex('sequence_block_range_uq').on(t.tenantId, t.sequenceKey, t.locationId, t.blockStart),
+    index('sequence_block_device_ix').on(
+      t.tenantId,
+      t.sequenceKey,
+      t.locationId,
+      t.deviceId,
+      t.blockStart,
+    ),
+  ],
+);
+
+/** The human review queue (03 §3.6.2). Money inside jsonb is a STRING. */
+export const conflictReview = tenantTable(
+  'conflict_review',
+  {
+    conflictClass: text('conflict_class').notNull(),
+    /** 1 blocking .. 4 informational. */
+    severity: smallint('severity').notNull(),
+    entityTable: text('entity_table').notNull(),
+    entityId: uuid('entity_id').notNull(),
+    fieldPath: text('field_path'),
+    ancestorValue: jsonb('ancestor_value'),
+    proposals: jsonb('proposals').notNull(),
+    pendingState: text('pending_state').notNull(),
+    pendingValue: jsonb('pending_value').notNull(),
+    /** Routes the queue by PERMISSION, never by named individual. */
+    requiredPermission: text('required_permission').notNull(),
+    status: text('status').notNull(),
+    claimedBy: uuid('claimed_by'),
+    claimedAt: timestamp('claimed_at', { withTimezone: true }),
+    resolvedBy: uuid('resolved_by'),
+    resolvedAt: timestamp('resolved_at', { withTimezone: true }),
+    resolution: jsonb('resolution'),
+    openedAt: timestamp('opened_at', { withTimezone: true }).notNull(),
+    escalateAt: timestamp('escalate_at', { withTimezone: true }).notNull(),
+    escalationLevel: smallint('escalation_level').notNull(),
+  },
+  (t) => [
+    index('conflict_review_queue_ix').on(t.tenantId, t.status, t.severity, t.openedAt),
+    index('conflict_review_entity_ix').on(t.tenantId, t.entityTable, t.entityId),
+  ],
+);
+
+/** Normalised review scope — §3.6.2's fix for the unused `location_scope[]`. */
+export const conflictReviewLocation = tenantTable(
+  'conflict_review_location',
+  {
+    reviewId: uuid('review_id').notNull(),
+    locationId: uuid('location_id').notNull(),
+  },
+  (t) => [uniqueIndex('conflict_review_location_uq').on(t.tenantId, t.reviewId, t.locationId)],
+);
 
 // ---------------------------------------------------------------------------
 // Access control (0005). See that migration's header for the one decision

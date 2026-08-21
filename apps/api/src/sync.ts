@@ -35,6 +35,7 @@ import {
   type DeviceOpKind,
   type SyncTokenResponse,
   type UploadAck,
+  type UploadAckStatus,
 } from '@erp/contracts';
 import { createContextFromHeader, type ContextOptions } from './context.js';
 import { appRouter } from './routers/index.js';
@@ -72,11 +73,18 @@ const DEVICE_OPS: Record<DeviceOpKind, DeviceOpHandler> = {
   'stock.record_movement': (c, i) => c.inventory.recordMovement(i as never),
   'credit.open_account': (c, i) => c.credit.openAccount(i as never),
   'credit.record_entry': (c, i) => c.credit.recordEntry(i as never),
+  // Report this device's sequence cursor and take a block (03 §3.7.5). It
+  // rides the same ordered outbox as every other write, so the report a device
+  // queues while offline reaches the server before the sales that follow it.
+  'sequence.sync_block': (c, i) => c.sequence.syncBlock(i as never),
 };
 
 /** Tenant identity never comes from a client payload (CLAUDE.md §2.1) —
  *  any spelling of it in an op payload is stripped and ignored. */
 const FORGED_IDENTITY_KEYS = ['tenant_id', 'tenantId', 'tid'] as const;
+
+/** Ops whose ack carries the stored response back (see UploadAck.result). */
+const RESULT_OPS: ReadonlySet<string> = new Set(['sequence.sync_block']);
 
 function reasonFrom(err: unknown): string {
   if (err instanceof TRPCError) return `${err.code}: ${err.message}`;
@@ -125,8 +133,9 @@ async function applyOne(
   try {
     // One transaction per op (runIdempotent: marker + effect commit
     // atomically); a throw rolls back that op alone — the batch continues.
-    await invoke(caller, input);
-    return { key, status: seen ? 'duplicate' : 'applied' };
+    const result = await invoke(caller, input);
+    const status: UploadAckStatus = seen ? 'duplicate' : 'applied';
+    return RESULT_OPS.has(op.kind) ? { key, status, result } : { key, status };
   } catch (err) {
     return { key, status: 'rejected', reason: reasonFrom(err) };
   }

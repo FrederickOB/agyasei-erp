@@ -37,6 +37,7 @@ import {
   type SqlClient,
 } from '@erp/db';
 import {
+  applySequenceCounters,
   applyTemplate,
   applyTenant1Locations,
   provisionPrincipal,
@@ -179,6 +180,7 @@ async function main(): Promise<void> {
     const resA = await withTenant(TENANT_A.id, async (tx) => {
       const r = await applyTemplate(tx, TENANT_A.id);
       await applyTenant1Locations(tx, TENANT_A.id);
+      await applySequenceCounters(tx, TENANT_A.id);
       return r;
     });
     console.log(
@@ -222,6 +224,9 @@ async function main(): Promise<void> {
           locType.rows[0]?.id ?? null,
         ],
       );
+      // Tenant B's location is hand-seeded, so its receipt-number counter is
+      // too — the same additive applier, run after the location exists.
+      await applySequenceCounters(tx, TENANT_B.id);
       return r;
     });
     console.log(

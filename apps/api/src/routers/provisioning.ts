@@ -12,7 +12,7 @@
 import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
 import { uuidv7 } from '@erp/db';
-import { TEMPLATE_ID, applyTemplate, applyTenant1Locations } from '@erp/db/seed';
+import { TEMPLATE_ID, applySequenceCounters, applyTemplate, applyTenant1Locations } from '@erp/db/seed';
 import { operatorProcedure, router, tenantProcedure } from '../trpc.js';
 import { zUuid } from '../wire.js';
 
@@ -80,11 +80,32 @@ export const provisioningRouter = router({
       if (input.includePilotLocations) {
         await applyTenant1Locations(tx, tenantId);
       }
+      // Receipt-number counters need locations to exist, so they are seeded
+      // last (03 §3.7.5). Additive and idempotent: a location created later
+      // gets its counter from ensureSequenceCounters below, and a counter the
+      // tenant has since edited is never overwritten.
+      const sequenceCounters = await applySequenceCounters(tx, tenantId);
       return {
         templateId: result.templateId,
         templateVersion: result.templateVersion,
         founderPendingCount: result.founderPending.length,
+        sequenceCounters,
       };
     });
+  }),
+
+  /**
+   * Give every selling location a receipt-number counter (03 §3.7.5).
+   * Additive and idempotent — run it after adding a location. Without a
+   * counter row a location cannot allocate a block and the POS refuses to
+   * number a receipt, which is the correct fail-closed behaviour: the
+   * numbering format is tenant data, and the platform never invents one.
+   */
+  ensureSequenceCounters: tenantProcedure.mutation(async ({ ctx }) => {
+    const tenantId = ctx.identity.tenantId;
+    const locations = await ctx.deps.runner.withTenant(tenantId, (tx) =>
+      applySequenceCounters(tx, tenantId),
+    );
+    return { locations };
   }),
 });

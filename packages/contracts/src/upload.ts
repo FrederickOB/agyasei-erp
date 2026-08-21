@@ -30,6 +30,11 @@ export const DEVICE_OP_KINDS = [
   'stock.record_movement',
   'credit.open_account',
   'credit.record_entry',
+  // The reconnect conversation for human-facing document numbers (03 §3.7.5).
+  // It is an upload op, not a side channel, precisely so it rides the ORDERED
+  // outbox: a cursor report queued before a batch of sales must reach the
+  // server before those sales do.
+  'sequence.sync_block',
 ] as const;
 export type DeviceOpKind = (typeof DEVICE_OP_KINDS)[number];
 
@@ -67,6 +72,19 @@ export type UploadAckStatus = 'applied' | 'duplicate' | 'rejected';
 export interface UploadAck {
   key: string;
   status: UploadAckStatus;
+  /**
+   * The mutation's stored response, for the few ops where the DEVICE cannot
+   * know the answer on its own. A sale needs nothing back — the device already
+   * holds every value it sent. A sequence-block report does: the server decides
+   * which numbers this device may use next, and after a regression that is a
+   * DIFFERENT block from the one the device asked about (03 §3.7.5).
+   *
+   * Deliberately not returned for every op: echoing a full sale DTO for each of
+   * up to 500 ops would bloat the batch response for nothing. Replays carry it
+   * too — the pipeline replays `write_log.response_body` verbatim, so a device
+   * that lost the answer to a network failure still learns its block on retry.
+   */
+  result?: unknown;
   /**
    * Only on `rejected`. Prefixed with the TRPC error code so the client
    * connector can apply the 03 §3.3.4 retry taxonomy (a `CONFLICT:

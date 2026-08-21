@@ -11,6 +11,7 @@ export {
 } from './principals.js';
 export {
   applyTemplate,
+  applySequenceCounters,
   applyTenant1Locations,
   TEMPLATE_ID,
   TEMPLATE_VERSION,

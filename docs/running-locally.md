@@ -124,7 +124,7 @@ boundary starts here.
 ```bash
 pnpm test                              # 388 tests, 39 files, all packages
 pnpm lint:money                        # ADR-0004 enforcement
-pnpm --filter @erp/sync-drills drill   # the 6 acceptance drills (needs the stack up)
+pnpm --filter @erp/sync-drills drill   # the 7 acceptance drills (needs the stack up)
 pnpm --filter @erp/wire-conformance drill:live   # D6 alone: the PWA's own payload, live
 ```
 

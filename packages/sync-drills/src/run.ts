@@ -1,7 +1,7 @@
 /**
  * The Phase 1 sync drill harness — `pnpm --filter @erp/sync-drills drill`.
  *
- * Runs D1–D6 in order against the REAL stack (infra/README.md): docker
+ * Runs D1–D7 in order against the REAL stack (infra/README.md): docker
  * Postgres 16 on :5433, self-hosted PowerSync on :8080, the API dev server
  * on :3001 (reused if already running, spawned otherwise). Writes
  * docs/sync-drill-report.md and exits non-zero if ANY assertion fails.
@@ -16,10 +16,11 @@ import { runD3 } from './drills/d3.js';
 import { runD4 } from './drills/d4.js';
 import { runD5 } from './drills/d5.js';
 import { runD6 } from './drills/d6.js';
+import { runD7 } from './drills/d7.js';
 import { API_URL, DATABASE_URL, POWERSYNC_URL } from './env.js';
 
-/** Every drill must run. A missing one is a failure, not a quiet 5/5. */
-const DRILL_COUNT = 6;
+/** Every drill must run. A missing one is a failure, not a quiet 6/7. */
+const DRILL_COUNT = 7;
 
 function sh(cmd: string): string {
   try {
@@ -47,6 +48,7 @@ async function main(): Promise<void> {
       { id: 'D4', title: 'idempotent retry', fn: runD4 },
       { id: 'D5', title: 'tenant isolation at the sync layer', fn: runD5 },
       { id: 'D6', title: "the PWA's own payload, end to end", fn: runD6 },
+      { id: 'D7', title: 'receipt-number regression (wipe mid-block, reissue)', fn: runD7 },
     ];
     for (const d of drills) {
       console.log(`\n--- ${d.id}: ${d.title} ---`);

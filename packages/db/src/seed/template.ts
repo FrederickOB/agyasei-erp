@@ -478,3 +478,81 @@ export async function applyTenant1Locations(tx: Queryable, tenantId: string): Pr
   }
   await batchInsert(tx, 'app.location', cols, outletRows);
 }
+
+/**
+ * Receipt-number counters, one per selling location (03 §3.7.5).
+ *
+ * TEMPLATE DATA, NOT PLATFORM BEHAVIOUR. The format string, the prefix and the
+ * block size are ordinary editable rows the tenant owns from here on. There is
+ * deliberately no platform default anywhere in the allocation path: a location
+ * with no counter row cannot allocate a block, and the API refuses rather than
+ * inventing a format. That refusal is what keeps `if (country === 'GH')` out of
+ * the code — the numbering rules are data or they are absent (ADR-0007,
+ * CLAUDE.md §2.5/§2.9).
+ *
+ * `{location_code}-{prefix}-{n:06d}` (SUN-RCT-004312) is tenant #1's template
+ * format: the location code makes the block boundary invisible to a human and
+ * makes a printed receipt self-describing.
+ *
+ * Block size is per location TYPE, and the sizes are §3.7.5's corrected ones —
+ * 500 numbers is three to four days at a flagship till, not "roughly two
+ * weeks", so a Flagship-class location ships 2,000. Reading `location_type.code`
+ * here is the TEMPLATE reading its own vocabulary, which is what a template is
+ * for; platform code never does it (ADR-0006).
+ *
+ * Idempotent and additive: rows are keyed deterministically and inserted with
+ * ON CONFLICT DO NOTHING, so a re-run after the tenant has edited a format
+ * changes nothing.
+ */
+const SEQUENCE_BLOCK_SIZE_BY_TYPE: Record<string, number> = {
+  FLAGSHIP: 2000,
+  RDC: 1000,
+  MICRO: 500,
+};
+const SEQUENCE_BLOCK_SIZE_DEFAULT = 500;
+
+export async function applySequenceCounters(tx: Queryable, tenantId: string): Promise<number> {
+  const writeId = await moduleWrite(tx, tenantId, 'sequence_counters');
+
+  // Selling locations only: a GROUP node has no till and a TRANSIT node is a
+  // stock waypoint, not a place a receipt is printed.
+  const outlets = await tx.query<{ id: string; code: string; type_code: string | null }>(
+    `select l.id, l.code, lt.code as type_code
+       from app.location l
+       left join app.location_type lt
+         on lt.tenant_id = l.tenant_id and lt.id = l.location_type_id and lt.deleted_at is null
+      where l.kind = 'OUTLET' and l.deleted_at is null
+      order by l.code`,
+  );
+  if (outlets.rows.length === 0) return 0;
+
+  const cols = ['tenant_id', 'id', 'write_id', 'hlc', 'sequence_key', 'location_id',
+    'next_start', 'block_size', 'number_format', 'number_prefix',
+    'origin_template_id', 'origin_ref'];
+  await batchInsert(
+    tx,
+    'app.sequence_counter',
+    cols,
+    outlets.rows.map((o) => {
+      const ref = `seqcounter:RECEIPT:${o.code}`;
+      const size =
+        (o.type_code === null ? undefined : SEQUENCE_BLOCK_SIZE_BY_TYPE[o.type_code]) ??
+        SEQUENCE_BLOCK_SIZE_DEFAULT;
+      return [
+        tenantId,
+        rowId(tenantId, ref),
+        writeId,
+        hlcClock.next(),
+        'RECEIPT',
+        o.id,
+        1,
+        size,
+        '{location_code}-{prefix}-{n:06d}',
+        'RCT',
+        TEMPLATE_ID,
+        ref,
+      ];
+    }),
+  );
+  return outlets.rows.length;
+}

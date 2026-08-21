@@ -67,6 +67,15 @@ export {
 } from './credit.js';
 
 export {
+  blockReport,
+  syncBlockInput,
+  zSeqNumber,
+  type BlockReport,
+  type SyncBlockInput,
+  type SyncBlockParsed,
+} from './sequence.js';
+
+export {
   DEVICE_OP_KINDS,
   MAX_UPLOAD_BATCH,
   uploadBodySchema,

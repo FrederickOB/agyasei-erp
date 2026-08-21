@@ -31,6 +31,7 @@ import type { ZodType } from 'zod';
 import { createSaleInput } from './sale.js';
 import { recordMovementInput } from './inventory.js';
 import { openAccountInput, recordEntryInput } from './credit.js';
+import { syncBlockInput } from './sequence.js';
 import type { DeviceOpKind } from './upload.js';
 
 /**
@@ -42,6 +43,7 @@ export const deviceOpContracts = {
   'stock.record_movement': recordMovementInput,
   'credit.open_account': openAccountInput,
   'credit.record_entry': recordEntryInput,
+  'sequence.sync_block': syncBlockInput,
 } as const satisfies Record<DeviceOpKind, ZodType>;
 
 export type DeviceOpContracts = typeof deviceOpContracts;

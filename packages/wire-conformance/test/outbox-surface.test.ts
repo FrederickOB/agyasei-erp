@@ -132,7 +132,13 @@ afterAll(async () => {
  * CLIENT's real builder satisfies the SERVER's real parser. Adding a kind to
  * the PWA without adding it here is a failing test, on purpose.
  */
-const COVERED_BY_A_REAL_CLIENT_TEST: ReadonlySet<string> = new Set<DeviceOpKind>(['sale.create']);
+const COVERED_BY_A_REAL_CLIENT_TEST: ReadonlySet<string> = new Set<DeviceOpKind>([
+  'sale.create',
+  // sequence-client-to-api.test.ts — the PWA's own buildBlockReport →
+  // enqueueBlockReport → drainOutbox → httpUploadTransport against the API's
+  // own router and pipeline, including the wipe.
+  'sequence.sync_block',
+]);
 
 describe("the PWA's uploadable write surface", () => {
   it('is exactly what has a conformance test — a new kind fails here until it does', () => {
@@ -149,8 +155,9 @@ describe("the PWA's uploadable write surface", () => {
           `before adding the kind here.`,
       ).toBe(true);
     }
-    // And the pin itself: today the counter records sales and nothing else.
-    expect([...emitted].sort()).toEqual(['sale.create']);
+    // And the pin itself: today the counter records sales, and reports its
+    // receipt-number cursor on reconnect. Nothing else.
+    expect([...emitted].sort()).toEqual(['sale.create', 'sequence.sync_block']);
   });
 
   it('emits only kinds the shared contract knows about', () => {

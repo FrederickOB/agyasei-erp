@@ -38,10 +38,16 @@ import { z } from 'zod';
 import { comparePriceCheck, createSaleInput } from '@erp/contracts';
 import { deterministicUuid } from '@erp/db';
 import { lineNetMinor, mulBps, mulDiv } from '@erp/money';
+import { emergencyNumber } from '@erp/sequence';
 import type { Queryable } from '../db.js';
 import { runIdempotent, type JsonValue } from '../pipeline.js';
 import { computeLineTaxes, taxComponentsInForce, type ComputedTaxLine } from '../tax.js';
 import { assertLocationInScope, router, tenantProcedure } from '../trpc.js';
+import {
+  SEQUENCE_REVIEW_PERMISSION,
+  SEVERITY_BLOCKING,
+  openConflictReview,
+} from './sequence.js';
 import { addCalendarDays, wire, zUuid } from '../wire.js';
 
 interface TenantJurisdiction {
@@ -296,6 +302,43 @@ export const salesRouter = router({
         const saleReasonId = deterministicUuid(tenantId, 'api', 'movement_reason:SALE');
         const occurredAt = input.occurredAt ?? new Date().toISOString();
 
+        // ---- conflict class #14, landing (03 §3.7.5) ------------------------
+        // A device whose local database was wiped keeps trading OFFLINE before
+        // it can report anything, so it arrives here having already PRINTED
+        // numbers another sale holds. Prevention (sequence.syncBlock) closes
+        // the window going forward; it cannot close it retroactively.
+        //
+        // Neither cheap answer is acceptable. Refusing the sale dead-letters a
+        // real transaction — §3.3.4's loss path, with the cash already in the
+        // till. Renumbering silently gives this customer a number another
+        // customer holds and tells nobody.
+        //
+        // So: the sale LANDS, under the emergency form §3.7.5 already defines
+        // for offline block exhaustion (device-derived suffix, marked as such
+        // on the record); `receipt_no_claimed` preserves what the customer's
+        // paper actually says; and a severity-1 review names both documents.
+        // The op acks `applied`, so the outbox drains and the till keeps
+        // trading — the discrepancy is visible work, not a stalled queue.
+        const clash = await tx.query<{ id: string; receipt_no: string }>(
+          `select id, receipt_no from app.sale
+            where location_id = $1 and receipt_no = $2`,
+          [input.locationId, input.receiptNo],
+        );
+        const collidesWith = clash.rows[0] ?? null;
+        let storedReceiptNo = input.receiptNo;
+        if (collidesWith !== null) {
+          const emergency = emergencyNumber(input.receiptNo, ctx.identity.deviceId, saleId);
+          const taken = await tx.query<{ id: string }>(
+            `select id from app.sale where location_id = $1 and receipt_no = $2`,
+            [input.locationId, emergency],
+          );
+          // Vanishingly unlikely, but a second collision here would raise the
+          // same raw unique violation and stall the queue all over again. The
+          // fallback is unique BY CONSTRUCTION: one sale row per sale id.
+          storedReceiptNo = taken.rows.length === 0 ? emergency : `${input.receiptNo}-${saleId}`;
+        }
+        const claimedReceiptNo = collidesWith === null ? null : input.receiptNo;
+
         // ── Contract decision (b): the till's total is COMPARED, never trusted.
         // `total` above is the server's own repricing against the price list
         // and tax rates in force on the BUSINESS DATE, and it is what gets
@@ -313,10 +356,13 @@ export const salesRouter = router({
           input.clientTotalMinor === undefined
             ? undefined
             : comparePriceCheck(input.clientTotalMinor, total);
-
         const response = {
           saleId,
-          receiptNo: input.receiptNo,
+          receiptNo: storedReceiptNo,
+          /** What the customer's paper says, when it could not be stored. */
+          receiptNoClaimed: claimedReceiptNo,
+          /** Set when this sale landed under the #14 emergency form. */
+          receiptCollisionWithSaleId: collidesWith?.id ?? null,
           businessDate: input.businessDate,
           currencyCode: jur.currencyCode,
           moneyScale: wire(jur.minorUnitsPerMajor),
@@ -358,9 +404,10 @@ export const salesRouter = router({
             await atx.query(
               `insert into app.sale
                  (tenant_id, id, write_id, hlc, location_id, customer_id, price_list_id,
-                  receipt_no, business_date, occurred_at, currency_code, money_scale,
+                  receipt_no, receipt_no_claimed, business_date, occurred_at,
+                  currency_code, money_scale,
                   subtotal_net_minor, discount_minor, tax_total_minor, total_minor)
-               values ($1,$2,$3,$4,$5,$6,$7,$8,$9::date,$10,$11,$12,$13,$14,$15,$16)`,
+               values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::date,$11,$12,$13,$14,$15,$16,$17)`,
               [
                 tenantId,
                 saleId,
@@ -369,7 +416,8 @@ export const salesRouter = router({
                 input.locationId,
                 input.customerId ?? null,
                 priceList.id,
-                input.receiptNo,
+                storedReceiptNo,
+                claimedReceiptNo,
                 input.businessDate,
                 occurredAt,
                 jur.currencyCode,
@@ -501,6 +549,56 @@ export const salesRouter = router({
                   saleId,
                 ],
               );
+            }
+
+            // The #14 review. Opened LAST, in the same transaction as the sale
+            // it describes: if the sale does not land, there is nothing to
+            // review, and if it does, a human hears about it before anyone
+            // reconciles a till.
+            if (collidesWith !== null) {
+              await openConflictReview(atx, {
+                tenantId,
+                writeId: key,
+                hlc: clock.next(),
+                reviewId: deterministicUuid(key, 'conflict_review', 'receipt_collision'),
+                conflictClass: 'RECEIPT_NUMBER_COLLISION',
+                severity: SEVERITY_BLOCKING,
+                entityTable: 'app.sale',
+                entityId: saleId,
+                fieldPath: 'receipt_no',
+                proposals: [
+                  {
+                    party: 'existing',
+                    detail: 'the sale already holding this receipt number',
+                    saleId: collidesWith.id,
+                    receiptNo: collidesWith.receipt_no,
+                  },
+                  {
+                    party: 'arriving',
+                    detail: 'the sale that printed the same number and landed under the emergency form',
+                    saleId,
+                    receiptNoPrinted: input.receiptNo,
+                    receiptNoStored: storedReceiptNo,
+                    deviceId: ctx.identity.deviceId,
+                    userId: ctx.identity.userId,
+                    locationId: input.locationId,
+                    claimedHlc: input.claimedHlc ?? null,
+                    totalMinor: wire(total),
+                  },
+                ],
+                pendingState: 'first_applied',
+                pendingValue: {
+                  receiptNoStored: storedReceiptNo,
+                  receiptNoPrinted: input.receiptNo,
+                  totalMinor: wire(total),
+                  note:
+                    'Two customers hold receipts printed with the same number. Both sales are ' +
+                    'recorded; the arriving one carries the emergency-form number and keeps the ' +
+                    'printed number in receipt_no_claimed. Reconcile the paper copies.',
+                },
+                requiredPermission: SEQUENCE_REVIEW_PERMISSION,
+                locationIds: [input.locationId],
+              });
             }
           },
         };

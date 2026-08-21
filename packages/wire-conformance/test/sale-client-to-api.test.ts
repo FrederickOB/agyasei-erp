@@ -284,6 +284,7 @@ describe('the router validates with the shared contract, not a private schema', 
       'stock.record_movement': appRouter.inventory.recordMovement,
       'credit.open_account': appRouter.credit.openAccount,
       'credit.record_entry': appRouter.credit.recordEntry,
+      'sequence.sync_block': appRouter.sequence.syncBlock,
     };
     for (const [kind, procedure] of Object.entries(routed)) {
       expect(routerInputOf(procedure)).toBe(

@@ -31,6 +31,7 @@ import { CredentialCache } from './sync/credentials';
 import { SyncRuntime } from './sync/runtime';
 import { httpUploadTransport } from './sync/transport';
 import { drainOutbox } from './sync/upload';
+import { sequenceResultHandler } from './sequence';
 
 function toPowerSyncTable(def: LocalTableDef): Table {
   const columns: ColumnsType = {};
@@ -192,7 +193,19 @@ export async function openLocalDb(): Promise<LocalDb> {
   // The runtime drains against the same LocalDb seam the app writes through,
   // so ack marking rides the same change bus the badges re-render from.
   const runtime = new SyncRuntime({
-    drain: (onProgress) => drainOutbox(base, transport, { onProgress }),
+    // `onResult` is how an acked sequence-block report becomes the block the
+    // counter prints from (03 §3.7.5). Without it the server's answer is acked
+    // and thrown away, and a device whose block was burned keeps numbering
+    // from a range that no longer exists.
+    //
+    // KNOWN GAP, stated rather than hidden: nothing yet ENQUEUES the report on
+    // reconnect, so in the shipped PWA this handler only fires for a report
+    // something else queued. The adoption half is live; the "report on every
+    // reconnect" trigger belongs with the counter's reconnect UX and is not
+    // wired. `packages/wire-conformance/test/sequence-client-to-api.test.ts`
+    // and drill D7 exercise the whole path explicitly.
+    drain: (onProgress) =>
+      drainOutbox(base, transport, { onProgress, onResult: sequenceResultHandler(base) }),
     subscribeChanges: (listener) => changes.subscribe(listener),
   });
 

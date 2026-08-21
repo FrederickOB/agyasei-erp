@@ -1,5 +1,9 @@
 /**
- * D7 — WHO MAY DO WHAT, PROVEN OVER A REAL SOCKET.
+ * D8 — WHO MAY DO WHAT, PROVEN OVER A REAL SOCKET.
+ *
+ * (Numbered D7 when it was written; renumbered on merge, because the sync-drill
+ * harness gained a real D7 — the receipt-number regression. One sequence across
+ * the repo, so nobody has to ask which D7 a report means.)
  *
  *   pnpm stack:up
  *   pnpm --filter @erp/api dev:stack          # API on :3001
@@ -280,7 +284,7 @@ function openAccount(suffix: string, creditLimitMinor: string): Record<string, u
 // ---------------------------------------------------------------------------
 
 async function main(): Promise<void> {
-  console.log('=== D7 — RBAC over the real wire (API :3001, Postgres :5433) ===');
+  console.log('=== D8 — RBAC over the real wire (API :3001, Postgres :5433) ===');
   await client.connect();
 
   const tenants = (await import('../../../infra/dev-tenants.json', { with: { type: 'json' } }))
@@ -418,7 +422,7 @@ async function main(): Promise<void> {
 
   const failed = checks.filter((c) => !c.pass);
   const summary = {
-    drill: 'D7-rbac-live',
+    drill: 'D8-rbac-live',
     passed: checks.length - failed.length,
     total: checks.length,
     checks,

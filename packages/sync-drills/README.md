@@ -11,7 +11,7 @@ short-lived PowerSync token; `tid` only ever from the verified token).
 
 ```sh
 pnpm stack:up                          # once: postgres + powersync (infra/README.md)
-pnpm --filter @erp/sync-drills drill   # runs D1–D6, writes docs/sync-drill-report.md
+pnpm --filter @erp/sync-drills drill   # runs D1–D7, writes docs/sync-drill-report.md
 ```
 
 Exit code is non-zero if **any** hard assertion fails. Every run is
@@ -26,6 +26,7 @@ measured before deltas — safe to re-run against an accumulated dev database.
 | D4 | Idempotent retry | byte-verbatim replay of every acked batch → all `duplicate`, zero new effects |
 | D5 | Tenant isolation at the sync layer (criterion 5) | RAW sqlite inspection: zero other-tenant rows/uuid mentions **and** per-table counts equal tenant-scoped server predictions |
 | D6 | **The PWA's own payload, end to end** | `apps/web`'s real `checkout()` → real outbox → real transport, browser `Origin`, real socket: ack `applied`; sale + line + tax lines + movement in Postgres; total an exact bigint identity and the **server's**, not the till's; replay `duplicate` with no second effect |
+| D7 | Receipt-number regression — wipe a device's local DB mid-block, reissue (03 §3.9, conflict class #14) | the sqlite file is genuinely DELETED; on reconnect the regression is detected, the block is burned, a fresh block issues, a **severity-1** review names the overlap range, and a colliding sale still lands `applied` (the till does not go dark) |
 
 > **What D1–D5 do NOT cover, stated plainly.** Their payloads are built by
 > `src/context.ts` — the drills' own idea of the API's shape — and their transport
@@ -44,7 +45,10 @@ The PowerSync stream is never an upload path; the drill connector throws if a
 crud batch ever appears.
 
 Device fleet per run: A1, A2 (tenant A, OUT-01 Techiman Flagship), A3
-(tenant A, OUT-03, upload-only for D3), B1 (tenant B, MAIN). Price seeding is
+(tenant A, OUT-03, upload-only for D3), B1 (tenant B, MAIN), and A6 (tenant A,
+OUT-01) — created inside D7 so wiping its database cannot disturb the others.
+A6 keeps its identity across the wipe (same `device_id`, same user, same
+tokens): a reinstall on the SAME enrolled device is the case that matters. Price seeding is
 the one direct-SQL step (no price mutation API exists yet) and mirrors
 `apps/api/test/util.ts` `seedWholesalePrice` — a SERVER-origin `write_log` row
 first, under the tenant's own RLS context.

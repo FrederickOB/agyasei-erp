@@ -15,7 +15,8 @@
     "@powersync/node": "^0.21.0",
     "better-sqlite3": "^12.2.0",
     "jose": "^5.9.6",
-    "pg": "^8.13.1"
+    "pg": "^8.13.1",
+    "@erp/sequence": "workspace:*"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.12",

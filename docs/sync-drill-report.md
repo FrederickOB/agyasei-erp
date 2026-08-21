@@ -1,9 +1,9 @@
 # Sync drill report — Phase 1 acceptance demonstrations
 
-**Generated:** 2026-08-21T16:32:10.073Z by `pnpm --filter @erp/sync-drills drill`
+**Generated:** 2026-08-21T17:32:55.496Z by `pnpm --filter @erp/sync-drills drill`
 **Nothing mocked:** real Postgres 16 (docker, :5433), real self-hosted PowerSync service (:8080), real API (:3001); each device is an `@powersync/node` client with its own sqlite file and its own tokens.
 
-**Overall: PASS** — 6/6 drills passed.
+**Overall: PASS** — 7/7 drills passed.
 
 | Drill | Result |
 |---|---|
@@ -13,40 +13,41 @@
 | D4 — Verbatim replay of acked batches — all duplicate, zero new effects | PASS |
 | D5 — Tenant isolation at the sync layer — raw device files | PASS |
 | D6 — The PWA's own payload, over a real socket, into Postgres | PASS |
+| D7 — Receipt-number regression — wipe a device's local DB mid-block, reissue | PASS |
 
 ## D1 — Offline sale syncs to server + second device < 60s: PASS
 
 **Measured:**
-- iteration 1: server 210ms, visible on A2 203ms, total 210ms
-- iteration 2: server 211ms, visible on A2 204ms, total 211ms
-- iteration 3: server 208ms, visible on A2 202ms, total 208ms
-- iteration 4: server 213ms, visible on A2 203ms, total 213ms
-- iteration 5: server 213ms, visible on A2 202ms, total 213ms
-- p95 over 5 iterations: 213ms
+- iteration 1: server 208ms, visible on A2 202ms, total 208ms
+- iteration 2: server 208ms, visible on A2 203ms, total 208ms
+- iteration 3: server 210ms, visible on A2 205ms, total 210ms
+- iteration 4: server 209ms, visible on A2 202ms, total 209ms
+- iteration 5: server 209ms, visible on A2 203ms, total 209ms
+- p95 over 5 iterations: 210ms
 
 **Assertions:**
 
 | Check | Result | Detail |
 |---|---|---|
 | iter 1: partition is real (sale absent from server while offline) | PASS | server has no such sale pre-reconnect |
-| iter 1: offline sale synced < 60s | PASS | 210ms (limit 60000ms) |
+| iter 1: offline sale synced < 60s | PASS | 208ms (limit 60000ms) |
 | iter 2: partition is real (sale absent from server while offline) | PASS | server has no such sale pre-reconnect |
-| iter 2: offline sale synced < 60s | PASS | 211ms (limit 60000ms) |
+| iter 2: offline sale synced < 60s | PASS | 208ms (limit 60000ms) |
 | iter 3: partition is real (sale absent from server while offline) | PASS | server has no such sale pre-reconnect |
-| iter 3: offline sale synced < 60s | PASS | 208ms (limit 60000ms) |
+| iter 3: offline sale synced < 60s | PASS | 210ms (limit 60000ms) |
 | iter 4: partition is real (sale absent from server while offline) | PASS | server has no such sale pre-reconnect |
-| iter 4: offline sale synced < 60s | PASS | 213ms (limit 60000ms) |
+| iter 4: offline sale synced < 60s | PASS | 209ms (limit 60000ms) |
 | iter 5: partition is real (sale absent from server while offline) | PASS | server has no such sale pre-reconnect |
-| iter 5: offline sale synced < 60s | PASS | 213ms (limit 60000ms) |
-| p95 < 60s | PASS | 213ms |
+| iter 5: offline sale synced < 60s | PASS | 209ms (limit 60000ms) |
+| p95 < 60s | PASS | 210ms |
 | A1 sees all its own D1 sales after reconnect | PASS | 5 sales |
 
 ## D2 — Two offline devices, same SKU — exact convergence: PASS
 
 **Measured:**
-- baseline on-hand (server, OUT-01, SKU-001): 5782
+- baseline on-hand (server, OUT-01, SKU-001): 1075
 - all 4 movements on server: 5ms after reconnect
-- device-a1 converged: 203ms after server had all movements
+- device-a1 converged: 204ms after server had all movements
 - device-a2 converged: 0ms after server had all movements
 
 **Assertions:**
@@ -54,39 +55,39 @@
 | Check | Result | Detail |
 |---|---|---|
 | no movement reached server while partitioned | PASS | actual=0 expected=0 |
-| server on-hand = baseline 5782 + Σdeltas 105 (exact) | PASS | actual=5887 expected=5887 |
-| device A1 local on-hand equals server | PASS | actual=5887 expected=5887 |
-| device A2 local on-hand equals server | PASS | actual=5887 expected=5887 |
-| A1 and A2 movement ledgers identical (row for row) | PASS | A1=134 rows, A2=134 rows, byte-identical |
-| converged ledgers are non-empty | PASS | 134 rows |
+| server on-hand = baseline 1075 + Σdeltas 105 (exact) | PASS | actual=1180 expected=1180 |
+| device A1 local on-hand equals server | PASS | actual=1180 expected=1180 |
+| device A2 local on-hand equals server | PASS | actual=1180 expected=1180 |
+| A1 and A2 movement ledgers identical (row for row) | PASS | A1=28 rows, A2=28 rows, byte-identical |
+| converged ledgers are non-empty | PASS | 28 rows |
 | write_log rows per op key (no loss, no dup) | PASS | actual=[1,1,1,1] expected=[1,1,1,1] |
 | exactly one stock_movement row per op | PASS | actual=4 expected=4 |
 
 ## D3 — HQ sees post-sync stock and sales across locations: PASS
 
 **Measured:**
-- A3 outbox flush (2 ops): 69ms
-- HQ cross-location query: 6ms over 57 locations
-- tenant A sales total across locations: 555013 minor units
-- on-hand SKU-001: OUT-01=5887, OUT-03=254
+- A3 outbox flush (2 ops): 55ms
+- HQ cross-location query: 4ms over 57 locations
+- tenant A sales total across locations: 105005 minor units
+- on-hand SKU-001: OUT-01=1180, OUT-03=51
 
 **Assertions:**
 
 | Check | Result | Detail |
 |---|---|---|
 | A3 (OUT-03) upload acks applied | PASS | actual=["applied","applied"] expected=["applied","applied"] |
-| OUT-01 present with sales | PASS | sales_count=66 |
-| OUT-03 present with sales | PASS | sales_count=10 |
+| OUT-01 present with sales | PASS | sales_count=15 |
+| OUT-03 present with sales | PASS | sales_count=2 |
 | sales visible across ≥ 2 locations in one view | PASS | 2 locations |
-| HQ OUT-01 on-hand equals independent ledger sum | PASS | actual=5887 expected=5887 |
-| HQ OUT-03 on-hand equals independent ledger sum | PASS | actual=254 expected=254 |
-| Σ(per-location sales) = tenant-wide total (exact bigint) | PASS | actual=555013 expected=555013 |
+| HQ OUT-01 on-hand equals independent ledger sum | PASS | actual=1180 expected=1180 |
+| HQ OUT-03 on-hand equals independent ledger sum | PASS | actual=51 expected=51 |
+| Σ(per-location sales) = tenant-wide total (exact bigint) | PASS | actual=105005 expected=105005 |
 
 ## D4 — Verbatim replay of acked batches — all duplicate, zero new effects: PASS
 
 **Measured:**
-- state before replay: sales=76 movements=160 credit_entries=0 customers=15 write_log=289 on-hand(OUT-01)=5887
-- replayed 7 batches / 9 ops in 124ms
+- state before replay: sales=17 movements=33 credit_entries=0 customers=3 write_log=80 on-hand(OUT-01)=1180
+- replayed 7 batches / 9 ops in 110ms
 
 **Assertions:**
 
@@ -94,33 +95,33 @@
 |---|---|---|
 | A1 has acked batches to replay | PASS | 7 batches |
 | every replayed op acked 'duplicate' (9/9) | PASS | all duplicate |
-| zero new effects: state identical after replay | PASS | actual={"sales":76,"movements":160,"creditEntries":0,"customers":15,"writeLog":289,"onHand":"5887"} expected={"sales":76,"movements":160,"creditEntries":0,"customers":15,"writeLog":289,"onHand":"5887"} |
+| zero new effects: state identical after replay | PASS | actual={"sales":17,"movements":33,"creditEntries":0,"customers":3,"writeLog":80,"onHand":"1180"} expected={"sales":17,"movements":33,"creditEntries":0,"customers":3,"writeLog":80,"onHand":"1180"} |
 
 ## D5 — Tenant isolation at the sync layer — raw device files: PASS
 
 **Measured:**
-- B1 (tenant B device): 19 physical tables, 654 synced rows on disk
-- A1 (tenant A device): 19 physical tables, 1143 synced rows on disk
+- B1 (tenant B device): 20 physical tables, 584 synced rows on disk
+- A1 (tenant A device): 20 physical tables, 738 synced rows on disk
 
 **Assertions:**
 
 | Check | Result | Detail |
 |---|---|---|
-| non-vacuous: tenant A/OUT-01 predicts rows in product/sale/sale_line/stock_movement/customer | PASS | product=219 sale=66 sale_line=76 stock_movement=134 customer=15 |
-| non-vacuous: tenant B/MAIN predicts rows in product/sale/sale_line/stock_movement/customer | PASS | product=219 sale=11 sale_line=11 stock_movement=21 customer=10 |
-| B1 (tenant B device): raw row count equals tenant-scoped prediction for all 17 synced tables | PASS | all match (654 rows on disk) |
-| B1 (tenant B device): ZERO rows with tenant A's tenant_id in any of 19 physical tables | PASS | 0 foreign rows (642 own-tenant rows present) |
+| non-vacuous: tenant A/OUT-01 predicts rows in product/sale/sale_line/stock_movement/customer | PASS | product=219 sale=15 sale_line=17 stock_movement=28 customer=3 |
+| non-vacuous: tenant B/MAIN predicts rows in product/sale/sale_line/stock_movement/customer | PASS | product=219 sale=2 sale_line=2 stock_movement=4 customer=2 |
+| B1 (tenant B device): raw row count equals tenant-scoped prediction for all 17 synced tables | PASS | all match (584 rows on disk) |
+| B1 (tenant B device): ZERO rows with tenant A's tenant_id in any of 20 physical tables | PASS | 0 foreign rows (572 own-tenant rows present) |
 | B1 (tenant B device): tenant A's uuid appears NOWHERE in the file's stored rows | PASS | zero occurrences |
-| A1 (tenant A device): raw row count equals tenant-scoped prediction for all 17 synced tables | PASS | all match (1143 rows on disk) |
-| A1 (tenant A device): ZERO rows with tenant B's tenant_id in any of 19 physical tables | PASS | 0 foreign rows (1131 own-tenant rows present) |
+| A1 (tenant A device): raw row count equals tenant-scoped prediction for all 17 synced tables | PASS | all match (738 rows on disk) |
+| A1 (tenant A device): ZERO rows with tenant B's tenant_id in any of 20 physical tables | PASS | 0 foreign rows (726 own-tenant rows present) |
 | A1 (tenant A device): tenant B's uuid appears NOWHERE in the file's stored rows | PASS | zero occurrences |
 
 ## D6 — The PWA's own payload, over a real socket, into Postgres: PASS
 
 **Measured:**
 - tenant 01911111-1111-7111-8111-111111111111 · location OUT-01 · list WHOLESALE · sku SKU-001
-- receipt OUT-01-000001-F658D0 · till claimed 29700 minor units
-- POST http://127.0.0.1:3001/sync/upload from origin http://localhost:5173: 161ms
+- receipt OUT-01-000001-784C9F · till claimed 29700 minor units
+- POST http://127.0.0.1:3001/sync/upload from origin http://localhost:5173: 29ms
 
 **Assertions:**
 
@@ -129,7 +130,7 @@
 | the browser preflight for this exact request is approved | PASS | status=204 allow-origin=http://localhost:5173 allow-methods=GET, POST, OPTIONS allow-headers=authorization, content-type |
 | an arbitrary origin is NOT admitted (the bearer is tenant identity) | PASS | allow-origin=null |
 | the batch was delivered and answered (CORS, auth, envelope) | PASS | ok=true status=200 |
-| the PWA's own sale payload is ACKED APPLIED, not rejected | PASS | ack={"key":"01a0252a-5d84-782a-8eeb-e9e52f1791de","status":"applied"} |
+| the PWA's own sale payload is ACKED APPLIED, not rejected | PASS | ack={"key":"01a02561-f95a-7345-b497-29b77268c0c7","status":"applied"} |
 | exactly one sale row landed | PASS | rows=1 |
 | it is filed against the device location the token scopes | PASS | 09cee1e8-5955-8ee5-ad33-ba79bf0499f0 vs 09cee1e8-5955-8ee5-ad33-ba79bf0499f0 |
 | the sale line landed | PASS | sale_line rows=1 |
@@ -139,9 +140,36 @@
 | tax is non-zero and positive | PASS | tax_total_minor=1501 |
 | the SERVER priced it — the till's claim is not what was written | PASS | server=9001 till=29700 |
 | the divergence is REPORTED back, not swallowed | PASS | priceCheck={"matches":false,"deltaMinor":"-20699","clientTotalMinor":"29700","serverTotalMinor":"9001"} |
-| a byte-identical re-POST is acked duplicate | PASS | ack={"key":"01a0252a-5d84-782a-8eeb-e9e52f1791de","status":"duplicate"} |
+| a byte-identical re-POST is acked duplicate | PASS | ack={"key":"01a02561-f95a-7345-b497-29b77268c0c7","status":"duplicate"} |
 | the replay produced NO second effect | PASS | sale rows after replay=1 |
 | and no second stock movement | PASS | stock_movement rows after replay=1 |
+
+## D7 — Receipt-number regression — wipe a device's local DB mid-block, reissue: PASS
+
+**Measured:**
+- block 4001..6000 (size 2000), format '{location_code}-{prefix}-{n:06d}' prefix 'RCT' at OUT-01
+- printed before the wipe: OUT-01-RCT-004001, OUT-01-RCT-004002, OUT-01-RCT-004003
+
+**Assertions:**
+
+| Check | Result | Detail |
+|---|---|---|
+| the server allocates the block — the device never self-issues | PASS | status=ok block=4001..6000 review=null |
+| three sales applied on the issued numbers | PASS | applied, applied, applied |
+| the server records the reported cursor and opens nothing | PASS | consumed_upto=4003 expected=4003 review=null |
+| after the wipe the device holds no block — it cannot know it ever did | PASS | local sequence_block row destroyed with the sqlite file |
+| the regression is DETECTED on reconnect | PASS | status=regression kind=LOST_CURSOR in 23ms |
+| the review is SEVERITY 1 and names the overlap range | PASS | severity=1 overlap=4001..4003 expected=4001..4003 |
+| the remainder of the block is BURNED | PASS | reason=REGRESSION_BURN burned=4004..6000 |
+| a FRESH block issues, strictly above everything the burned one covered | PASS | fresh=6001..8000 burned block ended at 6000 |
+| exactly two blocks on the server: one burned, one live | PASS | actual=["4001:REGRESSION_BURN","6001:live"] expected=["4001:REGRESSION_BURN","6001:live"] |
+| the review is on the server, open, severity 1, scoped to the outlet | PASS | severity=1 status=open class=SEQUENCE_CONSUMED_UPTO_REGRESSION overlap=4001..4003 scoped_locations=1 |
+| a colliding sale is APPLIED, not dead-lettered and not retried forever | PASS | status=applied reason=none |
+| and specifically NOT the raw unique violation that used to jam the queue | PASS | reason=none |
+| both sales are recorded, on DISTINCT stored numbers | PASS | OUT-01-RCT-004001 \| OUT-01-RCT-004001-01AD5A8 (printed OUT-01-RCT-004001) |
+| the number the customer actually holds is preserved, not overwritten | PASS | receipt_no_claimed=null,OUT-01-RCT-004001 |
+| and a severity-1 review names the collision — no two customers hold the same number UNDETECTED | PASS | open RECEIPT_NUMBER_COLLISION reviews: 2 |
+| tenant B sees none of tenant A's blocks or reviews (§2.7 category 3) | PASS | rows visible to tenant B: 0 |
 
 ## Environment
 
