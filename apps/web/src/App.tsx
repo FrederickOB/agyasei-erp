@@ -13,7 +13,8 @@
  *      does not have records sales the server then refuses — so it does not
  *      sell until the tenant's own configuration names one for this counter.
  *   3. WHAT it prices in. No CurrencySpec, no counter — never a fallback
- *      symbol.
+ *      symbol. The spec itself is reconciled from the tenant's jurisdiction
+ *      pack (data/session/currency-spec.ts), never invented here.
  *
  * The price-list state is re-derived through `useLiveQuery`, unlike the
  * location. The location's answer is in the token and is fixed for the
@@ -24,7 +25,7 @@
 import { useCallback, useState, type ReactNode } from 'react';
 import type { LocalDb } from './data/db';
 import { countCartLines, getOpenCart } from './data/queries/cart';
-import { readCurrencySpec } from './data/queries/config';
+import { reconcileCurrencySpec } from './data/session/currency-spec';
 import { useLiveQuery } from './data/use-live-query';
 import { Counter } from './features/counter/Counter';
 import { SalesList } from './features/sales/SalesList';
@@ -63,7 +64,15 @@ export function App({ db, deviceLocation, devicePriceList }: AppProps): ReactNod
   // exactly when someone most needs to see it.
   const [dismissedNotice, setDismissedNotice] = useState<string | null>(null);
   const bearerToken = readApiBearerToken();
-  const spec = useLiveQuery(db, readCurrencySpec, []);
+  // Re-derived like the price list, and for the same reason: the tenant's
+  // currency is in a synced row that may still be arriving, and a till holding
+  // the dev placeholder must upgrade itself the moment the pack lands rather
+  // than print a test currency's sign until someone reloads it.
+  const spec = useLiveQuery(
+    db,
+    async (d) => (await reconcileCurrencySpec(d, bearerToken !== null)).spec,
+    [bearerToken],
+  );
   // Re-runs the SAME policy rather than reimplementing it, on every local
   // change and — since downloads now ring the change bus (data/powersync.ts) —
   // on every arrival of synced rows. It settles: reconciliation writes only

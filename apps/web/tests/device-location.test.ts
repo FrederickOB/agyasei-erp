@@ -47,7 +47,7 @@ import {
 import { DEV_PLACEHOLDER_CURRENCY, seedDevDataIfEmpty } from '../src/data/seed';
 import type { LocalDb } from '../src/data/db';
 import { uuidv7 } from '../src/lib/uuidv7';
-import { fixedHlc } from './helpers/fixtures';
+import { fixedHlc, seedProduct } from './helpers/fixtures';
 import { openTestDb } from './helpers/node-db';
 
 // ---------------------------------------------------------------------------
@@ -142,17 +142,12 @@ async function oldBuildDatabase(): Promise<LocalDb> {
      VALUES (?, NULL, 'DEFAULT', ?, 0, 'XTS', 0, NULL, NULL, NULL, NULL, NULL)`,
     [oldPriceListId, 'Development price list'],
   );
-  const productId = uuidv7();
-  await db.execute(
-    `INSERT INTO product (id, code, name, aliases, category, uom_label, qty_scale, active)
-     VALUES (?, 'OLD-1', 'A product from an older build', NULL, NULL, 'each', 0, 1)`,
-    [productId],
-  );
-  await db.execute(
-    `INSERT INTO price (id, product_id, price_list_id, unit_price_e4)
-     VALUES (?, ?, ?, CAST(? AS INTEGER))`,
-    [uuidv7(), productId, oldPriceListId, '620000000'],
-  );
+  await seedProduct(db, {
+    code: 'OLD-1',
+    name: 'A product from an older build',
+    unitPriceE4: 620_000_000n,
+    priceListId: oldPriceListId,
+  });
   return db;
 }
 

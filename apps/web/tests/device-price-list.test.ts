@@ -45,7 +45,7 @@ import {
 } from '../src/data/session/device-price-list';
 import { readPendingOps } from '../src/data/sync/upload';
 import { uuidv7 } from '../src/lib/uuidv7';
-import { fixedHlc } from './helpers/fixtures';
+import { fixedHlc, seedProduct } from './helpers/fixtures';
 import { openTestDb } from './helpers/node-db';
 
 // ---------------------------------------------------------------------------
@@ -144,17 +144,9 @@ async function storePriceListId(db: LocalDb, id: string): Promise<void> {
 }
 
 async function seedSellableProduct(db: LocalDb, priceListId: string): Promise<void> {
-  const productId = uuidv7();
-  await db.execute(
-    `INSERT INTO product (id, code, name, aliases, category, uom_label, qty_scale, active)
-     VALUES (?, 'P-1', 'A product', NULL, NULL, 'each', 0, 1)`,
-    [productId],
-  );
-  await db.execute(
-    `INSERT INTO price (id, product_id, price_list_id, unit_price_e4)
-     VALUES (?, ?, ?, CAST(? AS INTEGER))`,
-    [uuidv7(), productId, priceListId, '620000000'],
-  );
+  // Through the shared fixture, which writes the shape the sync stream
+  // delivers — the only shape the counter's projection reads.
+  await seedProduct(db, { code: 'P-1', name: 'A product', unitPriceE4: 620_000_000n, priceListId });
 }
 
 /** Ring one line and complete the sale; returns the uploaded payload. */
@@ -418,7 +410,21 @@ describe('the dev seed’s placeholder list', () => {
 
     expect(state.status).toBe('awaiting-config');
     expect(await readActivePriceListId(db)).toBeNull();
-    await expect(sellOneLine(db)).rejects.toBeInstanceOf(SaleContextIncompleteError);
+    // Nothing is even OFFERED: the counter's catalogue is priced from the
+    // device's own list, so with no list there is no shelf to ring from.
+    expect(await loadActiveProducts(db, NOW)).toEqual([]);
+    // And the refusal still stands one layer down, for a cart held from
+    // before the list was cleared — the counter, not the API hours later.
+    const product = await seedProduct(db, {
+      code: 'P-1',
+      name: 'A product',
+      unitPriceE4: 620_000_000n,
+    });
+    const cartId = await createCart(db, { nowIso: NOW });
+    await addProductToCart(db, cartId, product);
+    await expect(
+      checkout(db, { cartId, tenderedMinor: 100_000_000n, hlc: fixedHlc(), nowIso: NOW }),
+    ).rejects.toBeInstanceOf(SaleContextIncompleteError);
   });
 
   it('does not stop the seed being idempotent', async () => {

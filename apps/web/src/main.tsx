@@ -1,8 +1,9 @@
 import { createRoot } from 'react-dom/client';
 import { App } from './App';
-import { openLocalDb, readApiBearerToken } from './data/powersync';
+import { openLocalDb, readApiBearerToken, syncConfigured } from './data/powersync';
 import { seedDevDataIfEmpty } from './data/seed';
 import { reconcileDeviceLocation } from './data/session/device-location';
+import { reconcileCurrencySpec } from './data/session/currency-spec';
 import { reconcileDevicePriceList } from './data/session/device-price-list';
 import { setupServiceWorker } from './sw/register';
 import './app.css';
@@ -15,7 +16,13 @@ async function bootstrap(): Promise<void> {
   // 1. The dev seed runs first. It is a FLOOR under a device with nothing —
   //    placeholder catalogue, placeholder CurrencySpec, placeholder location —
   //    so local-only mode is fully usable with zero backend.
-  await seedDevDataIfEmpty(db);
+  //
+  //    In SYNC mode it writes only the placeholder CurrencySpec, and no synced
+  //    table at all. That is not tidiness: a local write to a synced table sits
+  //    in PowerSync's own queue and stops it applying ANY download, so the
+  //    seeded floor froze the very rows it was standing in for — the counter
+  //    waited on a price-list gate that could never clear (data/seed.ts).
+  await seedDevDataIfEmpty(db, { syncConfigured: syncConfigured() });
   // 2. Then the session reconciles, and in sync mode it OVERWRITES the
   //    location the seed just wrote. That direction is not a preference: the
   //    seeded location is a placeholder that matches no row the server knows,
@@ -37,6 +44,13 @@ async function bootstrap(): Promise<void> {
   //    price-list claim — it is in the tenant's own synced configuration:
   //    which lists cover this counter, in force today, ranked by the tenant.
   const devicePriceList = await reconcileDevicePriceList(db, bearerToken);
+  // 4. And WHAT IT PRICES IN. The dev seed's placeholder CurrencySpec is a
+  //    test currency and a generic sign; the tenant's real one is in the
+  //    jurisdiction pack, over the sync stream (data/session/currency-spec.ts).
+  //    That reconciler was written and never called, so a synced, trading till
+  //    printed the placeholder glyph at a real customer. It is additive and
+  //    never blocks: a pack that has not arrived leaves what the device has.
+  await reconcileCurrencySpec(db, bearerToken !== null);
 
   const container = document.getElementById('root');
   if (container === null) throw new Error('missing #root element');

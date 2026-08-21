@@ -32,13 +32,25 @@ pnpm typecheck
     server ack (`applied`/`duplicate`); a definitive rejection becomes the
     visible `Needs checking` state, never a silent drop.
 
+  In sync mode the dev seed writes **no synced table at all** — only the
+  placeholder CurrencySpec, which lives in the local-only `local_config`. This
+  is not tidiness. A local write to a `localOnly: false` table enters
+  PowerSync's own queue (`ps_crud`) and its sync core then refuses to APPLY any
+  downloaded checkpoint while that queue has a head, so a single seeded row
+  froze every download permanently and left the counter waiting on a setup gate
+  that could never clear. `src/data/sync/crud-guard.ts` carries the mechanism,
+  the backstop that empties a stray queue, and the one-time heal that clears
+  the synced half of a device an earlier build already froze (the outbox and
+  device configuration are kept).
+
 ## What is here
 
 | Area | Where | Notes |
 |---|---|---|
 | **Wire contract** | `@erp/contracts` | The ONE client↔server declaration. `buildSalePayload` returns a value **typed as** `CreateSaleInput` and parses its own JSON with `createSaleInput` before the outbox insert, so a divergence is a compile error, then a counter-visible refusal — never a BAD_REQUEST at a till in Techiman. The upload envelope and the 500-op batch cap come from the same package. |
-| Local schema (one definition) | `src/data/schema.ts` | Synced-shape `product`/`price`/`stock_snapshot` + the synced bucket mirrors; local-only `cart`, `cart_line`, `outbox`, `sequence_block`, `local_config`. Same definition builds the PowerSync schema and the test DDL. |
+| Local schema (one definition) | `src/data/schema.ts` | The synced bucket mirrors, in the shape the server models them; local-only `cart`, `cart_line`, `outbox`, `sequence_block`, `local_config`. Same definition builds the PowerSync schema and the test DDL. |
 | Receipt numbers, offline | `src/lib/receipt-number.ts`, `src/data/sequence.ts` | Per-location blocks drawn down inside the checkout transaction, zero connectivity (03 §3.7.5). A server-allocated block prints bare; a self-issued one carries a device tag, because that is the only thing that makes it un-collidable between two tills that cannot see each other. Format is tenant configuration; the platform fallback carries no tenant's words. |
+| Catalogue projection | `src/data/queries/products.ts` | What this counter may sell, from the tenant's own rows: `product` ⋈ `product_uom` (the `is_default_sell` unit the server prices in) ⋈ `unit_of_measure` ⋈ `price_list_item`, on THIS device's list, in force on THIS trading day. No price, no row — a till that lets someone ring an item it cannot price hands the refusal to the API hours later. |
 | Money discipline | `src/data/queries/*`, `src/money/*` | Every money/qty column read as `CAST(col AS TEXT)` → `BigInt()`; display only via `@erp/money` `format()` with the CurrencySpec from `local_config`. A grep test bans literal symbols and tenant vocabulary. |
 | Four offline states | `src/state/sync-status.ts` | Explicit machine: online-synced / offline / syncing / **stuck**; calm permanent status bar, never a toast, never the word "error". |
 | Per-record badges | `src/lib/badges.ts`, sales list & receipt | `Waiting to send` / `Saved` / `Needs checking`, derived from data (`server_ack_at`, `rejected_at`). |
@@ -49,16 +61,18 @@ pnpm typecheck
 ## Device provisioning
 
 A sale needs to know where it is being rung. These live in `local_config` and
-are read by `src/data/queries/session.ts`; the dev seed writes them, and in
-production they are provisioned at enrolment from the verified session — never
-guessed, because a sale filed against the wrong outlet moves stock and cash at
-a counter that never saw it.
+are read by `src/data/queries/session.ts`; the dev seed writes them **in
+local-only mode only**, and on any device with a sync stack they are
+provisioned from the verified session and the tenant's own synced
+configuration (`src/data/session/`) — never guessed, because a sale filed
+against the wrong outlet moves stock and cash at a counter that never saw it.
 
 | Key | What |
 |---|---|
 | `location_id` | The location this device trades at. Its `code` and `timezone` come from the synced `location` row; the trading day is derived in that timezone. |
 | `location_code` | Fallback code, used only until the synced row arrives. |
-| `price_list_id` | The list the counter sells from. The cart pins it; the sale sends the resolved **code**, which is how the API names a price list. |
+| `price_list_id` | The list the counter sells from, and the list its shelf is priced from. The cart pins it; the sale sends the resolved **code**, which is how the API names a price list. |
+| `currency_spec` | The tenant's currency and minor-unit scale, reconciled from the jurisdiction pack's synced row (`src/data/session/currency-spec.ts`). Never a platform constant, never assumed to be 100 to the major unit. |
 | `receipt_number_format` | `{template, width, prefix}` — jurisdiction pack + tenant override (03 §3.7.5). Absent it, a neutral platform fallback. |
 
 Missing any of these is a **refusal to record**, surfaced on the counter with

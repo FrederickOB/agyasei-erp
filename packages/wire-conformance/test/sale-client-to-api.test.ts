@@ -44,6 +44,7 @@ import { createApiHarness, JWT_SECRET, type ApiHarness } from '../../../apps/api
 
 // ---- the client, imported from apps/web's own sources ----------------------
 import { addProductToCart, createCart } from '../../../apps/web/src/data/mutations/cart';
+import { loadActiveProducts } from '../../../apps/web/src/data/queries/products';
 import { checkout } from '../../../apps/web/src/data/mutations/checkout';
 import { CredentialCache } from '../../../apps/web/src/data/sync/credentials';
 import type { FetchLike, HttpResponseLike } from '../../../apps/web/src/data/sync/credentials';
@@ -142,27 +143,15 @@ async function ringUpAndCheckout(
   deviceNode: string,
 ): Promise<{ saleId: string; receiptNo: string; totalMinor: bigint }> {
   const cartId = await createCart(db, { nowIso });
-  const catalogue = await db.getAll(
-    `SELECT p.id, p.code, p.name, p.uom_label, p.qty_scale, pr.price_list_id,
-            CAST(pr.unit_price_e4 AS TEXT) AS unit_price_e4
-       FROM product p JOIN price pr ON pr.product_id = p.id
-      WHERE p.id = ?`,
-    [product.id],
-  );
-  const row = catalogue[0];
+  // The counter's REAL read path — the client's own projection over the
+  // catalogue shape the sync stream delivers, priced from the list this
+  // device is provisioned with. A hand-written SELECT here would prove the
+  // wire against a shelf the device does not actually have.
+  const catalogue = await loadActiveProducts(db, nowIso);
+  const row = catalogue.find((p) => p.id === product.id);
   if (row === undefined) throw new Error('device catalogue is empty');
   for (let i = 0; i < qty; i += 1) {
-    await addProductToCart(db, cartId, {
-      id: String(row['id']),
-      code: String(row['code']),
-      name: String(row['name']),
-      aliases: null,
-      category: null,
-      uomLabel: String(row['uom_label']),
-      qtyScale: Number(row['qty_scale']),
-      unitPriceE4: BigInt(String(row['unit_price_e4'])),
-      priceListId: String(row['price_list_id']),
-    });
+    await addProductToCart(db, cartId, row);
   }
   const result = await checkout(db, {
     cartId,

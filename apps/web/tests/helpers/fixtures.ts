@@ -99,32 +99,55 @@ export interface SeedProductInput {
 export async function seedProduct(db: LocalDb, input: SeedProductInput): Promise<ProductWithPrice> {
   const id = input.id ?? uuidv7();
   const priceListId = input.priceListId ?? uuidv7();
+  const uomId = uuidv7();
+  const categoryId = input.category === undefined ? null : uuidv7();
+  const uomLabel = input.uomLabel ?? 'each';
+  const qtyScale = input.qtyScale ?? 0;
+
+  // The shape the SYNC STREAM delivers, which is the only shape the counter's
+  // projection reads (src/data/queries/products.ts). A fixture that wrote a
+  // shape of its own would agree with nothing the device actually holds.
   await db.execute(
-    `INSERT INTO product (id, code, name, aliases, category, uom_label, qty_scale, active)
-     VALUES (?, ?, ?, ?, ?, ?, ?, 1)`,
-    [
-      id,
-      input.code,
-      input.name,
-      input.aliases ?? null,
-      input.category ?? null,
-      input.uomLabel ?? 'each',
-      input.qtyScale ?? 0,
-    ],
+    `INSERT INTO unit_of_measure (id, tenant_id, code, name, dimension, qty_scale, hlc, updated_at)
+     VALUES (?, NULL, ?, ?, NULL, CAST(? AS INTEGER), NULL, NULL)`,
+    [uomId, uomLabel.toUpperCase(), uomLabel, qtyScale],
+  );
+  if (categoryId !== null && input.category !== undefined) {
+    await db.execute(
+      `INSERT INTO product_category (id, tenant_id, code, name, parent_id, hlc, updated_at)
+       VALUES (?, NULL, ?, ?, NULL, NULL, NULL)`,
+      [categoryId, input.category.toUpperCase(), input.category],
+    );
+  }
+  await db.execute(
+    `INSERT INTO product (id, tenant_id, sku_code, name, aliases, category_id, stocking_uom_id,
+                          tax_code, stock_tracking, is_sellable, is_purchasable, hlc, updated_at)
+     VALUES (?, NULL, ?, ?, ?, ?, ?, NULL, NULL, 1, 1, NULL, NULL)`,
+    [id, input.code, input.name, input.aliases ?? null, categoryId, uomId],
   );
   await db.execute(
-    `INSERT INTO price (id, product_id, price_list_id, unit_price_e4)
-     VALUES (?, ?, ?, CAST(? AS INTEGER))`,
-    [uuidv7(), id, priceListId, input.unitPriceE4.toString()],
+    `INSERT INTO product_uom (id, tenant_id, product_id, uom_id, factor_num, factor_den,
+                              can_sell, can_buy, is_default_sell, tolerance_bp, sort_order,
+                              hlc, updated_at)
+     VALUES (?, NULL, ?, ?, 1, 1, 1, 1, 1, 0, 0, NULL, NULL)`,
+    [uuidv7(), id, uomId],
   );
+  await db.execute(
+    `INSERT INTO price_list_item (id, tenant_id, price_list_id, product_id, uom_id,
+                                  unit_price_e4, min_qty, effective_from, effective_to,
+                                  hlc, updated_at)
+     VALUES (?, NULL, ?, ?, ?, CAST(? AS INTEGER), 0, '2000-01-01', NULL, NULL, NULL)`,
+    [uuidv7(), priceListId, id, uomId, input.unitPriceE4.toString()],
+  );
+
   return {
     id,
     code: input.code,
     name: input.name,
     aliases: input.aliases ?? null,
     category: input.category ?? null,
-    uomLabel: input.uomLabel ?? 'each',
-    qtyScale: input.qtyScale ?? 0,
+    uomLabel,
+    qtyScale,
     priceListId,
     unitPriceE4: input.unitPriceE4,
   };
