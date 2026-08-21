@@ -27,6 +27,7 @@ import { column, PowerSyncDatabase, Schema, Table } from '@powersync/web';
 import type { ColumnsType, PowerSyncBackendConnector } from '@powersync/web';
 import { DataBus, type DbExecutor, type DbRow, type LocalDb, type SqlValue } from './db';
 import { LOCAL_TABLES, type LocalTableDef } from './schema';
+import { discardStrayCrud, holdsUnsyncedSeedRows } from './sync/crud-guard';
 import { CredentialCache } from './sync/credentials';
 import { SyncRuntime } from './sync/runtime';
 import { httpUploadTransport } from './sync/transport';
@@ -103,6 +104,15 @@ export function readApiBearerToken(): string | null {
  * on the device, so its CRUD queue stays empty) — the runtime schedules
  * drains off the change bus — but if it ever does, the same single-flight
  * drain runs: a batch is never completed without a server ack, from any path.
+ *
+ * AND IF PowerSync'S OWN QUEUE IS NOT EMPTY, THAT IS DEALT WITH FIRST.
+ * PowerSync calls `uploadData` precisely because it is holding something, and
+ * a connector that returns without emptying the queue does not merely skip an
+ * upload — it leaves every DOWNLOAD unapplied for as long as the queue has a
+ * head, and gets called again a second later, forever (data/sync/crud-guard.ts
+ * has the mechanism). A till frozen behind a setup gate is what that looks
+ * like from the counter, so the queue is drained and reported here rather than
+ * left to accumulate silently.
  */
 export function buildConnector(env: SyncEnv, runtime: SyncRuntime): PowerSyncBackendConnector {
   const credentials = new CredentialCache({
@@ -119,7 +129,17 @@ export function buildConnector(env: SyncEnv, runtime: SyncRuntime): PowerSyncBac
         expiresAt: new Date(fresh.expiresAtMs),
       };
     },
-    async uploadData() {
+    async uploadData(database) {
+      await discardStrayCrud(database, (entry) => {
+        // Loud on purpose, and never once-per-session: this is a write that
+        // reached a table no code on this device is allowed to write, and the
+        // sale path (the outbox) cannot produce one.
+        console.error(
+          `[sync] discarded a local write to the synced table "${entry.table}" ` +
+            `(${entry.op} ${entry.id}). Synced tables are read-only on a device; ` +
+            `every write belongs in the outbox. Downloads were blocked until now.`,
+        );
+      });
       await runtime.drainNow();
     },
   };
@@ -163,6 +183,28 @@ export async function openLocalDb(): Promise<LocalDb> {
   if (env === null) {
     // Local-only fallback: same schema, no connection, no runtime.
     return base;
+  }
+
+  // ── A DEVICE FROZEN BY AN EARLIER BUILD HEALS ITSELF, ONCE ───────────────
+  // The dev seed used to write the synced tables on every start, including in
+  // sync mode, which froze downloads permanently (data/seed.ts, crud-guard.ts).
+  // The seed no longer does that — but a browser's OPFS database outlives any
+  // number of rebuilds, so the devices that ALREADY hold those rows would stay
+  // frozen through the fix and need someone to know to clear their storage.
+  //
+  // `clearLocal: false` is the whole safety of this: it drops only the synced
+  // half, which is by definition re-downloadable, and preserves every
+  // local-only table — the OUTBOX above all. A sale captured offline and not
+  // yet acked survives this, which is the one thing that must never be traded
+  // for a clean resync. Runs before `connect`, so there is no stream to
+  // interrupt and nothing half-applied to race.
+  if (await holdsUnsyncedSeedRows(root)) {
+    console.error(
+      '[sync] this device holds dev-seed rows in synced tables, which blocks ' +
+        'PowerSync from applying downloads. Clearing synced data and ' +
+        're-downloading; the outbox and device configuration are kept.',
+    );
+    await ps.disconnectAndClear({ clearLocal: false });
   }
 
   // ── DOWNLOADS MUST RING THE CHANGE BUS TOO ───────────────────────────────

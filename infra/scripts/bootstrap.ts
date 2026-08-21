@@ -19,7 +19,10 @@
  *      assignments — and the API resolves permissions from the database on
  *      every request, so without this step every dev token is refused at
  *      the first guarded route;
- *   6. records both tenant ids in infra/dev-tenants.json.
+ *   6. seeds DEV PRICES for every sellable product, because a template seeds
+ *      price-list structure and deliberately no prices — leaving a stack whose
+ *      counter cannot ring anything (infra/scripts/dev-prices.ts);
+ *   7. records both tenant ids in infra/dev-tenants.json.
  *
  * Tenant writes here follow the ONE write path: applyTemplate and the
  * tenant-B location seed write SERVER-origin app.write_log rows first —
@@ -43,6 +46,7 @@ import {
   provisionPrincipal,
   seedGhanaJurisdiction,
 } from '@erp/db/seed';
+import { applyDevPrices } from './dev-prices.js';
 
 const DATABASE_URL =
   process.env.DATABASE_URL ?? 'postgresql://erp:erp_dev@localhost:5433/erp';
@@ -299,7 +303,29 @@ async function main(): Promise<void> {
       console.log(`[bootstrap] tenant ${t.slug}: dev principals ${provisioned.join(', ')}`);
     }
 
-    // 6 — record the dev tenant ids --------------------------------------
+    // 6 — dev prices -------------------------------------------------------
+    //
+    // A template seeds price list STRUCTURE and no prices — what a business
+    // charges is the most tenant-owned number there is (packages/db/src/seed/
+    // template.ts). Correct, and it leaves a dev stack with 219 products that
+    // cannot be rung, so the bootstrap plays the onboarding operator here too.
+    // See infra/scripts/dev-prices.ts for what these numbers are and are not.
+    for (const t of [TENANT_A, TENANT_B]) {
+      const priced = await withTenant(t.id, (tx) => applyDevPrices(tx, t.id));
+      console.log(
+        `[bootstrap] tenant ${t.slug}: ${priced.items} dev prices across ` +
+          `${priced.lists.join(', ')}`,
+      );
+      if (priced.madeExclusive.length > 0) {
+        console.log(
+          `[bootstrap] DEV FIXTURE: made ${priced.madeExclusive.join(', ')} tax-EXCLUSIVE so a ` +
+            'counter can ring them. Neither the client nor sales.createSale can price a ' +
+            'tax-inclusive list yet; the shipped template is unchanged.',
+        );
+      }
+    }
+
+    // 7 — record the dev tenant ids --------------------------------------
     const outPath = fileURLToPath(new URL('../dev-tenants.json', import.meta.url));
     const tenants = {
       note: 'Local dev-stack tenants, recreated identically by pnpm stack:reset.',

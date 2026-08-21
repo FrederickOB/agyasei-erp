@@ -183,13 +183,62 @@ async function adoptOrInsert(
  * Existing values are never overwritten: this is a floor under a device with
  * nothing, not an authority over a device with something. In sync mode the
  * session's location overwrites whatever this wrote — see main.tsx.
+ *
+ * ═══════════════════════════════════════════════════════════════════════════
+ * AND ON A DEVICE THAT SYNCS, THIS SEED WRITES NO SYNCED TABLE AT ALL.
+ * ═══════════════════════════════════════════════════════════════════════════
+ * THE FREEZE THIS RULE EXISTS FOR. `product`, `price`, `stock_snapshot`,
+ * `location` and `price_list` are `localOnly: false` (data/schema.ts) — they
+ * belong to the sync stream, and the device is a READER of them. A local
+ * INSERT into one of those tables does two things at once: it enqueues a row
+ * in PowerSync's own write queue (`ps_crud`) and it parks
+ * `ps_buckets.$local.target_op` at MAX. The sync core then refuses to APPLY
+ * any downloaded checkpoint for as long as that queue is non-empty.
+ *
+ * Our connector never drains that queue — every real write goes through the
+ * local `outbox` to the API (data/sync/upload.ts), and PowerSync itself is
+ * download-only here (infra/powersync/sync_rules.yaml). So a single seeded row
+ * froze downloads permanently: the tenant's catalogue, its price lists, its
+ * jurisdiction pack all streamed to the device and none of it was ever
+ * applied. What a counter SAW was the price-list gate, forever — "still
+ * receiving its price lists … leave it connected" — while the rows it was
+ * waiting for sat undelivered a few bytes away. Nothing timed out, nothing
+ * errored, and the device looked patient rather than broken.
+ *
+ * So in sync mode the only thing seeded is the placeholder CurrencySpec, which
+ * lives in `local_config` — a local-only table, invisible to `ps_crud`. The
+ * rest is provisioned by the reconcilers from the verified session and the
+ * tenant's own synced configuration (data/session/*), which is where those
+ * answers belong anyway. See `discardStrayCrud` (data/sync/crud-guard.ts) for
+ * the backstop that keeps any future stray write from freezing a till again.
  */
-export async function seedDevDataIfEmpty(db: LocalDb): Promise<void> {
+export interface DevSeedOptions {
+  /**
+   * True when this device has a sync stack configured (`syncConfigured()`,
+   * data/powersync.ts). Not "is this production": the question is whether a
+   * local write to a synced table would be seen by PowerSync's write queue,
+   * and the answer to that is exactly whether a sync stack is attached.
+   */
+  readonly syncConfigured?: boolean;
+}
+
+export async function seedDevDataIfEmpty(
+  db: LocalDb,
+  options: DevSeedOptions = {},
+): Promise<void> {
   let wrote = false;
 
   if (!(await hasConfigKey(db, CONFIG_KEY_CURRENCY_SPEC))) {
     await writeConfigValue(db, CONFIG_KEY_CURRENCY_SPEC, JSON.stringify(DEV_PLACEHOLDER_CURRENCY));
     wrote = true;
+  }
+
+  if (options.syncConfigured === true) {
+    // Everything below this line writes a SYNCED table, or points the device
+    // at a row in one. Neither is this seed's business on a device whose
+    // configuration is arriving from its tenant — see the block above.
+    if (wrote) db.changes.notify();
+    return;
   }
 
   // The synced rows the sale payload resolves against: the location gives the
@@ -236,18 +285,62 @@ export async function seedDevDataIfEmpty(db: LocalDb): Promise<void> {
 
   const products = await db.getAll('SELECT 1 AS hit FROM product LIMIT 1');
   if (products.length === 0) {
+    // The SAME SHAPE the sync stream delivers — product ⋈ product_uom ⋈
+    // unit_of_measure ⋈ price_list_item — because the counter's projection
+    // reads that shape and only that shape (queries/products.ts). A seed that
+    // wrote its own parallel columns is how a device ended up displaying five
+    // demo products while holding its tenant's 219.
     await db.writeTransaction(async (tx) => {
+      const uomIds = new Map<string, string>();
+      const categoryIds = new Map<string, string>();
+
       for (const p of DEV_PRODUCTS) {
+        let uomId = uomIds.get(p.uomLabel);
+        if (uomId === undefined) {
+          uomId = uuidv7();
+          uomIds.set(p.uomLabel, uomId);
+          await tx.execute(
+            `INSERT INTO unit_of_measure (id, tenant_id, code, name, dimension, qty_scale,
+                                          hlc, updated_at)
+             VALUES (?, NULL, ?, ?, NULL, CAST(? AS INTEGER), NULL, NULL)`,
+            [uomId, p.uomLabel.toUpperCase(), p.uomLabel, p.qtyScale],
+          );
+        }
+        let categoryId = categoryIds.get(p.category);
+        if (categoryId === undefined) {
+          categoryId = uuidv7();
+          categoryIds.set(p.category, categoryId);
+          await tx.execute(
+            `INSERT INTO product_category (id, tenant_id, code, name, parent_id, hlc, updated_at)
+             VALUES (?, NULL, ?, ?, NULL, NULL, NULL)`,
+            [categoryId, p.category.toUpperCase(), p.category],
+          );
+        }
+
         const productId = uuidv7();
         await tx.execute(
-          `INSERT INTO product (id, code, name, aliases, category, uom_label, qty_scale, active)
-           VALUES (?, ?, ?, ?, ?, ?, ?, 1)`,
-          [productId, p.code, p.name, p.aliases, p.category, p.uomLabel, p.qtyScale],
+          `INSERT INTO product (id, tenant_id, sku_code, name, aliases, category_id,
+                                stocking_uom_id, tax_code, stock_tracking,
+                                is_sellable, is_purchasable, hlc, updated_at)
+           VALUES (?, NULL, ?, ?, ?, ?, ?, NULL, NULL, 1, 1, NULL, NULL)`,
+          [productId, p.code, p.name, p.aliases, categoryId, uomId],
         );
         await tx.execute(
-          `INSERT INTO price (id, product_id, price_list_id, unit_price_e4)
-           VALUES (?, ?, ?, CAST(? AS INTEGER))`,
-          [uuidv7(), productId, priceListId, p.unitPriceE4],
+          `INSERT INTO product_uom (id, tenant_id, product_id, uom_id, factor_num, factor_den,
+                                    can_sell, can_buy, is_default_sell, tolerance_bp, sort_order,
+                                    hlc, updated_at)
+           VALUES (?, NULL, ?, ?, 1, 1, 1, 1, 1, 0, 0, NULL, NULL)`,
+          [uuidv7(), productId, uomId],
+        );
+        await tx.execute(
+          // Effective from long ago and never ending: a placeholder catalogue
+          // that expired would take the offline rehearsal down on a date
+          // nobody chose.
+          `INSERT INTO price_list_item (id, tenant_id, price_list_id, product_id, uom_id,
+                                        unit_price_e4, min_qty, effective_from, effective_to,
+                                        hlc, updated_at)
+           VALUES (?, NULL, ?, ?, ?, CAST(? AS INTEGER), 0, '2000-01-01', NULL, NULL, NULL)`,
+          [uuidv7(), priceListId, productId, uomId, p.unitPriceE4],
         );
         await tx.execute(
           `INSERT INTO stock_snapshot (id, product_id, location_id, qty_scaled, as_of)

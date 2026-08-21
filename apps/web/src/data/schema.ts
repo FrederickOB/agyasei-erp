@@ -51,28 +51,30 @@ const i = (name: string): LocalColumnDef => ({ name, type: 'integer' });
 export const LOCAL_TABLES: readonly LocalTableDef[] = [
   // ---- synced shape (read-only on device; hydrated by the sync stream) ----
   {
-    // DUAL SHAPE (interim): the projection columns below (code/aliases/
-    // uom_label/qty_scale/active) are the POS read contract, populated by the
-    // dev seed in local-only mode. The `tenant_reference` bucket
-    // (infra/powersync/sync_rules.yaml) streams `app.product` rows into this
-    // same table, hydrating the SERVER columns (sku_code, category_id, …).
-    // Re-pointing the POS read layer at the raw catalogue shape (joins over
-    // product_uom / unit_of_measure / price_list_item) is the follow-on
-    // integration; until then synced rows are queryable but the counter's
-    // projection reads still come from the seeded columns.
+    // ONE SHAPE — the catalogue exactly as the server models it.
+    //
+    // This table used to carry a SECOND, parallel shape (code / category /
+    // uom_label / qty_scale / active) that only the dev seed ever populated,
+    // with the counter's projection reading those columns and the synced
+    // columns sitting beside them unused. The device therefore showed the
+    // seed's five demo products and NONE of the tenant's 219, in the one mode
+    // where the tenant's catalogue was actually present. A second shape is
+    // also how the freeze in data/seed.ts happened: the seed had to write a
+    // synced table to populate it.
+    //
+    // So the projection now reads the real thing — product ⋈ product_uom ⋈
+    // unit_of_measure ⋈ price_list_item (data/queries/products.ts) — and the
+    // dev seed writes THAT shape into the same tables, in local-only mode
+    // only. `aliases` stays: it is tenant-edited local search vocabulary
+    // (§8.7) with no server column yet, so it reads NULL on synced rows and
+    // the matcher already handles null.
     name: 'product',
     localOnly: false,
     columns: [
-      t('code'),
-      t('name'),
-      t('aliases'), // tenant-edited local names — first-class search data (§8.7)
-      t('category'),
-      t('uom_label'), // selling-unit label, snapshot of the unit definition
-      i('qty_scale'), // scaled-integer denomination of quantities in this unit
-      i('active'),
-      // ---- server catalogue columns (hydrated by the sync stream) ----
       t('tenant_id'),
       t('sku_code'),
+      t('name'),
+      t('aliases'), // tenant-edited local names — first-class search data (§8.7)
       t('category_id'),
       t('stocking_uom_id'),
       t('tax_code'),
@@ -81,15 +83,6 @@ export const LOCAL_TABLES: readonly LocalTableDef[] = [
       i('is_purchasable'),
       t('hlc'),
       t('updated_at'),
-    ],
-  },
-  {
-    name: 'price',
-    localOnly: false,
-    columns: [
-      t('product_id'),
-      t('price_list_id'),
-      i('unit_price_e4'), // minor units per selling unit × 10^4 (money-adjacent: CAST AS TEXT)
     ],
   },
   {

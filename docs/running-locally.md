@@ -78,6 +78,25 @@ pnpm dev:web
 http://localhost:5173 now syncs: downloads stream from PowerSync, and checkout writes drain through
 `POST /sync/upload`, completing only on a per-key server ack.
 
+### What a working till looks like
+
+On first load the device provisions itself and then shows the counter. If it stops on a full-screen
+setup message instead, that message names which of the three questions is unanswered — where this
+device is, which price list it sells from, what it prices in — and none of them is a guess the app
+is allowed to make (`apps/web/src/data/session/`). Expect, for tenant A at `OUT-01`:
+
+| | |
+|---|---|
+| Location | `OUT-01 Techiman Flagship`, from the token's `locs` claim |
+| Price list | `RETAIL` — the tenant's own lowest-priority list covering this counter today |
+| Currency | `GH₵`, 2 minor digits — read from the jurisdiction pack, never assumed |
+| Catalogue | 219 products, priced, searchable by name, category or local alias |
+
+The prices are **dev fixtures** seeded by the bootstrap, not tenant data: a template seeds price
+list structure and deliberately no prices, so a freshly-bootstrapped stack has a catalogue nothing
+can be rung from. See `infra/scripts/dev-prices.ts` — including why it makes the counter list
+tax-EXCLUSIVE, which is a fixture standing in for pricing support the platform does not have yet.
+
 ---
 
 ## The dev token
@@ -152,5 +171,20 @@ against a different `DEV_JWT_SECRET`. Mint a fresh one.
 
 **Web shows no data** — with no `.env.local` that is correct (local-only mode). For sync mode,
 confirm all three `VITE_` values are set and the API is up.
+
+**A till that says its price list "uses prices that already include tax"** — correct, and not a
+bug in the device. Neither the client nor `sales.createSale` can ring a tax-inclusive list; the
+bootstrap's dev-price step flips the dev database's counter list to tax-exclusive so the till runs.
+Re-run `pnpm stack:bootstrap` if you are seeing this on a stack seeded before that step existed.
+
+**A till stuck on "still receiving its price lists"** — that gate clears itself when the tenant's
+`price_list` rows arrive, so a device that sits on it forever is not downloading. Historically the
+cause was local: builds before this fix ran the dev seed against the synced tables in sync mode,
+which parks a row in PowerSync's write queue, and its sync core will not apply ANY downloaded
+checkpoint while that queue is non-empty. The current build seeds no synced table in sync mode,
+empties a stray queue if it finds one, and clears the synced half of a device that an older build
+already froze — all on the next load, keeping the outbox. Watch the browser console for `[sync]`
+lines. If the gate persists, check the stream itself reaches the device: the service is up
+(`curl localhost:8080/probes/liveness`) and `GET /sync/token` returns a token.
 
 **Stale or odd data** — `pnpm stack:reset` rebuilds from nothing.
