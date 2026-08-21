@@ -24,6 +24,14 @@ const DEV_JWT_SECRET = process.env.DEV_JWT_SECRET ?? 'dev-secret-change-me';
 const API_PORT = Number(process.env.API_PORT ?? 3001);
 const API_HOST = process.env.API_HOST ?? '127.0.0.1';
 const POWERSYNC_URL = process.env.POWERSYNC_URL ?? 'http://localhost:8080';
+// Browser origins allowed to call this API. The PWA runs on a different origin
+// (:5173) than the API (:3001), so without this every fetch fails preflight.
+// Comma-separated override for LAN device trials, e.g.
+// CORS_ORIGINS=http://192.168.1.20:5173
+const CORS_ORIGINS = (process.env.CORS_ORIGINS ?? 'http://localhost:5173,http://127.0.0.1:5173')
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean);
 
 const { runner, admin, close } = createPgRunners(DATABASE_URL);
 
@@ -40,6 +48,7 @@ const app = await buildServer({
   jwtSecret: DEV_JWT_SECRET,
   logger: true,
   sync: { powersyncUrl: POWERSYNC_URL },
+  corsOrigins: CORS_ORIGINS,
 });
 
 await app.listen({ port: API_PORT, host: API_HOST });

@@ -13,12 +13,16 @@
     "stack:up": "node infra/scripts/stack.mjs up",
     "stack:down": "node infra/scripts/stack.mjs down",
     "stack:reset": "node infra/scripts/stack.mjs reset",
-    "stack:bootstrap": "tsx infra/scripts/bootstrap.ts"
+    "stack:bootstrap": "tsx infra/scripts/bootstrap.ts",
+    "dev:token": "node infra/scripts/dev-token.mjs",
+    "dev:api": "pnpm --filter @erp/api dev:stack",
+    "dev:web": "pnpm --filter @erp/web dev"
   },
   "devDependencies": {
     "@erp/db": "workspace:*",
     "@types/pg": "^8.11.10",
-    "pg": "^8.13.1",
+    "jose": "^5.9.6",
+    "pg": "^8.23.0",
     "tsx": "^4.19.2",
     "turbo": "^2.3.3",
     "typescript": "^5.7.2"
