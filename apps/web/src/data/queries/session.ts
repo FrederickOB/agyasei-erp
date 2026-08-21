@@ -136,9 +136,15 @@ export async function clearDeviceLocation(db: LocalDb): Promise<void> {
 }
 
 /**
- * The price list this counter currently sells from. `null` until configured —
+ * The price list this counter currently sells from. `null` until provisioned —
  * the counter must say so rather than price against whatever list happens to
  * be in the local catalogue.
+ *
+ * Provisioned by `data/session/device-price-list.ts` from the TENANT'S OWN
+ * configuration (`price_list.priority` / `.location_id` / its effective
+ * window, all of which sync). Never guessed here, and never a constant: the
+ * lists are tenant rows and the default for a walk-in is the tenant's ranking
+ * of them (08-client-architecture §8.7).
  */
 export async function readActivePriceListId(db: DbExecutor): Promise<string | null> {
   return readConfig(db, CONFIG_KEY_PRICE_LIST_ID);
@@ -150,10 +156,12 @@ export async function writeActivePriceListId(db: LocalDb, priceListId: string): 
 }
 
 /**
- * Un-bind this till from a price list it may not sell on — the stored list is
- * a dev placeholder, has expired, or belongs to a tenant this session is not.
- * Refusing to price is the correct outcome; keeping the old list is how a
- * device sends the server a code it cannot find, one refused sale at a time.
+ * Un-point this device at a price list. Used when configuration no longer
+ * offers the stored list at this counter: it is the dev seed's placeholder, or
+ * a list that has lapsed, and either one puts a code on the wire the server
+ * refuses. Clearing makes `createCart` open a cart with no list, which
+ * `checkout` refuses AT THE COUNTER — where someone can act on it — rather
+ * than having the sale recorded and then rejected hours later at upload.
  */
 export async function clearActivePriceListId(db: LocalDb): Promise<void> {
   await db.writeTransaction(async (tx) => {

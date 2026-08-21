@@ -110,6 +110,28 @@ const DEV_PRODUCTS: readonly SeedProduct[] = [
  * Codes are neutral placeholders. A location code and a price-list code are
  * TENANT data; these are stand-ins for a device whose configuration has not
  * arrived, and carry no tenant's vocabulary (§8.9).
+ *
+ * ═══════════════════════════════════════════════════════════════════════════
+ * THE PLACEHOLDER PRICE LIST IS STRICTLY LOCAL-ONLY, AND HERE IS WHAT MAKES
+ * IT SO.
+ * ═══════════════════════════════════════════════════════════════════════════
+ * `DEFAULT` is not a price list any tenant has. It exists so local-only mode
+ * has something to price against with zero backend. It must NEVER be the list
+ * a synced sale is priced against — a device that rings against it puts
+ * `priceListCode: 'DEFAULT'` on the wire and the API answers
+ * PRECONDITION_FAILED (`no price list DEFAULT in force`), so the counter
+ * believes it sold and the sale is rejected hours later.
+ *
+ * What keeps it local-only is STRUCTURAL, not a convention: the row below is
+ * written with `tenant_id = NULL`, and every row that arrives over the sync
+ * stream carries one (`app.price_list.tenant_id` is `not null` server-side and
+ * sync_rules.yaml selects `WHERE tenant_id = bucket.tenant_id`). Provisioning
+ * only ever considers rows WITH a tenant_id — see
+ * `data/session/device-price-list.ts` — so a device that holds a session
+ * cannot resolve to this row, whatever its code or ranking.
+ *
+ * Do not give this row a tenant_id, and do not "fix" its NULL effective dates
+ * by filling them in. Both are what disqualify it, deliberately.
  */
 const DEV_PRICE_LIST_ID = '01900000-0000-7000-8000-000000000002';
 const DEV_PRICE_LIST_CODE = 'DEFAULT';
@@ -183,6 +205,9 @@ export async function seedDevDataIfEmpty(db: LocalDb): Promise<void> {
     wrote = true;
   });
   const priceListId = await adoptOrInsert(db, 'price_list', DEV_PRICE_LIST_CODE, DEV_PRICE_LIST_ID, async (id) => {
+    // tenant_id NULL and no effective window: the two things that make this
+    // row invisible to provisioning in sync mode. See the block comment above
+    // DEV_PRICE_LIST_ID before changing either.
     await db.execute(
       `INSERT INTO price_list (id, tenant_id, code, name, is_tax_inclusive, currency_code,
                                priority, location_id, effective_from, effective_to, hlc, updated_at)
@@ -192,9 +217,12 @@ export async function seedDevDataIfEmpty(db: LocalDb): Promise<void> {
     wrote = true;
   });
 
-  // Which location this device trades at. In production this is provisioned
-  // from the VERIFIED SESSION at enrolment (data/session/device-location.ts),
-  // never guessed — a sale needs it and the contract requires it.
+  // Which location this device trades at, and which list it prices from. In
+  // production BOTH are provisioned rather than guessed: the location from the
+  // VERIFIED SESSION (data/session/device-location.ts), the price list from
+  // the tenant's own configuration (data/session/device-price-list.ts). What
+  // is written here is a floor under a device that has neither, and in sync
+  // mode reconciliation replaces both — see main.tsx.
   for (const [key, value] of [
     [CONFIG_KEY_LOCATION_ID, locationId],
     [CONFIG_KEY_LOCATION_CODE, DEV_LOCATION_CODE],

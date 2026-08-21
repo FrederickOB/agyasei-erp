@@ -4,9 +4,11 @@ import { creditRouter } from './credit.js';
 import { inventoryRouter } from './inventory.js';
 import { provisioningRouter } from './provisioning.js';
 import { salesRouter } from './sales.js';
+import { sessionRouter } from './session.js';
 
 export const appRouter = router({
   provisioning: provisioningRouter,
+  session: sessionRouter,
   catalogue: catalogueRouter,
   inventory: inventoryRouter,
   sales: salesRouter,

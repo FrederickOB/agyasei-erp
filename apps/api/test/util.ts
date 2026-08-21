@@ -18,16 +18,69 @@ export const JWT_SECRET = 'test-secret-not-for-production';
 
 const makeCaller = createCallerFactory(appRouter);
 
+/**
+ * How a test identity is provisioned in the RBAC tables.
+ *
+ * `'owner'` (the default) gives the identity a user account and the tenant's
+ * OWNER role at the root of its location tree, so a test written about
+ * pricing, idempotency or tax is not implicitly also a test about
+ * authorisation. Every test that IS about authorisation asks for `'none'`
+ * and builds the exact principal it means (see `principal()` below).
+ */
+export type IdentityGrant = 'owner' | 'none';
+
+export interface IdentityOptions {
+  locs?: string[];
+  /** The token's opaque `role` label. The platform never branches on it. */
+  role?: string;
+  operator?: boolean;
+  uid?: string;
+  dev?: string;
+  grant?: IdentityGrant;
+}
+
+/** A principal built from one of the template's roles, at one scope node. */
+export interface PrincipalOptions {
+  /** Template role provenance ref: 'counter_staff', 'accounts', … */
+  roleRef: string;
+  /** Node the role is held at. Defaults to the tenant root. */
+  scopeLocationId?: string;
+  /** Token `locs`. Defaults to the scope node's closure descendants. */
+  locs?: string[];
+  uid?: string;
+}
+
 export interface ApiHarness {
   db: TestDb;
   deps: ApiDeps;
   policyStore: CreditPolicyStore;
   /** Build a verified identity by actually signing and verifying a JWT. */
-  identityFor(
-    tenantId: string,
-    opts?: { locs?: string[]; role?: string; operator?: boolean; uid?: string; dev?: string },
-  ): Promise<VerifiedIdentity>;
+  identityFor(tenantId: string, opts?: IdentityOptions): Promise<VerifiedIdentity>;
   callerFor(identity: VerifiedIdentity): ReturnType<typeof makeCaller>;
+  /** The tenant's root location node, creating one if the tenant has none. */
+  rootLocation(tenantId: string): Promise<string>;
+  /** Give `userId` the tenant's owner role at the root. Idempotent. */
+  grantOwner(tenantId: string, userId: string): Promise<void>;
+  /**
+   * Give `userId` a TEMPLATE role at a scope node, returning the assignment
+   * id (`app.user_role_assignment.id` — what an audit row's grant_id names).
+   */
+  grantRole(
+    tenantId: string,
+    userId: string,
+    roleRef: string,
+    scopeLocationId: string,
+  ): Promise<string>;
+  /** A verified identity holding exactly one template role at one node. */
+  principal(tenantId: string, opts: PrincipalOptions): Promise<VerifiedIdentity>;
+  /** Soft-delete every role assignment this user holds. The revocation path. */
+  revokeAssignments(tenantId: string, userId: string): Promise<void>;
+  /** Remove one permission code from a template role. Tenant-editable data. */
+  revokePermissionFromRole(tenantId: string, roleRef: string, code: string): Promise<void>;
+  /** Locations by `app.location.code` — 'ROOT', 'REG-BONO', 'OUT-01', … */
+  locationByCode(tenantId: string, code: string): Promise<string>;
+  /** The first `n` OUTLET leaves, ordered by code. */
+  outlets(tenantId: string, n: number): Promise<{ id: string; code: string }[]>;
   /** Provision an ACTIVE tenant through the API's operator plane. */
   provisionTenant(slug: string): Promise<string>;
   /** Apply the construction-materials-gh template (and pilot locations). */
@@ -63,13 +116,224 @@ export async function createApiHarness(): Promise<ApiHarness> {
     policyStore,
   };
 
+  // -------------------------------------------------------------------------
+  // RBAC fixtures
+  //
+  // Permissions are resolved SERVER-SIDE from app.user_role_assignment on
+  // every request (apps/api/src/permissions.ts), so a signed token on its own
+  // authorises nothing at all. These helpers put the rows in place, through
+  // the tenant's own RLS context, exactly as an onboarding flow would.
+  // -------------------------------------------------------------------------
+
+  async function writeMarker(tx: Queryable, tenantId: string, op: string): Promise<string> {
+    return serverWrite(tx, tenantId, op);
+  }
+
+  async function rootLocation(tenantId: string): Promise<string> {
+    return db.withTenant(tenantId, async (tx) => {
+      const found = await tx.query<{ id: string }>(
+        `select id from app.location where parent_id is null and deleted_at is null
+         order by code limit 1`,
+      );
+      if (found.rows[0]) return found.rows[0].id;
+      // A tenant whose template was applied without the pilot location tree
+      // still needs a node to hold a tenant-wide grant at. Onboarding would
+      // create one; here the harness does.
+      const id = uuidv7();
+      const writeId = await writeMarker(tx, tenantId, 'test.harness_root_location');
+      await tx.query(
+        `insert into app.location
+           (tenant_id, id, write_id, hlc, code, name, kind, parent_id, is_active, timezone)
+         values ($1,$2,$3,$4,'HARNESS-ROOT','Harness root','GROUP',null,true,'Africa/Accra')`,
+        [tenantId, id, writeId, deps.clock.next()],
+      );
+      return id;
+    });
+  }
+
+  async function ensureUserAccount(tenantId: string, userId: string): Promise<void> {
+    await db.withTenant(tenantId, async (tx) => {
+      const found = await tx.query<{ id: string }>(
+        `select id from app.user_account where id = $1`,
+        [userId],
+      );
+      if (found.rows[0]) return;
+      const writeId = await writeMarker(tx, tenantId, 'test.harness_user');
+      await tx.query(
+        `insert into app.user_account
+           (tenant_id, id, write_id, hlc, username, display_name, status)
+         values ($1,$2,$3,$4,$5,$6,'ACTIVE')`,
+        [tenantId, userId, writeId, deps.clock.next(), `u-${userId}`, 'Test user'],
+      );
+    });
+  }
+
+  async function ownerRoleId(tenantId: string): Promise<string> {
+    return db.withTenant(tenantId, async (tx) => {
+      const found = await tx.query<{ id: string }>(
+        `select id from app.role where is_owner and deleted_at is null limit 1`,
+      );
+      if (found.rows[0]) return found.rows[0].id;
+      const id = uuidv7();
+      const writeId = await writeMarker(tx, tenantId, 'test.harness_owner_role');
+      await tx.query(
+        `insert into app.role (tenant_id, id, write_id, hlc, name, description, is_owner)
+         values ($1,$2,$3,$4,'Owner (harness)','Holds the whole catalogue by construction',true)`,
+        [tenantId, id, writeId, deps.clock.next()],
+      );
+      return id;
+    });
+  }
+
+  async function assign(
+    tenantId: string,
+    userId: string,
+    roleId: string,
+    scopeLocationId: string,
+  ): Promise<string> {
+    await ensureUserAccount(tenantId, userId);
+    return db.withTenant(tenantId, async (tx) => {
+      const existing = await tx.query<{ id: string }>(
+        `select id from app.user_role_assignment
+         where user_id = $1 and role_id = $2 and scope_location_id = $3 and deleted_at is null`,
+        [userId, roleId, scopeLocationId],
+      );
+      if (existing.rows[0]) return existing.rows[0].id;
+      const id = uuidv7();
+      const writeId = await writeMarker(tx, tenantId, 'test.harness_role_assignment');
+      await tx.query(
+        `insert into app.user_role_assignment
+           (tenant_id, id, write_id, hlc, user_id, role_id, scope_location_id)
+         values ($1,$2,$3,$4,$5,$6,$7)`,
+        [tenantId, id, writeId, deps.clock.next(), userId, roleId, scopeLocationId],
+      );
+      return id;
+    });
+  }
+
+  async function grantOwner(tenantId: string, userId: string): Promise<void> {
+    const root = await rootLocation(tenantId);
+    const roleId = await ownerRoleId(tenantId);
+    await assign(tenantId, userId, roleId, root);
+  }
+
+  /**
+   * Roles are found by ORIGIN_REF, never by name. `app.role.name` is the
+   * tenant's word for the tenant's job and no code — test code included —
+   * should key off it; origin_ref is template provenance and stable.
+   */
+  async function roleIdByRef(tenantId: string, roleRef: string): Promise<string> {
+    return db.withTenant(tenantId, async (tx) => {
+      const res = await tx.query<{ id: string }>(
+        `select id from app.role where origin_ref = $1 and deleted_at is null`,
+        [`role:${roleRef}`],
+      );
+      const id = res.rows[0]?.id;
+      if (!id) throw new Error(`no template role '${roleRef}' — was the template applied?`);
+      return id;
+    });
+  }
+
+  async function grantRole(
+    tenantId: string,
+    userId: string,
+    roleRef: string,
+    scopeLocationId: string,
+  ): Promise<string> {
+    return assign(tenantId, userId, await roleIdByRef(tenantId, roleRef), scopeLocationId);
+  }
+
+  async function scopeDescendants(tenantId: string, scopeLocationId: string): Promise<string[]> {
+    return db.withTenant(tenantId, async (tx) => {
+      const res = await tx.query<{ descendant_id: string }>(
+        `select descendant_id from app.location_closure where ancestor_id = $1 order by depth`,
+        [scopeLocationId],
+      );
+      return res.rows.map((r) => r.descendant_id);
+    });
+  }
+
+  async function principal(tenantId: string, opts: PrincipalOptions): Promise<VerifiedIdentity> {
+    const uid = opts.uid ?? uuidv7();
+    const scope = opts.scopeLocationId ?? (await rootLocation(tenantId));
+    await grantRole(tenantId, uid, opts.roleRef, scope);
+    const locs = opts.locs ?? (await scopeDescendants(tenantId, scope));
+    return identityFor(tenantId, {
+      uid,
+      locs,
+      // A deliberately WRONG-LOOKING label: nothing on the platform reads it,
+      // and a test passing here would prove the opposite of what it claims.
+      role: 'opaque-label-nothing-branches-on',
+      grant: 'none',
+    });
+  }
+
+  async function revokeAssignments(tenantId: string, userId: string): Promise<void> {
+    await db.withTenant(tenantId, async (tx) => {
+      await tx.query(
+        `update app.user_role_assignment
+            set deleted_at = transaction_timestamp()
+          where user_id = $1 and deleted_at is null`,
+        [userId],
+      );
+    });
+  }
+
+  async function revokePermissionFromRole(
+    tenantId: string,
+    roleRef: string,
+    code: string,
+  ): Promise<void> {
+    const roleId = await roleIdByRef(tenantId, roleRef);
+    await db.withTenant(tenantId, async (tx) => {
+      await tx.query(
+        `update app.role_permission
+            set deleted_at = transaction_timestamp()
+          where role_id = $1 and permission_code = $2 and deleted_at is null`,
+        [roleId, code],
+      );
+    });
+  }
+
+  async function locationByCode(tenantId: string, code: string): Promise<string> {
+    return db.withTenant(tenantId, async (tx) => {
+      const res = await tx.query<{ id: string }>(
+        `select id from app.location where code = $1 and deleted_at is null`,
+        [code],
+      );
+      const id = res.rows[0]?.id;
+      if (!id) throw new Error(`no location with code ${code}`);
+      return id;
+    });
+  }
+
+  async function outlets(tenantId: string, n: number): Promise<{ id: string; code: string }[]> {
+    return db.withTenant(tenantId, async (tx) => {
+      const res = await tx.query<{ id: string; code: string }>(
+        `select id, code from app.location
+         where kind = 'OUTLET' and deleted_at is null
+         order by code limit $1`,
+        [n],
+      );
+      if (res.rows.length < n) throw new Error(`tenant has fewer than ${n} outlets`);
+      return res.rows;
+    });
+  }
+
   async function identityFor(
     tenantId: string,
-    opts: { locs?: string[]; role?: string; operator?: boolean; uid?: string; dev?: string } = {},
+    opts: IdentityOptions = {},
   ): Promise<VerifiedIdentity> {
+    const uid = opts.uid ?? uuidv7();
+    // Default: a fully-authorised principal, so a test about anything OTHER
+    // than authorisation does not silently become a test about it. Tests that
+    // are about authorisation pass grant: 'none' and build their own.
+    if (!opts.operator && (opts.grant ?? 'owner') === 'owner') {
+      await grantOwner(tenantId, uid);
+    }
     const token = await signDevToken(JWT_SECRET, {
       tid: tenantId,
-      uid: opts.uid ?? uuidv7(),
+      uid,
       role: opts.role ?? 'outlet-staff',
       locs: opts.locs ?? [],
       ...(opts.dev ? { dev: opts.dev } : {}),
@@ -96,7 +360,11 @@ export async function createApiHarness(): Promise<ApiHarness> {
   }
 
   async function applyTemplateHere(tenantId: string, includePilotLocations = true): Promise<void> {
-    const identity = await identityFor(tenantId, { role: 'onboarding' });
+    // grant: 'none' — the template is what CREATES the tenant's roles and its
+    // location tree, so there is nothing to be granted at yet. Onboarding is
+    // the bootstrap edge of the RBAC model and provisioning.applyTemplate is
+    // deliberately not permission-gated for exactly that reason.
+    const identity = await identityFor(tenantId, { role: 'onboarding', grant: 'none' });
     await callerFor(identity).provisioning.applyTemplate({
       template: 'construction-materials-gh',
       includePilotLocations,
@@ -208,6 +476,14 @@ export async function createApiHarness(): Promise<ApiHarness> {
     firstOutlet,
     pickProduct,
     seedWholesalePrice,
+    rootLocation,
+    grantOwner,
+    grantRole,
+    principal,
+    revokeAssignments,
+    revokePermissionFromRole,
+    locationByCode,
+    outlets,
     close: () => db.close(),
   };
 }

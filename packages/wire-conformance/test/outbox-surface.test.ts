@@ -97,9 +97,16 @@ beforeAll(async () => {
     if (code === undefined) throw new Error('the tenant has no movement reasons');
     return code;
   });
+  // The uploader is a PROVISIONED principal, not merely a signed token.
+  // Permissions are resolved server-side from app.user_role_assignment on
+  // every write (apps/api/src/permissions.ts), so a bearer alone authorises
+  // nothing — this file is about payload shape, so it grants the breadth and
+  // lets apps/api/test/rbac.test.ts be the file about who may do what.
+  const uploaderUid = '018f3a1e-0000-7000-8000-0000000000bb';
+  await h.grantOwner(tenantId, uploaderUid);
   bearer = await signDevToken(JWT_SECRET, {
     tid: tenantId,
-    uid: '018f3a1e-0000-7000-8000-0000000000bb',
+    uid: uploaderUid,
     role: 'outlet-manager',
     locs: [outlet.id],
   });

@@ -23,6 +23,7 @@ import { createHlcClock, hlcNodeFromName } from '../hlc.js';
 import { deterministicUuid, sha256Hex } from '../ids.js';
 import type { Queryable } from '../testing/harness.js';
 import { parseOutlets } from './outlets.js';
+import { TEMPLATE_ROLES } from './roles.js';
 import { parseSkus, TEMPLATE_UOMS, type CatalogueLine } from './skus.js';
 
 export const TEMPLATE_ID = 'construction-materials-gh';
@@ -365,6 +366,59 @@ export async function applyTemplate(tx: Queryable, tenantId: string): Promise<Ap
         TEMPLATE_ID,
         `pricelist:${l.code}`,
       ]),
+    );
+  }
+
+  // --- module: roles -------------------------------------------------------
+  // Tenant #1's five roles, as ORDINARY EDITABLE ROWS (ADR-0006). Nothing on
+  // the platform knows these names; the access-control decision lives
+  // entirely in the permission codes composed onto them, so the two hard
+  // prohibitions in the brief are the ABSENCE of two rows on the counter
+  // role — see src/seed/roles.ts.
+  //
+  // Deliberately NOT seeded here: users and role ASSIGNMENTS. Who works for
+  // this tenant, and at which node of their tree, is onboarding input, not
+  // template content (01 §1.6) — the same rule that keeps locations out.
+  {
+    const writeId = await moduleWrite(tx, tenantId, 'roles');
+    await batchInsert(
+      tx,
+      'app.role',
+      ['tenant_id', 'id', 'write_id', 'hlc', 'name', 'description', 'is_owner',
+       'origin_template_id', 'origin_ref'],
+      TEMPLATE_ROLES.map((r) => [
+        tenantId,
+        rowId(tenantId, `role:${r.ref}`),
+        writeId,
+        hlcClock.next(),
+        r.name,
+        r.description,
+        r.isOwner,
+        TEMPLATE_ID,
+        `role:${r.ref}`,
+      ]),
+    );
+
+    const rolePermRows: unknown[][] = [];
+    for (const r of TEMPLATE_ROLES) {
+      for (const perm of r.permissions) {
+        const ref = `roleperm:${r.ref}:${perm.code}`;
+        rolePermRows.push([
+          tenantId,
+          rowId(tenantId, ref),
+          writeId,
+          hlcClock.next(),
+          rowId(tenantId, `role:${r.ref}`),
+          perm.code,
+          perm.bound ? JSON.stringify(perm.bound) : null,
+        ]);
+      }
+    }
+    await batchInsert(
+      tx,
+      'app.role_permission',
+      ['tenant_id', 'id', 'write_id', 'hlc', 'role_id', 'permission_code', 'bound'],
+      rolePermRows,
     );
   }
 
