@@ -25,6 +25,11 @@ import type { AckStatus, PendingOp, UploadAck, UploadResult, UploadTransport } f
  */
 export const WIRE_KINDS: Readonly<Record<string, DeviceOpKind>> = {
   sale: 'sale.create',
+  // A stock adjustment is TRADE, not configuration, so it rides the same
+  // ordered queue as a sale and completes on the same per-key ack
+  // (data/mutations/adjustStock.ts). Adding it here is what makes the
+  // adjustment screen work with the radio off.
+  stock_movement: 'stock.record_movement',
   sequence_block: 'sequence.sync_block',
 };
 

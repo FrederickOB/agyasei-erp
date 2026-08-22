@@ -56,7 +56,55 @@ import { fixedHlc, provisionDevice, seedProduct } from '../../../apps/web/tests/
 
 /** The origin the PWA is served from in dev — a browser, not a Node client. */
 const PWA_ORIGIN = 'http://localhost:5173';
-const BUSINESS_DATE = '2026-08-21';
+
+/**
+ * ═══════════════════════════════════════════════════════════════════════════
+ * THE DEVICE CLOCK IS RELATIVE TO NOW, AND IT MUST STAY THAT WAY
+ * ═══════════════════════════════════════════════════════════════════════════
+ * Every instant below used to be a hard-coded ISO literal naming one morning,
+ * and this whole suite — the one that exists to catch the client-payload bug
+ * class — went RED, with no code change, 24 hours after the day somebody
+ * typed it. `apps/api/src/pipeline.ts` clamps a claimed HLC at ±24h of the
+ * server's wall clock and refuses further drift with
+ * `CONFLICT: CLOCK_RESYNC_REQUIRED` before the plan ever runs. A hard-coded
+ * device clock therefore has a shelf life of one day.
+ *
+ * That is a worse failure than an ordinary flake: it turns the guard on the
+ * most expensive defect this repository has shipped into a red suite whose
+ * message points at the clock instead of at the payload, and the tempting fix
+ * is to relax the assertion that catches the bug.
+ *
+ * So the till's clock is derived from `Date.now()`, with the offsets kept only
+ * to order the tills against each other, and `assertWithinSkewWindow` names
+ * the failure out loud if anybody reintroduces a literal.
+ */
+const CLOCK_BASE_MS = Date.now();
+/** Mirrors `SKEW_LIMIT_MS` in `apps/api/src/pipeline.ts` (not exported). */
+const SERVER_SKEW_LIMIT_MS = 24 * 60 * 60 * 1000;
+
+function assertWithinSkewWindow(iso: string): string {
+  if (Math.abs(Date.parse(iso) - Date.now()) > SERVER_SKEW_LIMIT_MS) {
+    throw new Error(
+      `this test's device clock (${iso}) is more than 24h from now, so the API will ` +
+        'refuse it CLOCK_RESYNC_REQUIRED before the payload is ever parsed. Derive the ' +
+        'instant from Date.now() — a literal here expires the day after it is written.',
+    );
+  }
+  return iso;
+}
+
+/** An instant on the till's clock, `offsetSeconds` from this run's base. */
+function tillClock(offsetSeconds: number): string {
+  return assertWithinSkewWindow(new Date(CLOCK_BASE_MS + offsetSeconds * 1_000).toISOString());
+}
+
+/**
+ * The trading day these sales are asserted on. Derived from the same base, so
+ * the business date the till states is the day it is actually ringing — which
+ * is what a till does, and what keeps the assertion at line ~421 true forever.
+ * The harness widens the WHOLESALE list back to 2019, so any day prices.
+ */
+const BUSINESS_DATE = tillClock(0).slice(0, 10);
 /** GH₵25.00 per unit, as e4 minor units: 25_000_000 e4 = 2500 minor. */
 const SERVER_UNIT_PRICE_E4 = 25_000_000n;
 
@@ -301,7 +349,7 @@ describe('the router validates with the shared contract, not a private schema', 
 describe("the PWA's own payload satisfies the parser the router runs", () => {
   it('parses the bytes checkout() put in the outbox — not a hand-written fixture', async () => {
     const db = await provisionedDevice(NODE_PARSE);
-    const sale = await ringUpAndCheckout(db, 4, '2026-08-21T09:00:00.000Z', NODE_PARSE);
+    const sale = await ringUpAndCheckout(db, 4, tillClock(0), NODE_PARSE);
 
     const pending = await readPendingOps(db);
     expect(pending).toHaveLength(1);
@@ -329,7 +377,7 @@ describe("the PWA's own payload satisfies the parser the router runs", () => {
 
   it('the outbox kind maps onto an op the server dispatches', async () => {
     const db = await provisionedDevice(NODE_KIND);
-    await ringUpAndCheckout(db, 1, '2026-08-21T09:01:00.000Z', NODE_KIND);
+    await ringUpAndCheckout(db, 1, tillClock(60), NODE_KIND);
     const pending = await readPendingOps(db);
     // The device writes 'sale' locally; the wire discriminator is the
     // contract's. An op the server has no handler for is answered
@@ -399,7 +447,7 @@ describe('a sale rung up on the device lands in Postgres, priced by the server',
 
   beforeAll(async () => {
     db = await provisionedDevice(NODE_JOURNEY);
-    sale = await ringUpAndCheckout(db, 4, '2026-08-21T09:02:00.000Z', NODE_JOURNEY);
+    sale = await ringUpAndCheckout(db, 4, tillClock(120), NODE_JOURNEY);
     const result = await transport().send(await readPendingOps(db));
     expect(result.ok).toBe(true);
     acks = result.acks;
@@ -499,7 +547,7 @@ describe('a sale rung up on the device lands in Postgres, priced by the server',
 describe('a re-sent batch is a duplicate, not a second sale', () => {
   it('acks duplicate and leaves exactly one sale, one line and one movement', async () => {
     const db = await provisionedDevice(NODE_REPLAY);
-    const sale = await ringUpAndCheckout(db, 2, '2026-08-21T09:03:00.000Z', NODE_REPLAY);
+    const sale = await ringUpAndCheckout(db, 2, tillClock(180), NODE_REPLAY);
     const ops = await readPendingOps(db);
 
     const first = await transport().send(ops);
@@ -538,7 +586,7 @@ describe('the assertions have teeth: a drifted payload is refused', () => {
       kind: 'sale',
       sale_id: '018f3a1e-0000-7000-8000-0000000000fe',
       price_list_id: '018f3a1e-0000-7000-8000-0000000000fd',
-      created_at: '2026-08-21T09:04:00.000Z',
+      created_at: tillClock(240),
       total_minor: '10000',
       tax_lines: [],
       tender: { kind: 'cash', tendered_minor: '10000', change_minor: '0' },
@@ -566,7 +614,7 @@ describe('the assertions have teeth: a drifted payload is refused', () => {
         claimedHlc: null,
         kind: 'sale',
         payloadJson: JSON.stringify(driftedPayload()),
-        createdAt: '2026-08-21T09:04:00.000Z',
+        createdAt: tillClock(240),
       },
     ]);
     expect(result.ok).toBe(true);
@@ -588,7 +636,7 @@ describe('the assertions have teeth: a drifted payload is refused', () => {
 
   it('a client-asserted price is refused even when everything else is right', async () => {
     const db = await provisionedDevice(NODE_PRICE_FORGERY);
-    const sale = await ringUpAndCheckout(db, 1, '2026-08-21T09:05:00.000Z', NODE_PRICE_FORGERY);
+    const sale = await ringUpAndCheckout(db, 1, tillClock(300), NODE_PRICE_FORGERY);
     const op = (await readPendingOps(db))[0]!;
     const payload = JSON.parse(op.payloadJson) as Record<string, unknown>;
     const lines = payload['lines'] as Record<string, unknown>[];

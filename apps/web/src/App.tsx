@@ -1,7 +1,10 @@
 /**
- * The shell: permanent status bar, two-tab navigation (counter / recent
- * sales). Until the tenant's currency configuration exists locally the app
- * shows a provisioning state — it never invents a currency (§8.9).
+ * The application root: device gates, the tenant's currency, and then the
+ * shell. Navigation itself lives in `features/shell/Shell.tsx`, which is also
+ * where the rules for adding a destination are written down.
+ *
+ * Until the tenant's currency configuration exists locally the app shows a
+ * provisioning state — it never invents a currency (§8.9).
  *
  * Three gates come before the counter, in this order:
  *   1. WHERE this device is. A device whose session cannot tell it which
@@ -24,11 +27,11 @@
  */
 import { useCallback, useState, type ReactNode } from 'react';
 import type { LocalDb } from './data/db';
+import { usePermissions } from './data/api/use-permissions';
 import { countCartLines, getOpenCart } from './data/queries/cart';
 import { reconcileCurrencySpec } from './data/session/currency-spec';
 import { useLiveQuery } from './data/use-live-query';
-import { Counter } from './features/counter/Counter';
-import { SalesList } from './features/sales/SalesList';
+import { Shell } from './features/shell/Shell';
 import { StatusBar } from './features/shell/StatusBar';
 import { useUpdateReady } from './features/shell/use-update';
 import { CurrencyProvider } from './money/CurrencyContext';
@@ -45,8 +48,6 @@ import { DevicePriceListGate } from './features/setup/DevicePriceListGate';
 import { applyUpdateIfSanctioned } from './sw/register';
 import { useSyncStatus } from './state/use-sync-status';
 
-type View = 'counter' | 'sales';
-
 export interface AppProps {
   readonly db: LocalDb;
   /** Reconciled against the session at startup (main.tsx), on every start. */
@@ -56,7 +57,6 @@ export interface AppProps {
 }
 
 export function App({ db, deviceLocation, devicePriceList }: AppProps): ReactNode {
-  const [view, setView] = useState<View>('counter');
   const [location, setLocation] = useState<DeviceLocationState>(deviceLocation);
   // Keyed on the TEXT, not a boolean. Two things can raise a notice now, and a
   // dismissal of one must not swallow the other: "this device has moved
@@ -87,6 +87,11 @@ export function App({ db, deviceLocation, devicePriceList }: AppProps): ReactNod
   const priceList = livePriceList ?? devicePriceList;
   const syncState = useSyncStatus(db);
   const updateReady = useUpdateReady();
+  // WHAT THIS SESSION MAY DO — a UX affordance and nothing else. It decides
+  // which destinations the shell OFFERS; the server re-authorises every read
+  // and every write at ingest, and a hidden tab is never a boundary
+  // (CLAUDE.md §2.6, data/api/session.ts).
+  const permissions = usePermissions(db, bearerToken);
 
   const onApplyUpdate = useCallback(() => {
     void (async () => {
@@ -154,18 +159,19 @@ export function App({ db, deviceLocation, devicePriceList }: AppProps): ReactNod
 
   return (
     <CurrencyProvider spec={spec}>
-      <div className="app-shell">
-        {/* Status and view switch travel together as one sticky app bar, so
-            the connection state is never scrolled off the screen — it is the
-            answer to "did that sale go?" and it has to be there when asked. */}
-        <header className="app-bar">
+      <Shell
+        db={db}
+        permissions={permissions.state}
+        status={
           <StatusBar
             state={syncState}
             localOnly={!syncConfigured()}
             updateReady={updateReady}
             onApplyUpdate={onApplyUpdate}
           />
-          {notice !== null && notice !== dismissedNotice ? (
+        }
+        notice={
+          notice !== null && notice !== dismissedNotice ? (
             // A reconciliation that MOVED this device says so, out loud, once —
             // the previous location is not being traded on any more, or the
             // prices it charges have changed to the ones this counter is set up
@@ -178,37 +184,9 @@ export function App({ db, deviceLocation, devicePriceList }: AppProps): ReactNod
                 Got it
               </button>
             </p>
-          ) : null}
-          {/* TWO views, mutually exclusive: a segmented control, not tabs and
-              not a bottom bar. The bottom of a phone screen is the only part a
-              thumb reaches without regripping, and on this app it belongs to
-              the cart — putting navigation there would have the till's primary
-              action and its navigation fighting over the same 56px. */}
-          <nav className="view-switch" aria-label="Main">
-            <button
-              type="button"
-              className="view-switch-item pressable"
-              aria-current={view === 'counter'}
-              onClick={() => setView('counter')}
-            >
-              <Icon name="cart" size={20} />
-              Counter
-            </button>
-            <button
-              type="button"
-              className="view-switch-item pressable"
-              aria-current={view === 'sales'}
-              onClick={() => setView('sales')}
-            >
-              <Icon name="receipt" size={20} />
-              Recent sales
-            </button>
-          </nav>
-        </header>
-        <main className="app-main">
-          {view === 'counter' ? <Counter db={db} /> : <SalesList db={db} />}
-        </main>
-      </div>
+          ) : null
+        }
+      />
     </CurrencyProvider>
   );
 }

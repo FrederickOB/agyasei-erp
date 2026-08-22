@@ -141,3 +141,57 @@ export async function loadActiveProducts(
   );
   return rows.map(mapProduct);
 }
+
+// ---------------------------------------------------------------------------
+// The catalogue the STOCK LEDGER moves, which is not the catalogue the counter
+// sells
+// ---------------------------------------------------------------------------
+
+/**
+ * A product a movement may be recorded against.
+ *
+ * Three differences from `ProductWithPrice`, and each one is a bug avoided:
+ *
+ *  · **No price and no price list.** A write-off of expired goods is a real
+ *    movement whether or not this counter's list happens to price the item,
+ *    and joining the price list would silently drop exactly the slow-moving
+ *    stock most likely to be written off.
+ *  · **The STOCKING unit, not the selling unit.** `stock_movement.qty_delta`
+ *    is denominated in the stocking unit (04 §4.4.3) and the wire contract
+ *    carries no `uomCode` for that reason. Reading the selling unit here
+ *    would let somebody type bars into a field the server reads as tonnes.
+ *  · **`stock_tracking = 'STOCKED'` only.** The server answers
+ *    `PRECONDITION_FAILED: product is not stock-tracked` for anything else —
+ *    a permanent condition that `classifyRejection` nonetheless classes
+ *    RETRYABLE, so the op would retry forever and stop the outlet's queue
+ *    draining behind it. It is refused here, where a person can pick a
+ *    different product.
+ */
+export interface StockedProduct {
+  readonly id: string;
+  readonly code: string;
+  readonly name: string;
+  /** The stocking unit's own name — rendered, never compared. */
+  readonly uomLabel: string;
+  /** Digit count for the stocking unit, not a magnitude. */
+  readonly qtyScale: number;
+}
+
+export async function loadStockedProducts(db: LocalDb): Promise<StockedProduct[]> {
+  const rows = await db.getAll(
+    `SELECT p.id, p.sku_code AS code, p.name,
+            COALESCE(u.name, u.code) AS uom_label,
+            u.qty_scale
+       FROM product p
+       JOIN unit_of_measure u ON u.id = p.stocking_uom_id
+      WHERE p.stock_tracking = 'STOCKED'
+      ORDER BY p.name`,
+  );
+  return rows.map((row) => ({
+    id: String(row['id']),
+    code: String(row['code'] ?? ''),
+    name: String(row['name']),
+    uomLabel: String(row['uom_label']),
+    qtyScale: Number(row['qty_scale']),
+  }));
+}

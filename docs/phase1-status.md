@@ -1,16 +1,25 @@
 # Phase 1 status — integration & QA report
 
-**Date:** 2026-08-21 (verification pass over the sale-path guard, cross-location
-reporting and low-stock alerts) · **Author:** QA engineer
+**Date:** 2026-08-22 (verification pass over the CLIENT for reporting, low
+stock, stock adjustment and credit) · **Author:** QA engineer
 
-> **What changed in this revision.** The sale path is now permission-guarded and
-> **the credit bound is demonstrated over real HTTP** — §6 item 1, the single
-> most important line in the previous revision, is CLOSED. Cross-location
-> reporting (`reports.*`) and the low-stock alert (`inventory.lowStock` +
-> reorder points, migration `0007`) landed and are guarded. Acceptance
-> criterion 3 moved from "tested, not demonstrated" to **balance and ageing
-> DEMONSTRATED live, facility fee still gated on Q4** (§5). One new bug was
-> found — by running the drills, not by the suite — and is ledgered as §0 row 9.
+> **What changed in this revision.** The reporting, low-stock, stock-adjustment
+> and credit routes finally have a CLIENT — §6 items 10, 13 and 14 of the
+> previous revision. Three things were verified rather than assumed:
+>
+> 1. **`packages/contracts/src/reports.ts` now has a SECOND IMPORTER, and the
+>    drift guarantee is demonstrated, not asserted.** `apps/web/src/data/api/reports.ts`
+>    imports the five report schemas from the contract. Renaming `from` to
+>    `fromDate` in the contract breaks `apps/web`'s compile at **four production
+>    call sites in `Reports.tsx`**. That guarantee did not exist last revision.
+> 2. **A new live drill, D10 (`drill:client`), 30/30 over real HTTP** — the
+>    client's OWN api modules against the deployed API, with the client's
+>    figures compared to Postgres rather than to a fixture.
+> 3. **The three offline-honesty rules were mutation-tested.** Each was broken
+>    deliberately; each turned the right test red. Details in §0a.
+>
+> **Two new §0 ledger rows (10 and 11)**, both found by running things rather
+> than by the suite — one of them a suite that had silently EXPIRED.
 
 **Verdict from the previous revision (the merge pass), kept for the record:**
 two independent work-packages are now one tree. From `origin/main`:
@@ -20,26 +29,33 @@ suite. From PR #4: receipt-number regression detection — server-allocated
 blocks, burn-and-reissue on reconnect, the conflict-review queue, and the
 collision landing path that stops the outbox wedging.
 
-**Verification for THIS pass (2026-08-21, clean slate).** The whole workspace
-builds and typechecks (12/12 turbo tasks) and every suite passes:
+**Verification for THIS pass (2026-08-22).** The whole workspace builds
+(4/4), typechecks (12/12 turbo tasks) and every suite passes:
 
 | Package | Tests | Files | Previous | Δ |
 |---|---:|---:|---:|---:|
-| `@erp/contracts` | **105** | 4 | 80 | +25 (`reports.test.ts`) |
+| `@erp/contracts` | **105** | 4 | 105 | — |
 | `@erp/money` | **56** | 4 | 56 | — |
 | `@erp/sequence` | **14** | 1 | 14 | — |
 | `@erp/db` | **99** | 9 | 99 | — |
-| `@erp/api` | **233** | 15 | 143 | +90 (`sales-rbac` 44, `reports` 26, `reorder-points` 16, +4 in existing files) |
-| `@erp/wire-conformance` | **35** | 4 | 35 | — |
-| **non-web total** | **542** | **37** | 427 | **+115** |
-| `@erp/web` *(another session's tree — observed, not owned)* | 265 | 26 | 189 | +76 |
+| `@erp/api` | **233** | 15 | 233 | — |
+| `@erp/wire-conformance` | **46** | 5 | 35 | **+11** (`stock-client-to-api` 11, added this pass) |
+| **non-web total** | **553** | **38** | 542 | **+11** |
+| `@erp/web` | **398** | 36 | 265 | **+133** across 10 new files |
 
-**807 tests, 63 files, 0 failures.** No baseline went down; every delta is
-additive. `node tools/lint-money.mjs` is clean.
+**951 tests, 74 files, 0 failures** (was 807 / 63). No baseline went down;
+every delta is additive, and there is no `.only`/`.skip`/`.todo` anywhere.
+`node tools/lint-money.mjs` is clean. The vocabulary conformance test walks the
+whole of `apps/web/src` recursively, so it covers all ten new feature files;
+an independent grep for a currency glyph or tenant #1 vocabulary across
+`features/`, `data/api/`, `data/queries/` and `data/mutations/adjustStock.ts`
+returns nothing.
 
-Live, against the real stack from a destroyed docker volume (`pnpm stack:reset`
-→ 7 migrations → seed → API on :3001): **D1–D7 7/7**, **D8 (RBAC) 30/30**,
-**D9 (credit) 13/13** — 50 live checks over real HTTP.
+Live, against the deployed stack (API on :3001, docker Postgres on :5433):
+**D1–D7 7/7**, **D8 (RBAC) 30/30**, **D9 (credit) 13/13**, **D6 16/16**, and
+**D10 (the client's own api layer) 30/30 — new this pass**. **96 live checks
+over real HTTP.** Nothing regressed: D8, D9 and the sync-drill suite were all
+re-run after the client work and after the changes made in this pass.
 
 **The previous revision's post-merge figures, kept for the record:** *616 tests, 51 files, 0
 failures* across seven packages — `tools/lint-money.mjs` is clean, and `pnpm stack:reset` (docker
@@ -67,7 +83,9 @@ total. That was §6 item 1 of the previous revision and it is closed; the eviden
 
 ## 0. Read this before trusting the drill suite again
 
-**A green suite has now failed NINE times to notice that a written path had never been executed.**
+**A green suite has now failed ELEVEN times to notice that a written path had never been executed
+— and once, this pass, a green suite silently STOPPED BEING GREEN for a reason unconnected to
+anything it tests.**
 The count is kept here deliberately, and it goes up, because the pattern is the project's most
 reliable defect source: code is written, unit-tested against a harness that agrees with it, and
 never once run against the real stack.
@@ -83,6 +101,8 @@ never once run against the real stack.
 | **Sequence reporting (this merge)** | Two halves of PR #4 were written and reachable by nothing. (a) `apps/web/src/data/sequence.ts`'s whole reconnect half — `buildBlockReport`, `enqueueBlockReport`, adoption — was imported by its own unit test and by **no production module**: `powersync.ts` drained the outbox with no `onResult`, and `checkout` allocated numbers through a different function entirely. (b) the review it opens routed on `required_permission = 'sequence.review'`, a code absent from `platform.permission`; the column has no FK, so nothing complained and **no user could ever have held it** — every severity-1 receipt-number review would have landed in a queue nobody could read. | its own suite: green | The unit test imported the module directly, so "does anything call this?" was never asked; and the permission string was asserted against itself (`expect(required_permission).toBe('sequence.review')`) rather than against the catalogue. |
 | **RBAC enforcement (this pass)** | Permission checks were added to the API's stock and credit routes with **535 unit tests green**. On the live stack: migration `0005` had never been applied, so `app.effective_permission` did not exist; `applyTemplate` seeds roles but deliberately seeds **no users and no role assignments**, so every tenant had 5 roles and **0 grants**; and every drill device mints a fresh random `uid`. The result: **the entire Phase 1 acceptance drill suite died at warm-up** with `FORBIDDEN: PERMISSION_DENIED: stock.adjust is not held by this user`, and `pnpm dev:token` produced a bearer that no guarded route would accept. | 535/535 PASS | `apps/api/test/util.ts` grants every test identity the **owner role by default** (`identityFor(..., grant: 'owner')`). Every API test therefore ran as a principal holding the whole catalogue, so no test could observe that no real principal existed. The drills would have caught it in one run — they were not run, because they need docker. |
 | **`sequence.syncBlock` guard (this pass)** | `sequence.syncBlock` was correctly tightened from "scope only" to `sale.record` at the request's location. **`apps/api/test/sequence-regression.test.ts` went from 20 tests to 26, all green.** On the live stack the entire receipt-number regression drill died at its first call: `FORBIDDEN: PERMISSION_DENIED: sale.record is not held by this user`. D7 builds its own device (`device-a6`) inside `runD7` rather than in the shared `context.ts`, and the context's provisioning loop covers only `a1/a2/a3/b1` — so A6 was the one device in the repository whose principal had never been granted anything. It worked for as long as the route required no capability. | 26/26 PASS, and D1–D6 PASS in the same run | The API harness grants every test identity the **owner role** (`identityFor(..., grant: 'owner')`), so no unit test can observe a principal with no grant. It is §0's RBAC row again, one layer down: the harness default is still the third thing that agrees with neither the drill's seed data nor the live stack. Caught in one drill run; the fix is one line in `d7.ts`. |
+| **The conformance suite EXPIRED (this pass)** | `packages/wire-conformance/test/sale-client-to-api.test.ts` — the file whose whole job is to catch the client-payload bug class — went from **19/19 green to 12/19 red with no code change**. Every till instant in it was a hard-coded literal (`'2026-08-21T09:00:00.000Z'`). `apps/api/src/pipeline.ts` clamps a claimed HLC at ±24h of the server clock and refuses beyond it with `CONFLICT: CLOCK_RESYNC_REQUIRED` **before the payload is ever parsed**. At 25.67h old the suite began failing on the clock. | 19/19 PASS, the day before | Nothing was wrong with the code and nothing tested the test. This is the ledger's inverse: not an unexecuted path, but a guard that stops guarding on a calendar boundary, with a red message pointing at the clock instead of at the payload — and the tempting repair is to relax the very assertion that catches the bug. Found by running the full suite, not by reading. |
+| **The client's api layer could not be conformance-tested at all (this pass)** | `apps/web/src/data/api/client.ts` reads `import.meta.env`. `packages/wire-conformance` — the ONLY package that may import both trees, and therefore the only place the new client reads can be driven against the real API — declared `"types": ["node"]`, so importing that module was a `tsc` error. Every new client read path (`reports.*`, `inventory.lowStock`, `credit.*`) was structurally unreachable from the one harness that could prove it. | green: `pnpm typecheck` passed 12/12, because nothing tried to import it | The module compiled fine inside `apps/web`, which declares `vite/client`. Nothing failed until this pass actually attempted the import. A layer that cannot be reached by the conformance package is a layer that will only ever be tested against itself — which is this table's one root cause, stated below. |
 
 One root cause, stated once: **both sides were only ever tested against a third thing that agreed
 with neither of them** — a fixture, a harness default, or a hand-written payload. The RBAC entry is
@@ -102,15 +122,38 @@ What changed, so the next one is caught:
 - **Drill D6** — the same journey over a real socket against the deployed stack, so the failures an
   in-process harness cannot see (CORS preflight, a dev server on stale code, seed data that does
   not match the contract) are caught too. One of each, from now on.
-- **A pin on the client's write surface.** `apps/web` can upload two kinds today
-  (`sale.create` and `sequence.sync_block`). `outbox-surface.test.ts` fails the moment another
-  appears without a test that drives *its* real builder against *its* real parser — and it did
-  fail, on this merge, the moment the sequence report joined the vocabulary. The answer was
-  `sequence-client-to-api.test.ts`, not a wider allow-list.
+- **A pin on the client's write surface.** `apps/web` can upload **three** kinds today
+  (`sale.create`, `sequence.sync_block` and — new this pass — `stock.record_movement`).
+  `outbox-surface.test.ts` fails the moment another appears without a test that drives *its* real
+  builder against *its* real parser. **It fired again on this pass**, the moment
+  `WIRE_KINDS` grew `stock_movement → 'stock.record_movement'`: the adjustment builder landed and
+  the pin went red saying "no test drives the client's own builder against the API's own parser
+  for it". The answer was `stock-client-to-api.test.ts` (11 tests), not a wider allow-list — the
+  third time in a row the tripwire has been paid for. That file records the movement under a REAL
+  partition (the `fetch` REJECTS, as it does on a dead link), proves it is absent from the server
+  while offline, drains it on reconnect, and asserts the row in Postgres; plus a byte-identical
+  replay acked `duplicate`, a same-key-different-bytes resend REFUSED, and the two refusals that
+  would WEDGE the ordered queue (unknown reason code, non-stocked product) — both of which
+  `classifyRejection` classes retryable, which is why the builder narrows them away on the device.
 - **Drill D8 — `pnpm --filter @erp/wire-conformance drill:rbac`.** Thirteen authorization checks
   over a real socket against the deployed stack: every refusal paired with a positive control on
   the same route with the same payload, so "denied" can never mean "the route is broken for
   everyone". It is the check that would have caught this pass's failure in one run.
+- **Drill D10 — `pnpm --filter @erp/wire-conformance drill:client` (30 live checks).** The answer
+  to ledger row 11, and to §6 items 13/14 of the previous revision. It drives the CLIENT'S OWN api
+  modules — `data/api/reports.ts`, `data/api/inventory.ts`, `data/api/credit.ts`,
+  `data/mutations/adjustStock.ts` — against the deployed API over real HTTP from a browser origin,
+  and compares the client's figures to **Postgres**, not to a fixture. `apps/web` cannot do this
+  itself (it has no `pg` dependency and must not grow one), which is exactly why the comparison
+  belongs in the one package that may import both trees.
+- **The conformance suite's device clock is now derived from `Date.now()`.** `tillClock(offset)`
+  plus `assertWithinSkewWindow`, which raises a message naming the failure — *"a literal here
+  expires the day after it is written"* — rather than letting the server answer
+  `CLOCK_RESYNC_REQUIRED` and leaving the next reader to guess. Ledger row 10 cannot recur
+  silently.
+- **`packages/wire-conformance` declares `vite` and `"types": ["node", "vite/client"]`.** Same
+  range `apps/web` declares, deliberately: a local ambient shim for `import.meta.env` would have
+  been the third thing agreeing with neither side, which is this table's one root cause.
 - **`provisionPrincipal` (`packages/db/src/seed/principals.ts`) and the bootstrap's dev
   principals.** A tenant with roles and no grants is a correctly-seeded tenant that nobody can use.
   `pnpm stack:up` now provisions one principal per template role on each dev tenant, and
@@ -121,6 +164,45 @@ What changed, so the next one is caught:
 Both mutation-tested before being believed: drifting the client payload turns
 `sale-client-to-api.test.ts` red (4 failures), and pointing a router at a private schema instead of
 the shared one turns the registry assertion red.
+
+---
+
+## 0a. Offline honesty — the rule most easily broken quietly, mutation-tested
+
+Reporting, low stock, reorder thresholds and credit are served by the API over HTTP.
+`app.credit_entry` and `app.reorder_point` are in **no sync bucket**, so a partitioned device
+genuinely cannot know these things. The rule is that the UI says so plainly, and **never** shows a
+stale figure as current or an empty list that reads as "nothing is low": a wrong balance shown
+confidently at a counter is worse than no balance.
+
+The client honours this by construction. `data/api/client.ts` models nine distinct kinds of "no",
+`useApiQuery` has exactly three states and **discards the previous answer before every re-run**, and
+`ServerUnavailable` is the only rendering of a failure — there is no fourth state showing an old
+answer. There is **no cache of any money figure anywhere in the feature**: the only cache in the
+client's api layer is `session.permissions`, keyed to the token's `uid`, and it exists to grey out
+a button, never to authorise (D10 checks 1e/2b/4f prove the server refuses regardless).
+
+Claiming that is not the same as demonstrating it, so each of the three rules was **broken
+deliberately and the suite re-run**. All three mutations were reverted; the tree is clean.
+
+| Mutation injected | Result | Verdict |
+|---|---|---|
+| `LowStock.tsx`: collapse the "no thresholds configured" branch into the reassuring "nothing is below its threshold" one | **2 tests red** (`says NO THRESHOLDS have been set, and does not say stock is healthy`; `tells counter staff who can set one`) | has teeth |
+| `use-api-query.ts`: keep the last good answer when a refresh fails, and stop clearing state on re-run | **1 test red** (`never shows a previously fetched balance after the connection drops`) | has teeth |
+| `Reports.tsx`: render a failed panel's children anyway (the zero/empty table instead of the reason) | **2 tests red** (`says unavailable offline on every panel, and renders no table at all`; `explains a refusal from the server in the server's own words`) | has teeth |
+
+One honest correction to method, recorded because it nearly produced a false finding. The **first**
+mutation of `useApiQuery` — keeping the previous answer only in the resolution branch — did **not**
+turn anything red, and read like a missing test. It is an **equivalent mutant**: the guarantee is
+held earlier and more strongly than the module's own comment claims, by the eager
+`setState({status:'loading'})` at the top of the effect, which clears the answer *before* the
+request is even sent. The resolution branch can never observe a `ready` state. Only after mutating
+**both** halves did the right test fail. A weaker analysis would have reported "the stale-balance
+rule is untested" and been wrong.
+
+Confirmed live as well — D10 check group 5: with the radio genuinely off (the `fetch` rejects), a
+report, a stock-on-hand read, the low-stock alert and a credit balance each answer `offline`, and
+none of them returns data.
 
 ---
 
@@ -214,45 +296,109 @@ once at REG-BONO; then the real read paths are asked what the customer owes. Mea
 §5.3. It carries its own honest verdict in the machine-readable result, so a report generator
 cannot summarise it as a plain green tick: `facilityFee: "GATED — Q4 unconfirmed"`.
 
+### What the CLIENT drill demonstrates (`drill:client`, **30/30** over HTTP) — NEW
+
+`packages/wire-conformance/src/live-operations-drill.ts` (**D10**) is the answer to §6 items 10, 13
+and 14 of the previous revision, and to §0 ledger row 11. Every check drives a **production module
+of `apps/web`** — not a fixture, not a hand-written request — against the deployed API on :3001,
+over real HTTP, carrying a browser `Origin`, and compares the answer to rows read straight out of
+Postgres under the tenant's own RLS context.
+
+| # | Demonstrated | Measured |
+|---|---|---|
+| 1a–1d | **REPORTING HAS A CLIENT.** The manager's own `fetchSalesByLocation` returns a report over real HTTP; the client's Σ(per-location revenue) **equals `sum(app.sale.total_minor)` from Postgres as an exact bigint identity**, and equals the client's own network total | `client=4830365 postgres=4830365` over **25 locations / 25 sales**; `network=false` — a true total of what that caller may see, labelled as such |
+| 1e–1f | Counter staff **REFUSED** the same report with the same payload, and the refusal carries **no figures** — a reason, never a table of zeroes | `403 forbidden`, detail `PERMISSION_DENIED: report.view.location is not held by this user` |
+| 2a–2b | The client's `setReorderPoint` writes a threshold over real HTTP; counter staff is **refused** the identical write | manager allowed, counter `forbidden` |
+| 2c–2g | **THE LOW-STOCK LIST IS NON-EMPTY.** The threshold is deliberately set *above* the ledger's on-hand so the alert must fire — an empty list would pass vacuously and is also exactly what a broken client returns. The alert's quantity equals the movement ledger's own sum, and coverage reads `configured` so the screen may say what an empty list would have meant | `alerts=1`, `onHand=749` (ledger 749), `threshold=1749`, `shortfall=1000`, `coverage={"kind":"configured","count":1}` |
+| 3a–3e | **A STOCK ADJUSTMENT RECORDED OFFLINE.** The real `recordAdjustment` completes locally with nothing awaiting a socket; with the transport's `fetch` REJECTING it is **absent from the server** and deferred (never rejected — a dead radio is not a refusal); on reconnect it drains, is acked **`applied`**, and the row is in `app.stock_movement` once, with the client's exact bigint | drained in **21ms** against the 60,000ms budget; `qty_delta=-3`, `source_kind=WRITE_OFF`, 1 row, pending back to 0 |
+| 4a–4d | **THE CREDIT CLIENT'S FIGURES EQUAL THE SERVER'S.** `fetchExposure` compared to `Σ(app.credit_entry.amount_minor)` read from Postgres, as an exact bigint identity — and non-vacuously, on an account that genuinely owes | `client=765200 postgres=765200` over 3 entries; `available 4234800 = 5000000 − 765200` |
+| 4e–4h | Reconciliation is checked by the **client's own `checkAgreement`** — the function the credit screen renders "these reconcile" from — rather than by an identity restated in the drill, which would be the third thing agreeing with neither side. The unapplied payment stays on its **own line**, never netted into a bucket; the facility fee is **provisional and refuses to be chargeable** | `agrees`; `Σbuckets=865200 − onAccount=100000 = balance 765200`; `agedBy=days_past_due`; `label="provisional — not chargeable"` |
+| 4f | Counter staff **REFUSED** a credit balance, same payload | `forbidden` |
+| 5 | **OFFLINE HONESTY, LIVE.** With the radio genuinely off, a report, a stock-on-hand read, the low-stock alert and a credit balance each answer `offline` — **none returns data**, an empty list or a zero | 4/4 `kind=offline` |
+
+**The contract-importer question, answered by mutation rather than by reading imports.**
+`apps/web/src/data/api/reports.ts` imports `salesReportInput`, `cashPositionReportInput`,
+`stockReportInput`, `inventoryDaysReportInput` and `distributionCostReportInput` from
+`@erp/contracts`, and validates against them *before the request leaves the device*. Renaming
+`from` to `fromDate` inside `packages/contracts/src/reports.ts` breaks `apps/web`'s compile at
+**four production call sites in `Reports.tsx`** (plus three in its tests). The "a disagreement is a
+`tsc` error" guarantee that justifies the contracts package **now exists for these shapes**; last
+revision it did not, because there was no second party to disagree.
+
+**One honest qualification.** The report *responses* are still NOT in the contract package.
+`apps/web` may not import `apps/api`, so each caller declares the response shape it reads and maps
+it field by field — every money and quantity value through `deserializeMoney`, never `Number`, with
+an unreadable field becoming a loud `malformed` rather than an `undefined` flowing into a total.
+`data/api/client.ts` states this asymmetry in its own header rather than implying the return type is
+enforced end to end. D10 is what covers the gap today: it compares the mapped figures to Postgres.
+The **credit query inputs** (`exposure`, `ageing`, `previewFacilityFee`) are likewise still private
+to `apps/api` — the client validates them with hand-written guards. Only the four uploadable
+mutations and the five report inputs are shared declarations. Recorded as §6 item 18.
+
 ### Dead surface — exported, never called from production
 
 Listed because "exported and tested" reads as "wired" and is not the same thing. None of these is
 a security hole; all of them are API surface a reviewer could mistake for a control.
 
-**Audited mechanically this pass** (`export const|function|type|interface` in every changed or
-added non-test file, cross-referenced against every non-test file in the repo). Result: **every
-new exported entry point of this pass reaches production code.** `reportsRouter` is mounted in
-`routers/index.ts`; all five report schemas and `lowStockInput` are `.input()` of a live route;
-`setReorderPointInput` likewise; `resolveLocationScope` is called by six routes across two
-routers; `resolveGroupRollup` by one; `salePermission`/`SALE_PERMISSION` by `createSale`'s
-middleware; `applyReorderPoints` by `inventory.ensureReorderPoints`. Nothing new is test-only.
-Four residual notes, none of them defects:
+**Audited mechanically this pass** over the CLIENT tree: every `export const|function|class|enum`
+(i.e. every executable entry point — a bare `type`/`interface` export that nothing names is a
+declaration, not an unexecuted path) in every changed or added file under `apps/web/src`,
+cross-referenced against every non-test file in the repo, counting same-module callers as wiring.
 
-- **The new routes have no CLIENT.** `reports.*`, `inventory.lowStock`, `inventory.reorderPoints`,
-  `inventory.setReorderPoint` and `inventory.ensureReorderPoints` are reachable over HTTP and
-  proven live (D8 checks 9 and 10), but `apps/web` calls **none** of them — grep confirms zero
-  references. So `packages/contracts/src/reports.ts` is today a contract with **one** party: the
-  "a disagreement is a `tsc` error" guarantee that justifies the package does not yet exist for
-  these shapes, because there is no second importer to disagree. That is the HQ-reporting client
-  work-package (§6 item 13), not a fault in what landed.
+**Result: 88 value exports; 68 reachable from another production module, 19 used only inside their
+own module, and exactly ONE with no production caller anywhere.**
+
+- **`snapshotOf` (`apps/web/src/data/api/session.ts`)** — zero call sites, in production or in
+  tests. `holdsCapabilityAt` immediately above it is the accessor everything actually uses. Not a
+  hole; the same shape as `assertPermission` and `requireKnownCode` below. Delete it or use it.
+
+The 19 self-only exports are all legitimate — `fetchLowStock` and `fetchFeePreview` are called by
+`fetchLowStockPicture` and `fetchCreditPosition` in the same file, the six named `adjustStock`
+error classes are thrown there and caught by the screen, and `readApiEndpoint`/`DEFAULT_TIMEOUT_MS`
+are used by `call()`. They are exported wider than they need to be, which is a tidiness note.
+
+**Every route this pass was about now has a client, and it is exercised:** `reports.*` by
+`data/api/reports.ts` (four production call sites in `Reports.tsx`), `inventory.lowStock` /
+`reorderPoints` / `setReorderPoint` by `data/api/inventory.ts` (`LowStock.tsx`),
+`inventory.recordMovement` by `data/mutations/adjustStock.ts` through the **outbox**
+(`StockAdjust.tsx`), and `credit.*` by `data/api/credit.ts` (`Credit.tsx`). All of it is driven
+live by D10.
+
+Two residual notes, neither a defect:
+
+- **`inventory.ensureReorderPoints` still has no client** — the one route from the previous
+  revision's list that remains uncalled by `apps/web`. See §6 item 15, which is about the same
+  gap from the seeding side.
 - **Nothing in onboarding calls `ensureReorderPoints`.** `applyReorderPoints` deliberately seeds
   thresholds only where the ledger already shows stock, so applying it at template time correctly
   seeds nothing — and `infra/scripts/bootstrap.ts` never calls it afterwards. A freshly
   provisioned tenant therefore has **zero** reorder points and **zero** low-stock alerts until a
   human calls the route. Correct behaviour, invisible default: verified live, where a clean
   `stack:reset` leaves `app.reorder_point` empty.
-- **`app.reorder_point` is not in the PowerSync publication** (18 tables) and appears in no sync
-  rule, so **the low-stock alert is online-only**. In an offline-first product that is a real
-  limitation of the feature, not of its code — recorded as §6 item 14.
+- **`app.reorder_point` is STILL not in the PowerSync publication** (18 tables) and appears in no
+  sync rule, so **the low-stock alert remains online-only**. That is unchanged by this pass and
+  stays §6 item 14. What DID change is that the client now says so plainly instead of showing an
+  empty list: `LowStock.tsx` renders three distinct empty states — *"this device could not check"*,
+  *"no thresholds have been set here yet — this is not a report that stock is healthy"*, and
+  *"nothing is below its threshold"* — and the difference between the first two is mutation-tested
+  (§0a) and demonstrated live (D10 2f, and check group 5 with the radio off).
 - **`REORDER_FRACTION_BP`** is re-exported from `@erp/db/seed` and used only inside
   `template.ts`. Harmless; noted for symmetry with `requireKnownCode` below.
 
-- **`session.permissions` has no client.** The route works (verified live: a counter-staff bearer
-  gets its 8 codes across 57 locations, including the `max_order_value_minor: "0"` bound). **The
-  PWA never calls it.** So layer 3 — greying out the button a clerk must not press — does not exist
-  yet: a clerk fills in the form and is refused *after* the customer has walked out. The
-  architecture is explicit that layer 3 protects nothing, so this costs usability rather than
-  safety, but the file's own header describes a behaviour the product does not have.
+- **`session.permissions` NOW HAS A CLIENT — resolved this pass.** `data/api/session.ts` +
+  `use-permissions.ts` resolve the caller's grants once per session and remember them against the
+  token's `uid`. Layer 3 exists: the threshold control is offered to a manager and withheld from
+  counter staff (`low-stock-ui.test.tsx`), and the fee-posting control likewise (`credit-ui`).
+  **Three properties were checked because getting them wrong is how a courtesy becomes a claimed
+  boundary.** (a) `holdsCapabilityAt` returns TRUE while the list is `resolving` or `unknown` — it
+  **fails OPEN**, so a device that cannot reach the server offers everything and lets the server
+  refuse, rather than looking like a demotion; there is a test saying exactly that. (b) The
+  remembered list is keyed to the `uid` and is discarded for a different session — *"never lends
+  one person's remembered list to another session"*. (c) It is used **only** to hide: D10 checks
+  1e, 2b and 4f prove the server refuses counter staff on the report, the threshold write and the
+  credit balance regardless of what any client rendered. It is `usePermissions`, deliberately NOT
+  `useApiQuery`, because a navigation tab that vanishes when the radio drops is worse than one that
+  stays — and nothing behind the tab is authorised by its presence.
 - **`assertPermission`** (`apps/api/src/permissions.ts`, re-exported from `trpc.ts` and
   `index.ts`) — **zero call sites**, in production or in tests. Every in-handler check written so
   far uses the synchronous `ctx.permissions.requireTenantWide(…)` against the middleware's
@@ -334,7 +480,7 @@ shape disagreement a compile error instead of a `BAD_REQUEST` at a till in Techi
   key and refuses all three spellings of tenant identity; movement/credit money as strings; no
   `SALE` movement kind and no `FEE` entry kind on the device surface; the `/sync/token` shape
 
-### `packages/wire-conformance` — 35 tests (4 files) + 2 live drills, typecheck clean
+### `packages/wire-conformance` — 46 tests (5 files) + 4 live drills, typecheck clean
 **A probe package whose only job is to prove the two sides agree.** No production code imports it.
 It exists because it is the only place that can import `apps/web`'s sources *and* `apps/api`'s:
 the PWA resolves modules as a bundler would and its imports carry no file extensions, which
@@ -362,10 +508,22 @@ the PWA resolves modules as a bundler would and its imports carry no file extens
   API-signed token: one location, many locations in the same order, and an empty claim scoping the
   device nowhere. The fourth pins the rule that matters — the client reads the claim **without
   verifying it**, and that is all it is trusted for; enforcement is the server's.
-- **`drill:rbac` (D8, 30 live checks)** and **`drill:credit` (D9, 13 live checks)** — not vitest
-  suites; `tsx` scripts against the deployed stack. D8 is the authorization matrix (§1a); D9 is
-  acceptance criterion 3 (§5.3). Both mint real HS256 bearers for real `provisionPrincipal`
-  principals and assert on real 403s and real Postgres rows.
+- **`drill:rbac` (D8, 30 live checks)**, **`drill:credit` (D9, 13 live checks)** and
+  **`drill:client` (D10, 30 live checks — NEW)** — not vitest suites; `tsx` scripts against the
+  deployed stack. D8 is the authorization matrix (§1a); D9 is acceptance criterion 3 (§5.3); D10
+  drives `apps/web`'s OWN api modules and compares their figures to Postgres (§1a). All three mint
+  real HS256 bearers for real `provisionPrincipal` principals and assert on real 403s and real
+  Postgres rows.
+- `stock-client-to-api` (11) — **added this pass**, and the reason `outbox-surface.test.ts`'s pin
+  could go green again rather than being widened. The PWA's own `recordAdjustment` →
+  `buildMovementPayload` → outbox → `drainOutbox` → `httpUploadTransport` →
+  `inventory.recordMovement` → Postgres, with the movement recorded under a **real partition**
+  (the transport's `fetch` rejects, as on a dead link), proven absent from the server while
+  offline, drained on reconnect and acked `applied`. Also: the device's own bytes replayed acked
+  `duplicate`; the same key carrying DIFFERENT bytes REFUSED rather than silently replayed; and
+  the two refusals that would wedge the ordered queue (unknown reason code, non-stocked product),
+  each shown to be classed *retryable* by the client's own `classifyRejection` — which is why the
+  builder narrows both away on the device.
 - `sequence-client-to-api` (4) — **added by this merge**, and the reason §0's *Sequence reporting*
   ledger row could be closed rather than merely noted. PR #4's reconnect half was reachable from its own unit
   test and from no production module; the only way to prove it is wired is to drive the PWA's own
@@ -501,9 +659,12 @@ and tax computation exist; **no** invoice issuance/clearance fields.
   database refusing a regression directly, the collision landing path, and
   tenant isolation across all four new read paths
 
-### `apps/web` — 265 tests (26 files), build (Vite + PWA) + typecheck clean
-**Owned by another session during this pass and deliberately not touched.** Counts observed on
-2026-08-21; the per-file breakdown below is the previous revision's and is now stale.
+### `apps/web` — 398 tests (36 files), build (Vite + PWA) + typecheck clean
+**+133 tests across 10 new files this pass**, all of them the client for the server-backed
+features: `credit-api` (22), `credit-ui` (18), `stock-adjust` (20), `stock-adjust-ui` (11),
+`api-client` (14), `low-stock-ui` (11), `reports-ui` (10), `navigation` (10),
+`ratio-and-quantity-input` (9), `session-permissions` (8). Every pre-existing file kept or
+increased its count; there is no `.only`/`.skip`/`.todo` anywhere.
 Installable PWA shell and POS skeleton, now with the full sync connector
 (`src/data/sync/`: `credentials.ts`, `upload.ts`, `transport.ts`, `runtime.ts`,
 wired through `src/data/powersync.ts`). `fetchCredentials` exchanges the dev API
@@ -673,7 +834,7 @@ Prereqs: Node ≥ 20, pnpm 9 (`corepack enable`), Docker.
 pnpm install                # from the repo root
 pnpm build                  # turbo: tsc for @erp/money, Vite+PWA for @erp/web
 pnpm typecheck              # all packages
-pnpm test                   # all suites (807 tests, 63 files; PGlite suites take ~30s)
+pnpm test                   # all suites (951 tests, 74 files; PGlite suites take ~30s)
 pnpm lint:money             # ADR-0004 money-type lint
 
 # Per package (dependency order contracts → money → sequence → db → api → web → conformance):
@@ -691,6 +852,7 @@ pnpm --filter @erp/sync-drills drill  # 7 drills; spawns the API on :3001 if abs
 pnpm --filter @erp/wire-conformance drill:live   # D6 alone, against the running stack
 pnpm --filter @erp/wire-conformance drill:rbac   # D8 — 30 authorization checks over real HTTP
 pnpm --filter @erp/wire-conformance drill:credit # D9 — acceptance criterion 3, 13 checks
+pnpm --filter @erp/wire-conformance drill:client # D10 — the CLIENT's own api layer, 30 checks
 pnpm dev:token --role counter_staff  # a bearer for a REAL provisioned principal;
                                     # refs: counter_staff, outlet_manager,
                                     # regional_manager, accounts, head_of_operations
@@ -795,7 +957,16 @@ real-device trial (§3) is where field latency gets measured.
    The criterion's first two clauses are demonstrated; the third is gated and
    the offline half of "visible" is not built.
 
-4. **HQ post-sync view across locations — DEMONSTRATED (D3).** After a second
+4. **HQ post-sync view across locations — DEMONSTRATED (D3), and it NOW HAS A SCREEN
+   (D10, 2026-08-22).** The previous revision could show this only at the database and the API;
+   `apps/web/src/features/reports/Reports.tsx` is the view. D10 checks 1a–1d drive the client's own
+   `fetchSalesByLocation` against the deployed API over real HTTP and assert its Σ(per-location
+   revenue) equals `sum(app.sale.total_minor)` from Postgres as an exact bigint identity —
+   **4,830,365 across 25 locations over 25 sales** — and that the client's own network total equals
+   the same sum. The scope is labelled rather than implied: an outlet manager is told
+   `network=false`, a true total of what that caller may see. Counter staff is refused the same
+   call with the same payload (`403`, `report.view.location` absent) and gets a reason, never a
+   table of zeroes. The original D3 evidence: After a second
    location's device (OUT-03) flushed its outbox (2 ops, 34ms, acks `applied`),
    one HQ query over **57 locations returned in 4ms** with sales visible across
    both trading locations; per-location Σ(sales) = tenant-wide total **42,000
@@ -968,23 +1139,36 @@ every `pnpm test`, plus D6 in the drill report.
    server learns about it on the first report anyone queues. Listed here rather
    than left to be discovered: this is exactly the shape of §0's ledger.
 
-10. **Three of the five uploadable ops have no client at all.** `sale.create` is now
-   proven end to end from the PWA's own code. `stock.record_movement`,
-   `credit.open_account` and `credit.record_entry` are reachable on `/sync/upload`
-   and are exercised with contract-shaped payloads (`outbox-surface.test.ts`), but
-   **no PWA builder exists for them**, so there is nothing on the client to test
-   and the counter cannot record a stock adjustment or a credit transaction
-   offline. The declarations are now shared, and `outbox-surface.test.ts` fails the
-   moment `apps/web` grows a second uploadable kind without a conformance test for
-   it — but until those builders are written, "the write path works" means the sale
-   path works.
+10. **Uploadable ops without a client: was three, now TWO — REVISED 2026-08-22.**
+   `sale.create` was already proven end to end from the PWA's own code.
+   **`stock.record_movement` now is too.** `apps/web/src/data/mutations/adjustStock.ts` builds it,
+   `WIRE_KINDS` carries it, `StockAdjust.tsx` is the screen, and it is proven twice: hermetically
+   by `packages/wire-conformance/test/stock-client-to-api.test.ts` (11 tests, on every `pnpm test`,
+   no docker) and live by **D10 checks 3a–3e** — recorded under a real partition, absent from the
+   server while offline, drained on reconnect in **21ms**, acked `applied`, one row in
+   `app.stock_movement` with the client's exact bigint. The builder was NOT written as an
+   `apiMutate`: a stock movement is trade, so it rides the outbox exactly as a sale does, and
+   `data/api/client.ts` states in its own header why a trade write must never go over the
+   synchronous path.
 
-11. **The conformance suite proves shape and effect, not the counter's UI.** It
-   drives `checkout()` and the outbox directly; nothing in it renders a React
-   component or clicks a button, and no test in this repository drives the PWA in a
-   real browser. A regression in the counter screen that never reaches
-   `checkout()` would still pass everything green above. Playwright against the
-   built PWA is the missing layer, and it belongs with the real-device trial (#5).
+   The pin earned its keep again: adding the kind to `WIRE_KINDS` turned `outbox-surface.test.ts`
+   red until a real client-to-api test existed for it. The allow-list was extended only after the
+   test was written, never to make the suite green.
+
+   **Still without a PWA builder: `credit.open_account` and `credit.record_entry`.** The credit
+   SCREEN exists and reads over HTTP (`data/api/credit.ts`, D10 checks 4a–4h), but a counter cannot
+   open an account or record a credit entry **offline** — those two writes have no local builder
+   and no outbox path. Given `app.credit_entry` is in no sync bucket (item 14's sibling), a device
+   could not show the resulting balance anyway, so this is coherent rather than half-done — but it
+   means "the offline write path works" still means sales and stock adjustments, not credit.
+11. **No test drives the PWA in a REAL BROWSER — narrowed, not closed.** The conformance suite
+   still drives `checkout()`, `recordAdjustment()` and the outbox directly, and D10 drives the
+   client's api modules directly; none of them renders a component. What changed this pass is that
+   the *component* layer is now covered in jsdom — `reports-ui` (10), `credit-ui` (18),
+   `low-stock-ui` (11), `stock-adjust-ui` (11), `navigation` (10), `counter-ui` (10) — so a screen
+   that stopped calling its data layer is now caught. What is still missing is a real browser:
+   OPFS, service-worker update, wasm workers and touch behaviour on a low-end Android tablet are
+   exercised by nothing. Playwright against the built PWA belongs with the real-device trial (#8).
 
 12. **Tenant #1's best-ranked price list is tax-inclusive, and nothing can ring
    it.** Surfaced by wiring device price-list provisioning (§0, row 5). The device
@@ -1024,24 +1208,48 @@ every `pnpm test`, plus D6 in the drill report.
    sale at all. It is the POS pricing package, and it is a Phase 1 blocker, not a
    deferral.
 
-13. **The new reporting and alert routes have NO CLIENT.** `reports.salesByLocation`,
-   `stockOnHand`, `cashPosition`, `inventoryDays`, `distributionCost` and `inventory.lowStock` /
-   `reorderPoints` / `setReorderPoint` / `ensureReorderPoints` all work and are all guarded —
-   proven live in D8 checks 9 and 10 — and **`apps/web` calls none of them**. HQ reporting
-   (criterion 4) is demonstrated at the database and the API; there is no screen. Two consequences
-   worth naming rather than discovering: `packages/contracts/src/reports.ts` currently has ONE
-   importer, so the "a shape disagreement is a `tsc` error" guarantee that justifies the contracts
-   package does not yet apply to these shapes; and the moment a client is written it must be
-   written against those exports, not against a second hand-rolled shape — which is precisely how
-   §0's second row happened. `apps/web` was owned by another session during this pass and was
-   deliberately not touched.
+13. **Reporting and alert routes have a client — CLOSED 2026-08-22.** Kept here, with the shape
+   of the closure, because the previous revision named two specific risks and both had to be
+   discharged rather than assumed.
 
-14. **The low-stock alert is ONLINE-ONLY.** `app.reorder_point` (migration `0007`) is not in the
-   PowerSync publication (18 tables) and appears in no sync rule, so a partitioned outlet — the
-   condition this product exists for — cannot see its own low-stock list. Phase 1 lists "low-stock
-   alerts" under core operations and §2.2 says every location must trade fully offline. Adding the
-   table to `PUBLICATION_TABLES` and a per-location bucket is small; it is listed because it was
-   not done, not because it is hard.
+   *Risk one: a contract with one party.* Discharged, and **demonstrated by mutation, not by
+   reading imports**. `apps/web/src/data/api/reports.ts` imports `salesReportInput`,
+   `cashPositionReportInput`, `stockReportInput`, `inventoryDaysReportInput` and
+   `distributionCostReportInput` from `@erp/contracts` and validates against them before a request
+   leaves the device. Renaming `from` to `fromDate` in `packages/contracts/src/reports.ts` breaks
+   `apps/web`'s compile at **four production call sites in `Reports.tsx`**. The guarantee exists.
+   `lowStockInput` and `setReorderPointInput` are imported the same way by `data/api/inventory.ts`.
+
+   *Risk two: "a second hand-rolled shape", i.e. §0's second row again.* Discharged for the
+   REQUEST shapes, which are the ones that produce a `BAD_REQUEST` at a till. **Not** discharged
+   for the RESPONSE shapes — see item 18, which is new and states the residue precisely rather
+   than letting it read as covered.
+
+   HQ reporting (criterion 4) now has a screen, and D10's 30 live checks compare the client's
+   figures to Postgres. `inventory.ensureReorderPoints` is the one route from the original list
+   that still has no caller in `apps/web` (item 15 is the same gap from the seeding side).
+14. **The low-stock alert and the credit balance are ONLINE-ONLY — STILL OPEN, but now HONEST
+   about it.** `app.reorder_point` (migration `0007`) and `app.credit_entry` are in no sync bucket
+   and no sync rule, so a partitioned outlet — the condition this product exists for — cannot see
+   its own low-stock list or a customer's balance. Phase 1 lists "low-stock alerts" under core
+   operations and §2.2 says every location must trade fully offline. Adding
+   `app.reorder_point` to `PUBLICATION_TABLES` with a per-location bucket is small; the credit
+   book is a deliberate fail-closed choice pending the sync-rule swap (item 4). **The feature gap
+   is unchanged.**
+
+   *What DID change is the failure mode, and it is the difference between a gap and a defect.*
+   The client now refuses to guess. Nothing caches a money figure; `useApiQuery` discards its
+   previous answer before every re-run, so a dropped connection replaces the balance with the
+   reason rather than leaving yesterday's number on screen; and `LowStock.tsx` distinguishes *"this
+   device could not check"* from *"no thresholds have been set here yet — this is not a report
+   that stock is healthy"* from *"nothing is below its threshold"*. All three renderings are
+   mutation-tested (§0a: each was deliberately collapsed into the reassuring one, and each turned
+   the right test red) and confirmed live with the radio genuinely off (D10 check group 5: report,
+   stock-on-hand, low-stock and credit balance all answer `offline`, none returns data).
+
+   So the honest statement is: **a partitioned outlet still cannot see these, and now it is told
+   so instead of being shown a zero.** That was the part that could have shipped silently wrong;
+   it did not.
 
 15. **Nothing in onboarding seeds a reorder point.** `applyReorderPoints` correctly seeds nothing
    at template time (thresholds exist only where the ledger already shows stock) and
@@ -1067,6 +1275,27 @@ every `pnpm test`, plus D6 in the drill report.
 17. Smaller but real: auth is a dev-grade HS256 flow (shared dev secret, static
    bearer in the PWA env) — the real login/credential flow is §8.2 work;
    `pnpm build` warns at ~600 kB main bundle (code-split before pilot).
+
+18. **Report and credit RESPONSE shapes are not in the contract package — NEW.** Request inputs
+   are shared and a drift is a `tsc` error (item 13). Responses are not: `apps/web` may not import
+   `apps/api`, so each caller in `data/api/*.ts` declares the response shape it reads and maps it
+   field by field. The mapping discipline is right — every money and quantity value goes through
+   `deserializeMoney`/`BigInt`, never `Number`; a JSON number in a money field becomes a loud
+   `malformed` rather than an `undefined` flowing into a total, and there is a test for exactly
+   that — but a server that renamed a response field would be caught by **D10 and by nothing
+   else**, since D10 needs docker. `data/api/client.ts` states this asymmetry in its own header
+   instead of implying end-to-end enforcement, which is the right disclosure; the structural fix is
+   a shared response declaration, or an `apps/api`-side test asserting the response against a
+   contract object. Also in this class: the credit QUERY inputs (`exposure`, `ageing`,
+   `previewFacilityFee`) are still private to `apps/api` and the client validates them with
+   hand-written guards.
+
+19. **`readApiEndpoint()` throws rather than returning `null` outside a Vite build — NEW, minor.**
+   It reads `import.meta.env.VITE_API_URL`, which is `undefined` in plain Node, so the property
+   access raises instead of yielding the intended `not-configured` failure. It never fires in
+   production (the PWA is always Vite-built) and never in D10 (which always passes an explicit
+   endpoint), so it is a robustness note rather than a bug — recorded because the function's own
+   contract says it returns `null` for a device with no server.
 
 None of these gaps is hidden in a passing test suite: everything green above is
 green because the thing it tests genuinely works in the tested environment, and
