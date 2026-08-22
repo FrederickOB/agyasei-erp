@@ -44,11 +44,11 @@ import {
   asRecord,
   asScaled,
   asString,
-  invalidRequest,
   type ApiCallOptions,
   type ApiFailure,
   type ApiResult,
 } from './client';
+import { guard } from './guard';
 
 // ---------------------------------------------------------------------------
 // Shapes
@@ -213,27 +213,6 @@ function mapSetReorderPoint(json: unknown): SetReorderPointResult {
 // ---------------------------------------------------------------------------
 // Calls
 // ---------------------------------------------------------------------------
-
-interface SafeParseLike {
-  readonly success: boolean;
-  readonly error?: unknown;
-}
-
-function issuesOf(error: unknown): string[] {
-  const issues = (error as { issues?: unknown } | null)?.issues;
-  if (!Array.isArray(issues)) return ['the request did not satisfy the shared contract'];
-  return issues.map((raw) => {
-    const issue = raw as { path?: unknown; message?: unknown };
-    const path = Array.isArray(issue.path) ? issue.path.join('.') : '';
-    const message = typeof issue.message === 'string' ? issue.message : 'invalid';
-    return `${path.length > 0 ? path : '(root)'}: ${message}`;
-  });
-}
-
-function guard(schema: { safeParse: (v: unknown) => SafeParseLike }, path: string, input: unknown): ApiResult<never> | null {
-  const parsed = schema.safeParse(input);
-  return parsed.success ? null : invalidRequest(path, issuesOf(parsed.error));
-}
 
 export function fetchLowStock(
   input: LowStockInput,

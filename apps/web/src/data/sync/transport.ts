@@ -31,6 +31,18 @@ export const WIRE_KINDS: Readonly<Record<string, DeviceOpKind>> = {
   // adjustment screen work with the radio off.
   stock_movement: 'stock.record_movement',
   sequence_block: 'sequence.sync_block',
+  // Phase 2. A yard receives goods while partitioned — the truck arrived and
+  // the bags are on the ground whether or not the tower is up — and a delivery
+  // status is recorded by whoever hears from the driver, wherever they are.
+  // Both are TRADE, both ride this ordered queue, and both complete only on
+  // their own per-key ack (data/mutations/recordGoodsReceipt.ts,
+  // data/mutations/updateDeliveryStatus.ts). PLANNING a delivery and raising or
+  // approving a purchase order are deliberately NOT here: those are
+  // commitments made against supplier terms and an approval bound a
+  // partitioned device may hold a stale copy of, so they go over tRPC and are
+  // refused out loud (packages/contracts/src/procurement.ts).
+  goods_receipt: 'goods.record_receipt',
+  delivery_status: 'logistics.update_delivery_status',
 };
 
 export function wireKind(kind: string): string {

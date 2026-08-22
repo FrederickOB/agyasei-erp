@@ -145,6 +145,18 @@ const COVERED_BY_A_REAL_CLIENT_TEST: ReadonlySet<string> = new Set<DeviceOpKind>
   // the pin below went red the moment `WIRE_KINDS` grew the kind, which is
   // the tripwire working exactly as designed.
   'stock.record_movement',
+  // receipt-client-to-api.test.ts — the PWA's own recordGoodsReceipt →
+  // outbox → drainOutbox → httpUploadTransport against the API's own
+  // receiving router and pipeline, recorded under a REAL partition, drained
+  // on reconnect, and replayed BYTE-IDENTICALLY to prove no second stock
+  // movement is appended. Added only after that file existed: the pin below
+  // went red the moment `WIRE_KINDS` grew the kind.
+  'goods.record_receipt',
+  // delivery-client-to-api.test.ts — the PWA's own recordDeliveryStatus
+  // through the same path, plus the check that closes the one duplicated
+  // table in Phase 2: the contract's DELIVERY_TRANSITIONS against
+  // app.delivery_legal_transitions() read out of a real Postgres.
+  'logistics.update_delivery_status',
 ]);
 
 describe("the PWA's uploadable write surface", () => {
@@ -162,11 +174,17 @@ describe("the PWA's uploadable write surface", () => {
           `before adding the kind here.`,
       ).toBe(true);
     }
-    // And the pin itself: today the counter records sales, adjusts stock, and
-    // reports its receipt-number cursor on reconnect. Nothing else. The two
-    // credit ops are still server-only — `data/api/credit.ts` reaches them
-    // over HTTP and says so out loud when it cannot.
+    // And the pin itself: today the counter records sales, adjusts stock and
+    // reports its receipt-number cursor on reconnect; the yard signs for
+    // goods; and whoever hears from the driver moves a delivery along. Nothing
+    // else. The two credit ops are still server-only — `data/api/credit.ts`
+    // reaches them over HTTP and says so out loud when it cannot — and so are
+    // raising, approving and BOOKING, which are commitments made against terms
+    // and bounds a partitioned device may hold a stale copy of
+    // (packages/contracts/src/procurement.ts, data/api/procurement.ts).
     expect([...emitted].sort()).toEqual([
+      'goods.record_receipt',
+      'logistics.update_delivery_status',
       'sale.create',
       'sequence.sync_block',
       'stock.record_movement',

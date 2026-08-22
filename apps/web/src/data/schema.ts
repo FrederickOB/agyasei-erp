@@ -395,6 +395,14 @@ export const LOCAL_TABLES: readonly LocalTableDef[] = [
       i('tendered_minor'), // CAST AS TEXT on read
       i('change_minor'), // CAST AS TEXT on read
       t('created_at'),
+      // THE QUEUE POSITION, and the only key the drain orders on. `created_at`
+      // is millisecond-resolution and `id` is a uuidv7 with no intra-ms
+      // counter, so the pair ties and then breaks the tie at random; this is a
+      // strictly increasing enqueue-time integer, so the order is total,
+      // deterministic and the order the ops were actually queued in. A COUNT,
+      // never a magnitude — see `data/sync/queue-seq.ts` for the whole
+      // argument, including why a monotonic uuidv7 would not have fixed it.
+      i('queue_seq'),
       t('server_ack_at'), // NULL until the server acks; drives the §8.5 badge
       t('rejected_at'),
       t('reject_reason'),
@@ -474,6 +482,9 @@ export function localSchemaDdl(): string[] {
   stmts.push('CREATE UNIQUE INDEX idx_outbox_idempotency_key ON outbox (idempotency_key)');
   stmts.push('CREATE INDEX idx_cart_line_cart ON cart_line (cart_id)');
   stmts.push('CREATE INDEX idx_outbox_pending ON outbox (created_at)');
+  // The drain's own key. Unique because two ops may never share a queue
+  // position — a duplicate would put the order back where it was.
+  stmts.push('CREATE UNIQUE INDEX idx_outbox_queue_seq ON outbox (queue_seq)');
   // One live block per (sequence_key, location) on this device: the partial
   // index makes "two open blocks for the same counter" unrepresentable rather
   // than merely unlikely, so a number can never be drawn from a stale block.

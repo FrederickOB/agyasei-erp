@@ -120,6 +120,79 @@ export async function loadProductStockInfo(
   };
 }
 
+/**
+ * ONE low-stock row, as the query below returns it. Every quantity is a
+ * decimal string in the product's STOCKING unit at `qty_scale`.
+ */
+export interface LowStockRow {
+  location_id: string;
+  reorder_point_id: string;
+  product_id: string;
+  sku_code: string;
+  product_name: string;
+  qty_on_hand: string;
+  reorder_point_qty: string;
+  reorder_up_to_qty: string | null;
+  shortfall_qty: string;
+  lead_time_days: number | null;
+  qty_scale: number;
+  uom_code: string;
+  coverage_bp: string | null;
+}
+
+/**
+ * THE low-stock query — the one CLAUDE.md §3 ties Phase 2's reorder points to.
+ *
+ * Extracted from `lowStock` below and exported so
+ * `procurement.reorderSuggestions` runs THIS query rather than a second one
+ * that agrees with it today and drifts next quarter. "Reorder points tied to
+ * the Phase 1 alerts" is only true if both read the same rows through the
+ * same predicate: same `is_active and is_low`, same at-or-below comparison in
+ * the stocking unit, same urgency ordering.
+ *
+ * It does NOT resolve scope. The caller resolves the readable location set
+ * first (`resolveLocationScope`) and passes the ids in, so the authorisation
+ * decision stays in one place and this stays a plain read.
+ */
+export async function selectLowStockRows(
+  tx: Queryable,
+  params: {
+    locationIds: readonly string[];
+    productIds?: readonly string[] | undefined;
+    limit?: number | undefined;
+  },
+): Promise<LowStockRow[]> {
+  const res = await tx.query<LowStockRow>(
+    `select rs.location_id, rs.reorder_point_id, rs.product_id,
+            p.sku_code, p.name as product_name,
+            rs.qty_on_hand::text, rs.reorder_point_qty::text,
+            rs.reorder_up_to_qty::text, rs.shortfall_qty::text,
+            rs.lead_time_days, rs.qty_scale, u.code as uom_code,
+            case when rs.reorder_point_qty > 0
+                 then ((rs.qty_on_hand * 10000) / rs.reorder_point_qty)::text
+                 else null end as coverage_bp
+       from app.reorder_status rs
+       join app.product p on p.tenant_id = rs.tenant_id and p.id = rs.product_id
+       join app.unit_of_measure u on u.tenant_id = rs.tenant_id and u.id = rs.uom_id
+      where rs.location_id = any($1::uuid[])
+        and rs.is_active
+        and rs.is_low
+        and ($2::uuid[] is null or rs.product_id = any($2::uuid[]))
+        and p.deleted_at is null
+      order by (case when rs.reorder_point_qty > 0
+                     then (rs.qty_on_hand * 10000) / rs.reorder_point_qty
+                     else null end) asc nulls first,
+               p.sku_code
+      limit $3`,
+    [
+      [...params.locationIds],
+      params.productIds ? [...params.productIds] : null,
+      params.limit ?? 200,
+    ],
+  );
+  return res.rows;
+}
+
 export const inventoryRouter = router({
   /**
    * The permission requirement sits AFTER .input() deliberately: the location
@@ -488,51 +561,13 @@ export const inventoryRouter = router({
         kinds: ['OUTLET', 'WAREHOUSE'],
       });
 
-      const rows = await ctx.deps.runner.withTenant(ctx.identity.tenantId, async (tx) => {
-        const res = await tx.query<{
-          location_id: string;
-          reorder_point_id: string;
-          product_id: string;
-          sku_code: string;
-          product_name: string;
-          qty_on_hand: string;
-          reorder_point_qty: string;
-          reorder_up_to_qty: string | null;
-          shortfall_qty: string;
-          lead_time_days: number | null;
-          qty_scale: number;
-          uom_code: string;
-          coverage_bp: string | null;
-        }>(
-          `select rs.location_id, rs.reorder_point_id, rs.product_id,
-                  p.sku_code, p.name as product_name,
-                  rs.qty_on_hand::text, rs.reorder_point_qty::text,
-                  rs.reorder_up_to_qty::text, rs.shortfall_qty::text,
-                  rs.lead_time_days, rs.qty_scale, u.code as uom_code,
-                  case when rs.reorder_point_qty > 0
-                       then ((rs.qty_on_hand * 10000) / rs.reorder_point_qty)::text
-                       else null end as coverage_bp
-             from app.reorder_status rs
-             join app.product p on p.tenant_id = rs.tenant_id and p.id = rs.product_id
-             join app.unit_of_measure u on u.tenant_id = rs.tenant_id and u.id = rs.uom_id
-            where rs.location_id = any($1::uuid[])
-              and rs.is_active
-              and rs.is_low
-              and ($2::uuid[] is null or rs.product_id = any($2::uuid[]))
-              and p.deleted_at is null
-            order by (case when rs.reorder_point_qty > 0
-                           then (rs.qty_on_hand * 10000) / rs.reorder_point_qty
-                           else null end) asc nulls first,
-                     p.sku_code
-            limit $3`,
-          [
-            [...scope.locationIds],
-            input.productIds ? [...input.productIds] : null,
-            input.limit ?? 200,
-          ],
-        );
-        return res.rows;
-      });
+      const rows = await ctx.deps.runner.withTenant(ctx.identity.tenantId, (tx) =>
+        selectLowStockRows(tx, {
+          locationIds: scope.locationIds,
+          productIds: input.productIds,
+          limit: input.limit,
+        }),
+      );
 
       const byLocation = new Map<string, typeof rows>();
       for (const r of rows) {

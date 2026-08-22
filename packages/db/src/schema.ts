@@ -612,3 +612,309 @@ export const userRoleAssignment = tenantTable(
     index('user_role_assignment_role_ix').on(t.tenantId, t.roleId),
   ],
 );
+
+// ---------------------------------------------------------------------------
+// Procurement, receiving and logistics (0008). See that migration's header
+// for the two decisions that shape all of it: a HAULIER IS A SUPPLIER WITH A
+// HAULAGE CAPABILITY (ADR-0001 — there is no vehicle, driver, fuel or
+// maintenance entity anywhere in this system), and A PURCHASE UNIT IS A
+// product_uom ROW WITH can_buy, so buying cement by the tonne and selling it
+// by the 50 kg bag go through the same conversion machinery (§4.10).
+// ---------------------------------------------------------------------------
+
+/**
+ * Everyone the tenant buys from or pays to carry goods. One party type,
+ * because the books do not distinguish them: both invoice, both are paid on
+ * terms, both belong in AP — which is what puts haulage spend where
+ * distribution cost as a % of revenue can be measured (ADR-0001, Q1).
+ */
+export const supplier = tenantTable(
+  'supplier',
+  {
+    code: text('code').notNull(),
+    name: text('name').notNull(),
+    paymentTermsDays: smallint('payment_terms_days').notNull(),
+    /** Snapshot; a trigger refuses anything but the tenant's pack currency. */
+    currencyCode: char('currency_code', { length: 3 }).notNull(),
+    contactName: text('contact_name'),
+    contactPhone: text('contact_phone'),
+    contactEmail: text('contact_email'),
+    addressText: text('address_text'),
+    notes: text('notes'),
+    isActive: boolean('is_active').notNull(),
+    originTemplateId: text('origin_template_id'),
+    originRef: text('origin_ref'),
+  },
+  (t) => [
+    uniqueIndex('supplier_code_uq').on(t.tenantId, t.code),
+    index('supplier_active_ix').on(t.tenantId, t.isActive, t.code),
+  ],
+);
+
+/**
+ * What a supplier can do, as the tenant's own vocabulary over a platform
+ * structure — the `location_type` / `location.kind` split of 04 §4.3, applied
+ * again. `code`/`name` are the TENANT's words and no platform code reads
+ * them; `kind` is the closed platform enum the platform genuinely branches on
+ * (a carrier must be able to HAUL).
+ */
+export const supplierCapabilityType = tenantTable(
+  'supplier_capability_type',
+  {
+    /** TENANT vocabulary. Never branched on (ADR-0006). */
+    code: text('code').notNull(),
+    name: text('name').notNull(),
+    /** PLATFORM structure: 'GOODS' | 'HAULAGE'. The only readable column. */
+    kind: text('kind').notNull(),
+    originTemplateId: text('origin_template_id'),
+    originRef: text('origin_ref'),
+  },
+  (t) => [
+    uniqueIndex('supplier_capability_type_code_uq').on(t.tenantId, t.code),
+    index('supplier_capability_type_kind_ix').on(t.tenantId, t.kind),
+  ],
+);
+
+/** A supplier holds several capabilities at once — selling and hauling both. */
+export const supplierCapability = tenantTable(
+  'supplier_capability',
+  {
+    supplierId: uuid('supplier_id').notNull(),
+    capabilityTypeId: uuid('capability_type_id').notNull(),
+    notes: text('notes'),
+    originTemplateId: text('origin_template_id'),
+    originRef: text('origin_ref'),
+  },
+  (t) => [
+    uniqueIndex('supplier_capability_uq').on(t.tenantId, t.supplierId, t.capabilityTypeId),
+    index('supplier_capability_type_ix').on(t.tenantId, t.capabilityTypeId, t.supplierId),
+  ],
+);
+
+/**
+ * MULTI-SOURCE: one row per (supplier, product). The same cement from three
+ * manufacturers is three rows, which is what makes the plan's negotiating
+ * leverage data rather than a memory.
+ *
+ * `purchaseUomId` must be a live `product_uom` row for the product with
+ * `can_buy` — enforced by constraint trigger, because a purchase unit with no
+ * conversion factor cannot be turned into the stocking unit the ledger is
+ * denominated in. `lastPriceE4` is minor units per ONE purchase unit × 10⁴.
+ */
+export const supplierProduct = tenantTable(
+  'supplier_product',
+  {
+    supplierId: uuid('supplier_id').notNull(),
+    productId: uuid('product_id').notNull(),
+    supplierSku: text('supplier_sku'),
+    purchaseUomId: uuid('purchase_uom_id').notNull(),
+    leadTimeDays: smallint('lead_time_days'),
+    /** e4 rate per ONE purchase unit; bigint, never number (ADR-0004). */
+    lastPriceE4: bigint('last_price_e4', { mode: 'bigint' }),
+    lastPriceOn: date('last_price_on'),
+    isPreferred: boolean('is_preferred').notNull(),
+    isActive: boolean('is_active').notNull(),
+    notes: text('notes'),
+    originTemplateId: text('origin_template_id'),
+    originRef: text('origin_ref'),
+  },
+  (t) => [
+    uniqueIndex('supplier_product_uq').on(t.tenantId, t.supplierId, t.productId),
+    index('supplier_product_product_ix').on(t.tenantId, t.productId, t.supplierId),
+  ],
+);
+
+/**
+ * A purchase order, and a STATE MACHINE. Legal transitions live in
+ * `app.purchase_order_legal_transitions()` and are enforced by trigger:
+ * inserts must be DRAFT, nothing returns to DRAFT once goods have been
+ * received, and CANCELLED is unreachable after any receipt. A short delivery
+ * ends at CLOSED, which keeps the receipts attached.
+ */
+export const purchaseOrder = tenantTable(
+  'purchase_order',
+  {
+    supplierId: uuid('supplier_id').notNull(),
+    deliverToLocationId: uuid('deliver_to_location_id').notNull(),
+    /** Nullable: a network-wide sequence is coordination offline cannot do. */
+    orderNo: text('order_no'),
+    status: text('status').notNull(),
+    orderDate: date('order_date').notNull(),
+    expectedAt: date('expected_at'),
+    currencyCode: char('currency_code', { length: 3 }).notNull(),
+    /** Pack snapshot of minor_units_per_major. NEVER assume 100. */
+    moneyScale: bigint('money_scale', { mode: 'bigint' }).notNull(),
+    submittedAt: timestamp('submitted_at', { withTimezone: true }),
+    approvedAt: timestamp('approved_at', { withTimezone: true }),
+    approvedByUserId: uuid('approved_by_user_id'),
+    closedAt: timestamp('closed_at', { withTimezone: true }),
+    cancelledAt: timestamp('cancelled_at', { withTimezone: true }),
+    cancelReason: text('cancel_reason'),
+    notes: text('notes'),
+    originTemplateId: text('origin_template_id'),
+    originRef: text('origin_ref'),
+  },
+  (t) => [
+    uniqueIndex('purchase_order_no_uq').on(t.tenantId, t.orderNo),
+    index('purchase_order_supplier_ix').on(t.tenantId, t.supplierId, t.orderDate),
+    index('purchase_order_location_ix').on(
+      t.tenantId,
+      t.deliverToLocationId,
+      t.status,
+      t.orderDate,
+    ),
+    index('purchase_order_open_ix').on(t.tenantId, t.status, t.expectedAt),
+  ],
+);
+
+/**
+ * Mirrors `sale_line`'s shape deliberately (04 §4.4.4): what is PRICED
+ * (`qtyOrdered`, in the supplier's unit) and what the yard EXPECTS
+ * (`qtyOrderedStock`, in the stocking unit) are two facts, with the rational
+ * conversion factor snapshotted so correcting it tomorrow does not restate a
+ * historical document. Lines are editable only while the order is DRAFT.
+ */
+export const purchaseOrderLine = tenantTable(
+  'purchase_order_line',
+  {
+    purchaseOrderId: uuid('purchase_order_id').notNull(),
+    lineNo: smallint('line_no').notNull(),
+    productId: uuid('product_id').notNull(),
+    uomId: uuid('uom_id').notNull(),
+    qtyScale: smallint('qty_scale').notNull(),
+    qtyOrdered: bigint('qty_ordered', { mode: 'bigint' }).notNull(),
+    unitPriceE4: bigint('unit_price_e4', { mode: 'bigint' }).notNull(),
+    stockingUomId: uuid('stocking_uom_id').notNull(),
+    qtyStockScale: smallint('qty_stock_scale').notNull(),
+    qtyOrderedStock: bigint('qty_ordered_stock', { mode: 'bigint' }).notNull(),
+    factorNum: bigint('factor_num', { mode: 'bigint' }).notNull(),
+    factorDen: bigint('factor_den', { mode: 'bigint' }).notNull(),
+    lineNetMinor: bigint('line_net_minor', { mode: 'bigint' }).notNull(),
+    notes: text('notes'),
+  },
+  (t) => [
+    uniqueIndex('purchase_order_line_uq').on(t.tenantId, t.purchaseOrderId, t.lineNo),
+    index('purchase_order_line_product_ix').on(t.tenantId, t.productId, t.purchaseOrderId),
+  ],
+);
+
+/**
+ * A goods receipt. A DOCUMENT: append-only, never soft-deleted (04 §4.2.4).
+ * `purchaseOrderId` is nullable because a receipt with no order genuinely
+ * happens, and recording it honestly beats inventing an order to satisfy a
+ * NOT NULL. Where there IS an order, a trigger refuses a receipt unless the
+ * order is APPROVED or PARTIALLY_RECEIVED and the supplier matches.
+ */
+export const goodsReceipt = tenantTable(
+  'goods_receipt',
+  {
+    purchaseOrderId: uuid('purchase_order_id'),
+    supplierId: uuid('supplier_id').notNull(),
+    locationId: uuid('location_id').notNull(),
+    /** The trading day the goods landed — the accounting fact. */
+    businessDate: date('business_date').notNull(),
+    /** Device time. UNTRUSTED; display and forensics only (03 §3.4.2). */
+    receivedAt: timestamp('received_at', { withTimezone: true }).notNull(),
+    supplierDeliveryNoteRef: text('supplier_delivery_note_ref'),
+    supplierInvoiceRef: text('supplier_invoice_ref'),
+    receivedByUserId: uuid('received_by_user_id'),
+    notes: text('notes'),
+  },
+  (t) => [
+    index('goods_receipt_order_ix').on(t.tenantId, t.purchaseOrderId),
+    index('goods_receipt_location_ix').on(t.tenantId, t.locationId, t.businessDate),
+    index('goods_receipt_supplier_ix').on(t.tenantId, t.supplierId, t.businessDate),
+  ],
+);
+
+/**
+ * TWO QUANTITIES, BECAUSE SHORT DELIVERIES ARE NORMAL (§4.10):
+ * `qtyReceived` is what the supplier invoiced, in THEIR unit; `qtyStock` is
+ * what entered the yard, in the stocking unit, and is the only figure
+ * `stock_movement` sees. Neither is derived from the other.
+ * `qtyStockComputed` is what the snapshotted factor said it should be, and a
+ * difference needs a human's id in `conversionConfirmedBy` (04 §4.4.4).
+ */
+export const goodsReceiptLine = tenantTable(
+  'goods_receipt_line',
+  {
+    goodsReceiptId: uuid('goods_receipt_id').notNull(),
+    lineNo: smallint('line_no').notNull(),
+    purchaseOrderLineId: uuid('purchase_order_line_id'),
+    productId: uuid('product_id').notNull(),
+    uomId: uuid('uom_id').notNull(),
+    qtyReceivedScale: smallint('qty_received_scale').notNull(),
+    qtyReceived: bigint('qty_received', { mode: 'bigint' }).notNull(),
+    stockingUomId: uuid('stocking_uom_id').notNull(),
+    qtyStockScale: smallint('qty_stock_scale').notNull(),
+    qtyStock: bigint('qty_stock', { mode: 'bigint' }).notNull(),
+    qtyStockComputed: bigint('qty_stock_computed', { mode: 'bigint' }).notNull(),
+    factorNum: bigint('factor_num', { mode: 'bigint' }).notNull(),
+    factorDen: bigint('factor_den', { mode: 'bigint' }).notNull(),
+    conversionConfirmedBy: uuid('conversion_confirmed_by'),
+    /** As invoiced, per ONE purchase unit, × 10⁴. */
+    unitCostE4: bigint('unit_cost_e4', { mode: 'bigint' }).notNull(),
+    /** The same cost per ONE stocking unit — what stock_movement carries. */
+    stockUnitCostE4: bigint('stock_unit_cost_e4', { mode: 'bigint' }).notNull(),
+    lineNetMinor: bigint('line_net_minor', { mode: 'bigint' }).notNull(),
+    notes: text('notes'),
+  },
+  (t) => [
+    uniqueIndex('goods_receipt_line_uq').on(t.tenantId, t.goodsReceiptId, t.lineNo),
+    index('goods_receipt_line_order_line_ix').on(t.tenantId, t.purchaseOrderLineId),
+    index('goods_receipt_line_product_ix').on(t.tenantId, t.productId, t.goodsReceiptId),
+  ],
+);
+
+/**
+ * Third-party dispatch and delivery status. ADR-0001 is absolute: there is no
+ * vehicle here, and there is no driver, fuel or maintenance entity anywhere
+ * in this system. `carrierSupplierId` is the carrier abstraction ADR-0001
+ * names as the attachment point if owned vehicles ever appear, and it is NOT
+ * NULL because naming who carried it is what makes the cost of carrying
+ * measurable.
+ *
+ * `sourceKind` is platform document vocabulary ('PURCHASE_ORDER' | 'SALE');
+ * `sourceId` is polymorphic, so it carries no FK and a trigger checks the
+ * referent per kind. Status is a state machine —
+ * `app.delivery_legal_transitions()` — with DELIVERED and CANCELLED terminal.
+ */
+export const delivery = tenantTable(
+  'delivery',
+  {
+    sourceKind: text('source_kind').notNull(),
+    sourceId: uuid('source_id').notNull(),
+    carrierSupplierId: uuid('carrier_supplier_id').notNull(),
+    carrierReference: text('carrier_reference'),
+    fromLocationId: uuid('from_location_id'),
+    toLocationId: uuid('to_location_id'),
+    toAddressText: text('to_address_text'),
+    status: text('status').notNull(),
+    /**
+     * The trading day the haulage is attributed to (migration 0010) — the
+     * period key `distribution cost as a % of revenue` is computed on, and
+     * the same kind of value as `sale.businessDate`. NOT a device clock.
+     */
+    businessDate: date('business_date').notNull(),
+    /**
+     * How `businessDate` was obtained: null = asserted, 'PLANNED_FOR',
+     * 'ROW_CREATED', or 'DISPATCH_CLOCK' (migration 0010's backfill only).
+     */
+    businessDateDerivedFrom: text('business_date_derived_from'),
+    plannedFor: date('planned_for'),
+    dispatchedAt: timestamp('dispatched_at', { withTimezone: true }),
+    deliveredAt: timestamp('delivered_at', { withTimezone: true }),
+    failedReason: text('failed_reason'),
+    /** The AGREED freight; the AP invoice is authoritative (Phase 3). */
+    freightCostMinor: bigint('freight_cost_minor', { mode: 'bigint' }),
+    currencyCode: char('currency_code', { length: 3 }).notNull(),
+    moneyScale: bigint('money_scale', { mode: 'bigint' }).notNull(),
+    notes: text('notes'),
+  },
+  (t) => [
+    index('delivery_source_ix').on(t.tenantId, t.sourceKind, t.sourceId),
+    index('delivery_open_ix').on(t.tenantId, t.status, t.plannedFor),
+    index('delivery_carrier_ix').on(t.tenantId, t.carrierSupplierId, t.dispatchedAt),
+    index('delivery_business_date_ix').on(t.tenantId, t.businessDate, t.carrierSupplierId),
+  ],
+);

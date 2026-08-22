@@ -161,6 +161,54 @@ describe('which destinations are offered', () => {
     ]);
   });
 
+  it('offers signing for goods only where goods.receive is held', async () => {
+    const db = await till();
+    renderShell(db, holding([CAPABILITY.goodsReceive]));
+    const nav = await screen.findByRole('navigation', { name: 'Main' });
+    // `goods.receive` is signing for a delivery. It is deliberately NOT
+    // `purchase.order.approve` and not `stock.adjust`: one person who can
+    // authorise an order and also sign for its goods can fabricate a receipt
+    // against an order they invented. So the yard sees Receive and nothing
+    // else that buying opens.
+    expect([...nav.querySelectorAll('button')].map((b) => b.textContent)).toEqual([
+      'Counter',
+      'Sales',
+      'Receive',
+    ]);
+  });
+
+  it('offers buying and supply under their own separate capabilities', async () => {
+    const db = await till();
+    renderShell(db, holding([CAPABILITY.purchaseOrderView]));
+    const nav = await screen.findByRole('navigation', { name: 'Main' });
+    expect([...nav.querySelectorAll('button')].map((b) => b.textContent)).toEqual([
+      'Counter',
+      'Sales',
+      'Buying',
+    ]);
+
+    cleanup();
+    const db2 = await till();
+    renderShell(db2, holding([CAPABILITY.supplierView]));
+    const nav2 = await screen.findByRole('navigation', { name: 'Main' });
+    expect([...nav2.querySelectorAll('button')].map((b) => b.textContent)).toEqual([
+      'Counter',
+      'Sales',
+      'Supply',
+    ]);
+  });
+
+  it('offers tracking a load only where the delivery capability is held', async () => {
+    const db = await till();
+    renderShell(db, holding([CAPABILITY.deliveryView]));
+    const nav = await screen.findByRole('navigation', { name: 'Main' });
+    expect([...nav.querySelectorAll('button')].map((b) => b.textContent)).toEqual([
+      'Counter',
+      'Sales',
+      'On the road',
+    ]);
+  });
+
   it('offers everything when the capability list could not be fetched', async () => {
     const db = await till();
     renderShell(db, {
@@ -175,6 +223,10 @@ describe('which destinations are offered', () => {
       'Stock',
       'Adjust',
       'Credit',
+      'Receive',
+      'Buying',
+      'Supply',
+      'On the road',
     ]);
   });
 });

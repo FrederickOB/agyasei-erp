@@ -77,6 +77,12 @@ const DEVICE_OPS: Record<DeviceOpKind, DeviceOpHandler> = {
   // rides the same ordered outbox as every other write, so the report a device
   // queues while offline reaches the server before the sales that follow it.
   'sequence.sync_block': (c, i) => c.sequence.syncBlock(i as never),
+  // Phase 2. A yard receives goods while partitioned and a delivery status is
+  // updated by whoever hears from the driver; both ride the same ordered
+  // outbox and the same idempotent pipeline as everything above, so a retry
+  // after a flaky sync appends no second stock movement.
+  'goods.record_receipt': (c, i) => c.receiving.recordReceipt(i as never),
+  'logistics.update_delivery_status': (c, i) => c.logistics.updateStatus(i as never),
 };
 
 /** Tenant identity never comes from a client payload (CLAUDE.md §2.1) —

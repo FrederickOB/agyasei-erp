@@ -65,6 +65,7 @@ import { getCartLines, getOpenCart, type CartLineRow, type CartRow } from '../qu
 import { readDeviceLocation, readReceiptFormat } from '../queries/session';
 import { resolveCartPriceList } from '../session/device-price-list';
 import { allocateReceiptNumber } from '../sequence';
+import { nextQueueSeq } from '../sync/queue-seq';
 
 export class EmptyCartError extends Error {
   constructor() {
@@ -385,12 +386,21 @@ export async function checkout(db: LocalDb, input: CheckoutInput): Promise<Check
       tenderedMinor: input.tenderedMinor,
     });
 
+    // The queue position, taken inside the SAME transaction that writes the
+    // sale and clears the cart. The sale's id is the CART's id, minted when
+    // the cart was opened — which is why the queue key cannot be the id
+    // (data/sync/queue-seq.ts): a block report queued after this sale but
+    // before the drain must still reach the server first, and it will, because
+    // this is the order they entered the queue in.
+    const queueSeq = await nextQueueSeq(tx);
+
     await tx.execute(
       `INSERT INTO outbox
          (id, idempotency_key, claimed_hlc, kind, payload, total_minor, receipt_no,
-          tendered_minor, change_minor, created_at, server_ack_at, rejected_at, reject_reason)
+          tendered_minor, change_minor, created_at, queue_seq,
+          server_ack_at, rejected_at, reject_reason)
        VALUES (?, ?, ?, 'sale', ?, CAST(? AS INTEGER), ?,
-               CAST(? AS INTEGER), CAST(? AS INTEGER), ?, NULL, NULL, NULL)`,
+               CAST(? AS INTEGER), CAST(? AS INTEGER), ?, ?, NULL, NULL, NULL)`,
       [
         input.cartId,
         input.cartId,
@@ -401,6 +411,7 @@ export async function checkout(db: LocalDb, input: CheckoutInput): Promise<Check
         input.tenderedMinor.toString(),
         built.changeMinor.toString(),
         nowIso,
+        queueSeq,
       ],
     );
     await tx.execute('DELETE FROM cart_line WHERE cart_id = ?', [input.cartId]);

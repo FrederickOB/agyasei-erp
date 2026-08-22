@@ -204,3 +204,54 @@ export async function seedCustomer(
   );
   return id;
 }
+
+/**
+ * A BUYABLE unit for a product that already exists, with a real conversion.
+ *
+ * `seedProduct` gives a product one unit at 1/1 — enough for the counter,
+ * useless for receiving, where the whole problem is that a supplier invoices
+ * in one unit and the shelf is counted in another. This adds the second one,
+ * as the `tenant_reference` sync bucket delivers it: a `unit_of_measure` row
+ * and a `product_uom` row carrying the rational factor and the tolerance.
+ *
+ * `factorNum / factorDen` is STOCKING UNITS PER ONE PURCHASE UNIT, the same
+ * direction `app.product_uom` stores it in.
+ */
+export async function seedPurchaseUnit(
+  db: LocalDb,
+  input: {
+    readonly productId: string;
+    readonly uomId?: string;
+    readonly code: string;
+    readonly name?: string;
+    readonly qtyScale?: number;
+    readonly factorNum: bigint;
+    readonly factorDen: bigint;
+    readonly toleranceBp?: bigint;
+    readonly canSell?: boolean;
+  },
+): Promise<string> {
+  const uomId = input.uomId ?? uuidv7();
+  await db.execute(
+    `INSERT INTO unit_of_measure (id, tenant_id, code, name, dimension, qty_scale, hlc, updated_at)
+     VALUES (?, NULL, ?, ?, NULL, CAST(? AS INTEGER), NULL, NULL)`,
+    [uomId, input.code, input.name ?? input.code, input.qtyScale ?? 0],
+  );
+  await db.execute(
+    `INSERT INTO product_uom (id, tenant_id, product_id, uom_id, factor_num, factor_den,
+                              can_sell, can_buy, is_default_sell, tolerance_bp, sort_order,
+                              hlc, updated_at)
+     VALUES (?, NULL, ?, ?, CAST(? AS INTEGER), CAST(? AS INTEGER), ?, 1, 0,
+             CAST(? AS INTEGER), 1, NULL, NULL)`,
+    [
+      uuidv7(),
+      input.productId,
+      uomId,
+      input.factorNum.toString(),
+      input.factorDen.toString(),
+      input.canSell === true ? 1 : 0,
+      (input.toleranceBp ?? 0n).toString(),
+    ],
+  );
+  return uomId;
+}

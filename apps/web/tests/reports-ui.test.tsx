@@ -121,31 +121,61 @@ function inventoryDaysPayload(): unknown {
   };
 }
 
-function distributionPayload(): unknown {
+/**
+ * The ADR-0001 ratio, as the server actually answers it now.
+ *
+ * `line()` builds one row and takes the three cases apart deliberately:
+ *   · a real figure,
+ *   · a figure that is a FLOOR because some freight was never agreed,
+ *   · a location that took nothing, where a percentage is undefined and the
+ *     COST still has to be reported.
+ */
+function line(over: Readonly<Record<string, unknown>> = {}): Record<string, unknown> {
+  return {
+    netRevenueMinor: '100000',
+    // 4500 minor over 100000 minor is 4.5% -> 45000 at ×10⁴.
+    distributionCostMinor: '4500',
+    distributionCostPctE4: '45000',
+    deliveryCount: 3,
+    deliveriesWithNoAgreedFreight: 0,
+    unavailable: null,
+    ...over,
+  };
+}
+
+function distributionPayload(over: Readonly<Record<string, unknown>> = {}): unknown {
   return {
     from: '2026-08-01',
     to: '2026-08-07',
     scope: { network: false, locationCount: 1 },
+    currencyCode: 'XTS',
+    moneyScale: '2',
     locations: [
+      { locationId: LOC, locationCode: 'OUT-01', locationName: 'Main counter', ...line() },
+    ],
+    groups: [
       {
-        locationId: LOC,
-        locationCode: 'OUT-01',
-        locationName: 'Main counter',
-        netRevenueMinor: '100000',
-        distributionCostMinor: null,
-        distributionCostPctE4: null,
-        unavailable: 'NO_DISTRIBUTION_COST_SOURCE',
+        groupId: 'g-1',
+        groupCode: 'GRP-N',
+        groupName: 'Northern grouping',
+        locationCount: 2,
+        ...line({ netRevenueMinor: '200000', distributionCostMinor: '5000', distributionCostPctE4: '25000' }),
       },
     ],
-    groups: [],
     groupsNest: true,
-    total: {
-      netRevenueMinor: '100000',
-      distributionCostMinor: null,
-      distributionCostPctE4: null,
-      unavailable: 'NO_DISTRIBUTION_COST_SOURCE',
+    total: line(),
+    costBasis: 'AGREED_NOT_INVOICED',
+    periodBasis: {
+      datedByAssertion: 3,
+      datedByPlannedFor: 0,
+      datedByDispatchClock: 0,
+      datedByRowCreated: 0,
+      note: 'Every delivery in this period carries an asserted business date.',
     },
-    unavailableReason: 'No table records money spent moving goods.',
+    unavailableReason:
+      'Distribution cost is the AGREED freight on third-party deliveries, not the haulier\u2019s AP invoice.',
+    method: 'Agreed freight over net revenue, both dated by business date.',
+    ...over,
   };
 }
 
@@ -323,7 +353,7 @@ describe('cost and margin are a narrower audience', () => {
     expect(screen.getAllByText('20%').length).toBeGreaterThan(0);
   });
 
-  it('renders a cost the server has no source for as an absence, never as zero', async () => {
+  it('renders a cost the server has no basis for as an absence, never as zero', async () => {
     const db = await till();
     const opts: ApiCallOptions = {
       endpoint: ENDPOINT,
@@ -332,7 +362,20 @@ describe('cost and margin are a narrower audience', () => {
         'reports.cashPosition': cashPayload(false),
         'reports.stockOnHand': stockPayload(false),
         'reports.inventoryDays': inventoryDaysPayload(),
-        'reports.distributionCostRatio': distributionPayload(),
+        'reports.distributionCostRatio': distributionPayload({
+          locations: [
+            {
+              locationId: LOC,
+              locationCode: 'OUT-01',
+              locationName: 'Main counter',
+              ...line({
+                distributionCostMinor: null,
+                distributionCostPctE4: null,
+                unavailable: 'NO_DISTRIBUTION_COST_SOURCE',
+              }),
+            },
+          ],
+        }),
       }),
     };
     renderReports(db, holding([CAPABILITY.reportLocation, CAPABILITY.reportMargin]), opts);
@@ -399,5 +442,207 @@ describe('the date range', () => {
 
     expect(await screen.findByRole('alert')).toBeDefined();
     expect(screen.getByRole('alert').textContent).toContain('no period to report on');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The ADR-0001 ratio — the number the founder was promised for the fleet
+// ---------------------------------------------------------------------------
+
+/** Every distribution case needs the other three panels answered too. */
+function withDistribution(payload: unknown): ApiCallOptions {
+  return {
+    endpoint: ENDPOINT,
+    fetchFn: router({
+      'reports.salesByLocation': salesPayload(false),
+      'reports.cashPosition': cashPayload(false),
+      'reports.stockOnHand': stockPayload(false),
+      'reports.inventoryDays': inventoryDaysPayload(),
+      'reports.distributionCostRatio': payload,
+    }),
+  };
+}
+
+describe('distribution cost as a percentage of revenue', () => {
+  it('shows the ratio per location and a headline for whatever the scope is', async () => {
+    const db = await till();
+    renderReports(
+      db,
+      holding([CAPABILITY.reportLocation, CAPABILITY.reportMargin]),
+      withDistribution(distributionPayload()),
+    );
+
+    // 4500 minor over 100000 minor: 45000 at ×10⁴ is 4.5%. Rounded once, in
+    // integer arithmetic, at the presentation boundary and nowhere else, and
+    // rendered by the one exact decimal renderer, which trims trailing zeros.
+    expect(await screen.findAllByText('4.5%')).not.toHaveLength(0);
+    expect(screen.getByText(/went on moving goods between/)).toBeDefined();
+    // The money is formatted by @erp/money at the tenant's own scale.
+    expect(screen.getAllByText((t) => t.includes('45.00')).length).toBeGreaterThan(0);
+  });
+
+  it('rolls the same ratio up to the tenant’s own grouping nodes', async () => {
+    const db = await till();
+    renderReports(
+      db,
+      holding([CAPABILITY.reportLocation, CAPABILITY.reportMargin]),
+      withDistribution(distributionPayload()),
+    );
+
+    // The GROUP's own ratio, computed by the server over its members — not
+    // summed on the client, which would be a second implementation of the
+    // rollup. The tenant's own name for the node is what is rendered.
+    expect(await screen.findByText('Northern grouping')).toBeDefined();
+    expect(screen.getAllByText('2.5%').length).toBeGreaterThan(0);
+    expect(screen.getByText(/these nest, so they do not add up/)).toBeDefined();
+  });
+
+  it('prints a real zero when nothing moved, and says so beside it', async () => {
+    const db = await till();
+    renderReports(
+      db,
+      holding([CAPABILITY.reportLocation, CAPABILITY.reportMargin]),
+      withDistribution(
+        distributionPayload({
+          locations: [
+            {
+              locationId: LOC,
+              locationCode: 'OUT-01',
+              locationName: 'Main counter',
+              ...line({
+                distributionCostMinor: '0',
+                distributionCostPctE4: '0',
+                deliveryCount: 0,
+              }),
+            },
+          ],
+          groups: [],
+        }),
+      ),
+    );
+
+    // A location nothing was delivered to really did cost nothing to serve.
+    // That is a FACT, and printing it as an absence would hide a real zero —
+    // but a bare 0.00% with no context is how a gap gets read as an
+    // achievement, so the count says which of the two it is.
+    expect(await screen.findAllByText('0%')).not.toHaveLength(0);
+    expect(screen.getAllByText('nothing moved').length).toBeGreaterThan(0);
+  });
+
+  it('says the figure is a floor when freight was never agreed', async () => {
+    const db = await till();
+    renderReports(
+      db,
+      holding([CAPABILITY.reportLocation, CAPABILITY.reportMargin]),
+      withDistribution(
+        distributionPayload({
+          locations: [
+            {
+              locationId: LOC,
+              locationCode: 'OUT-01',
+              locationName: 'Main counter',
+              ...line({
+                deliveriesWithNoAgreedFreight: 2,
+                unavailable: 'INCOMPLETE_FREIGHT_BASIS',
+              }),
+            },
+          ],
+          groups: [],
+        }),
+      ),
+    );
+
+    // The ratio is still shown — it is the best figure there is — but it is
+    // marked as a lower bound, because a partial basis read as a complete one
+    // understates exactly the trajectory this panel exists to expose.
+    expect(await screen.findAllByText('4.5%')).not.toHaveLength(0);
+    expect(screen.getAllByText(/at least/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/with no agreed freight/).length).toBeGreaterThan(0);
+  });
+
+  it('reports the cost of a location that took nothing, and refuses to call it a percentage', async () => {
+    const db = await till();
+    renderReports(
+      db,
+      holding([CAPABILITY.reportLocation, CAPABILITY.reportMargin]),
+      withDistribution(
+        distributionPayload({
+          locations: [
+            {
+              locationId: LOC,
+              locationCode: 'OUT-01',
+              locationName: 'Store yard',
+              ...line({
+                netRevenueMinor: '0',
+                distributionCostPctE4: null,
+                unavailable: 'NO_REVENUE_IN_PERIOD',
+              }),
+            },
+          ],
+          groups: [],
+        }),
+      ),
+    );
+
+    // A warehouse has no till and still pays hauliers. The SPEND is reported —
+    // dropping it is how a network ratio ends up flattering itself — and the
+    // percentage is an absence with the server's reason, never a zero.
+    expect(await screen.findAllByText(/nothing was sold here in this period/)).not.toHaveLength(0);
+    expect(screen.getAllByText((t) => t.includes('45.00')).length).toBeGreaterThan(0);
+  });
+
+  it('warns when a delivery was dated by a clock rather than by a person', async () => {
+    const db = await till();
+    renderReports(
+      db,
+      holding([CAPABILITY.reportLocation, CAPABILITY.reportMargin]),
+      withDistribution(
+        distributionPayload({
+          periodBasis: {
+            datedByAssertion: 1,
+            datedByPlannedFor: 0,
+            datedByDispatchClock: 2,
+            datedByRowCreated: 0,
+            note: 'Some deliveries fell back to a device clock.',
+          },
+        }),
+      ),
+    );
+
+    expect(
+      await screen.findByText(/placed in this period by a clock rather than by a person/),
+    ).toBeDefined();
+  });
+
+  it('stays quiet about the dating when every delivery carries an asserted date', async () => {
+    const db = await till();
+    renderReports(
+      db,
+      holding([CAPABILITY.reportLocation, CAPABILITY.reportMargin]),
+      withDistribution(distributionPayload()),
+    );
+
+    await screen.findAllByText('4.5%');
+    expect(screen.queryByText(/by a clock rather than by a person/)).toBeNull();
+  });
+
+  it('invents no target curve, because a target belongs to a tenant and not to this code', async () => {
+    const db = await till();
+    renderReports(
+      db,
+      holding([CAPABILITY.reportLocation, CAPABILITY.reportMargin]),
+      withDistribution(distributionPayload()),
+    );
+
+    await screen.findAllByText('4.5%');
+    // The 5.0% -> 2.5% curve is a figure in ONE tenant's financial model. It is
+    // not on the wire and no tenant configuration carries it, so the screen
+    // must not draw it: that would be tenant #1's numbers in platform code
+    // (CLAUDE.md 2.9, ADR-0006). This assertion is what keeps somebody from
+    // "just adding the target line".
+    expect(screen.queryByText(/target/i)).toBeNull();
+    expect(screen.queryByText('5%')).toBeNull();
+    // What IS shown about the limits of the figure is the SERVER's own words.
+    expect(screen.getByText(/AGREED freight on third-party deliveries/)).toBeDefined();
   });
 });

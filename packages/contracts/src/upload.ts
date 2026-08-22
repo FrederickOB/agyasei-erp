@@ -35,6 +35,15 @@ export const DEVICE_OP_KINDS = [
   // outbox: a cursor report queued before a batch of sales must reach the
   // server before those sales do.
   'sequence.sync_block',
+  // ── Phase 2 (see PROCUREMENT_UPLOADABLE_OPS in ./procurement.ts) ────────
+  // Goods arrive in a yard that is offline for days. The stock is physically
+  // there; refusing to record it teaches staff to write it on paper, and
+  // paper never reaches the ledger. Dispatched by apps/api/src/sync.ts to
+  // receiving.recordReceipt.
+  'goods.record_receipt',
+  // A delivery status is updated by whoever hears from the driver, wherever
+  // they are. Dispatched to logistics.updateStatus.
+  'logistics.update_delivery_status',
 ] as const;
 export type DeviceOpKind = (typeof DEVICE_OP_KINDS)[number];
 

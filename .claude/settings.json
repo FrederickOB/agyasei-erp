@@ -30,10 +30,10 @@
       "Bash(find:*)",
       "Bash(sed -n:*)",
       "Bash(python3:*)",
-      "Read(//Users/mac/Documents/Agyasei/**)"
+      "Read(//Users/mac/Documents/Agyasei/**)",
+      "Bash(git push:*)"
     ],
     "deny": [
-      "Bash(git push:*)",
       "Bash(npm publish:*)",
       "Read(./.env)",
       "Read(./.env.*)",

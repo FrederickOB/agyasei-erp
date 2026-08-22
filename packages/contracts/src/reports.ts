@@ -95,9 +95,13 @@ export const inventoryDaysReportInput = salesReportInput;
  * Distribution & logistics cost as a percentage of revenue, per location and
  * per grouping node (brief §7; the 5.0% → 2.5% target curve).
  *
- * The request shape is settled; the numerator is not available from Phase 1
- * data at all. The router returns the revenue denominator, which is exact,
- * and an explicit unavailability reason for the cost. It never returns zero.
+ * The numerator now EXISTS: `app.delivery.freight_cost_minor`, summed by
+ * `loadHaulageSpend` over the row's own `business_date` (migration 0010), so
+ * the route answers a real percentage rather than the `NO_DISTRIBUTION_COST_
+ * SOURCE` it used to. A zero is now a real zero — nothing moved — and the
+ * response carries `deliveryCount` and `deliveriesWithNoAgreedFreight` beside
+ * every amount so a partial basis (`INCOMPLETE_FREIGHT_BASIS`) can never be
+ * read as a complete one. Live evidence: `drill:q1`.
  */
 export const distributionCostReportInput = salesReportInput;
 

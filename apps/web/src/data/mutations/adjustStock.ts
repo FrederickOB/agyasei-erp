@@ -63,6 +63,7 @@ import { businessDateFor } from '../../lib/business-date';
 import type { ClaimedHlcClock } from '../../lib/hlc';
 import type { DbExecutor, LocalDb } from '../db';
 import { readDeviceLocation } from '../queries/session';
+import { nextQueueSeq } from '../sync/queue-seq';
 
 /** The outbox `kind` for this op. `data/sync/transport.ts` maps it to the wire. */
 export const ADJUSTMENT_OUTBOX_KIND = 'stock_movement';
@@ -336,11 +337,14 @@ export async function recordAdjustment(
       createdAt: nowIso,
     });
 
+    // The queue position, taken inside this transaction (data/sync/queue-seq.ts).
+    const queueSeq = await nextQueueSeq(tx);
+
     await tx.execute(
       `INSERT INTO outbox
-         (id, idempotency_key, claimed_hlc, kind, payload, created_at,
+         (id, idempotency_key, claimed_hlc, kind, payload, created_at, queue_seq,
           server_ack_at, rejected_at, reject_reason)
-       VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL)`,
       [
         input.movementId,
         input.movementId,
@@ -348,6 +352,7 @@ export async function recordAdjustment(
         ADJUSTMENT_OUTBOX_KIND,
         built.payloadJson,
         nowIso,
+        queueSeq,
       ],
     );
 

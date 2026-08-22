@@ -76,6 +76,33 @@ export const CAPABILITY = {
   creditView: 'credit.view',
   /** Post fee accruals. Tenant-wide, and gated again by the fee policy itself. */
   creditFeeAccrue: 'credit.fee.accrue',
+
+  // ── Phase 2: buying, receiving and moving goods ─────────────────────────
+  //
+  // RAISING AN ORDER AND APPROVING ONE ARE TWO CODES, and the pair is the
+  // whole control. One person who can do both can commit the business to a
+  // spend nobody else saw; one who can approve an order and also sign for its
+  // goods can fabricate a receipt against an order they invented. The screens
+  // read the two separately and never infer one from the other — and the
+  // server derives the required code from `toStatus` and re-checks it at
+  // ingest, so hiding a button remains a courtesy (CLAUDE.md §2.6).
+
+  /** See who supplies what, on what terms, at what price. */
+  supplierView: 'supplier.view',
+  /** Create or amend a supplier. Held at the ROOT — a supplier has no outlet. */
+  supplierManage: 'supplier.manage',
+  /** Read purchase orders for the locations you hold it at. */
+  purchaseOrderView: 'purchase.order.view',
+  /** Raise and amend a DRAFT order, and submit it. Never approves one. */
+  purchaseOrderCreate: 'purchase.order.create',
+  /** Authorise an order. A separate act by a separate person, and bounded. */
+  purchaseOrderApprove: 'purchase.order.approve',
+  /** Sign for goods at a yard. NOT `stock.receive`, and NOT the approval. */
+  goodsReceive: 'goods.receive',
+  /** "Where is my order?" — the wider grant; the counter holds it. */
+  deliveryView: 'logistics.delivery.view',
+  /** Hand a load to a haulier and move its status along. */
+  dispatchManage: 'logistics.dispatch.manage',
 } as const;
 
 export interface CapabilityGrant {

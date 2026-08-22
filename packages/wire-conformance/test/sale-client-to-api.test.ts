@@ -333,6 +333,12 @@ describe('the router validates with the shared contract, not a private schema', 
       'credit.open_account': appRouter.credit.openAccount,
       'credit.record_entry': appRouter.credit.recordEntry,
       'sequence.sync_block': appRouter.sequence.syncBlock,
+      // Phase 2. A yard receives goods while partitioned and a driver is
+      // chased by whoever hears from him; both ride the same outbox, so both
+      // must parse with the SAME object the contract registers — this is the
+      // half of the pin that the `satisfies` clause cannot check.
+      'goods.record_receipt': appRouter.receiving.recordReceipt,
+      'logistics.update_delivery_status': appRouter.logistics.updateStatus,
     };
     for (const [kind, procedure] of Object.entries(routed)) {
       expect(routerInputOf(procedure)).toBe(

@@ -32,11 +32,30 @@ import { createSaleInput } from './sale.js';
 import { recordMovementInput } from './inventory.js';
 import { openAccountInput, recordEntryInput } from './credit.js';
 import { syncBlockInput } from './sequence.js';
+import { recordGoodsReceiptInput, updateDeliveryStatusInput } from './procurement.js';
 import type { DeviceOpKind } from './upload.js';
 
 /**
  * kind → the schema BOTH sides use. The API parses with it; a client builder
  * must build to it. Exhaustive over `DeviceOpKind` by construction.
+ */
+/**
+ * PHASE 2. `procurement.ts` declares `PROCUREMENT_UPLOADABLE_OPS`: the two
+ * operations that must be uploadable (`goods.record_receipt`,
+ * `logistics.update_delivery_status`) and the exact schema object each must be
+ * registered with. Both are registered below AGAINST THOSE SAME OBJECTS — not
+ * a copy, not a near-identical redeclaration — in the same change that landed
+ * their handlers (`apps/api/src/routers/receiving.ts`, `./logistics.ts`) and
+ * wired `DEVICE_OPS` in `apps/api/src/sync.ts`. `procurement.test.ts` fails if
+ * a procurement kind is ever registered against a different schema object, and
+ * `wire-conformance/test/outbox-surface.test.ts` fails if the server does not
+ * really dispatch it — which is what stops a green tick appearing on a path
+ * that would answer UNKNOWN_KIND at a yard.
+ *
+ * Raising and approving a purchase order stay ONLINE: they are commitments
+ * made against supplier terms and an approval bound a device may hold a stale
+ * copy of. Receiving and delivery status are not — the goods and the driver do
+ * not wait for a radio.
  */
 export const deviceOpContracts = {
   'sale.create': createSaleInput,
@@ -44,6 +63,8 @@ export const deviceOpContracts = {
   'credit.open_account': openAccountInput,
   'credit.record_entry': recordEntryInput,
   'sequence.sync_block': syncBlockInput,
+  'goods.record_receipt': recordGoodsReceiptInput,
+  'logistics.update_delivery_status': updateDeliveryStatusInput,
 } as const satisfies Record<DeviceOpKind, ZodType>;
 
 export type DeviceOpContracts = typeof deviceOpContracts;

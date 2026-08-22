@@ -74,8 +74,33 @@ const StockAdjust = lazy(async () => ({
   default: (await import('../inventory/StockAdjust')).StockAdjust,
 }));
 const Credit = lazy(async () => ({ default: (await import('../credit/Credit')).Credit }));
+// Phase 2. A counter clerk holds none of these capabilities and therefore
+// never downloads any of these chunks — which is the whole point of splitting
+// them out on a device with 2GB of RAM and a slow disk.
+const Receiving = lazy(async () => ({
+  default: (await import('../receiving/Receiving')).Receiving,
+}));
+const Purchasing = lazy(async () => ({
+  default: (await import('../purchasing/Purchasing')).Purchasing,
+}));
+const Suppliers = lazy(async () => ({
+  default: (await import('../suppliers/Suppliers')).Suppliers,
+}));
+const Deliveries = lazy(async () => ({
+  default: (await import('../deliveries/Deliveries')).Deliveries,
+}));
 
-export type ViewId = 'counter' | 'sales' | 'reports' | 'stock' | 'adjust' | 'credit';
+export type ViewId =
+  | 'counter'
+  | 'sales'
+  | 'reports'
+  | 'stock'
+  | 'adjust'
+  | 'credit'
+  | 'receive'
+  | 'buying'
+  | 'suppliers'
+  | 'deliveries';
 
 interface ViewDef {
   readonly id: ViewId;
@@ -104,6 +129,22 @@ const VIEWS: readonly ViewDef[] = [
   // behind this tab says so rather than showing a balance it cannot stand
   // behind (features/credit/Credit.tsx).
   { id: 'credit', label: 'Credit', icon: 'clock', requires: CAPABILITY.creditView, keepMounted: false },
+  // ── Phase 2 ──────────────────────────────────────────────────────────────
+  // The SECOND destination that writes, and the second that works with the
+  // radio off: a goods receipt goes into the same ordered outbox a sale does
+  // (features/receiving/Receiving.tsx). `goods.receive` is deliberately not
+  // `purchase.order.approve` — one person who can authorise an order and also
+  // sign for its goods can fabricate a receipt against an order they invented.
+  { id: 'receive', label: 'Receive', icon: 'download', requires: CAPABILITY.goodsReceive, keepMounted: false },
+  // Strictly online: orders and suppliers are in no sync bucket, and raising
+  // or approving one is a commitment against terms a partitioned device may
+  // hold a stale copy of. The screens behind these tabs say so.
+  { id: 'buying', label: 'Buying', icon: 'receipt', requires: CAPABILITY.purchaseOrderView, keepMounted: false },
+  { id: 'suppliers', label: 'Supply', icon: 'tag', requires: CAPABILITY.supplierView, keepMounted: false },
+  // "Where is my order?" is a counter question, so `logistics.delivery.view`
+  // is the wider grant. A status move rides the outbox; booking a load does
+  // not (features/deliveries/Deliveries.tsx).
+  { id: 'deliveries', label: 'On the road', icon: 'sync', requires: CAPABILITY.deliveryView, keepMounted: false },
 ];
 
 export interface ShellProps {
@@ -207,6 +248,26 @@ export function Shell({ db, permissions, status, notice, apiOptions }: ShellProp
         {active === 'credit' ? (
           <Suspense fallback={<ServerPending what="The credit position" rows={3} />}>
             <Credit db={db} permissions={permissions} {...(apiOptions === undefined ? {} : { apiOptions })} />
+          </Suspense>
+        ) : null}
+        {active === 'receive' ? (
+          <Suspense fallback={<ServerPending what="Deliveries expected here" rows={3} />}>
+            <Receiving db={db} permissions={permissions} {...(apiOptions === undefined ? {} : { apiOptions })} />
+          </Suspense>
+        ) : null}
+        {active === 'buying' ? (
+          <Suspense fallback={<ServerPending what="The order list" rows={3} />}>
+            <Purchasing db={db} permissions={permissions} {...(apiOptions === undefined ? {} : { apiOptions })} />
+          </Suspense>
+        ) : null}
+        {active === 'suppliers' ? (
+          <Suspense fallback={<ServerPending what="The supplier list" rows={3} />}>
+            <Suppliers db={db} permissions={permissions} {...(apiOptions === undefined ? {} : { apiOptions })} />
+          </Suspense>
+        ) : null}
+        {active === 'deliveries' ? (
+          <Suspense fallback={<ServerPending what="The delivery list" rows={3} />}>
+            <Deliveries db={db} permissions={permissions} {...(apiOptions === undefined ? {} : { apiOptions })} />
           </Suspense>
         ) : null}
       </main>

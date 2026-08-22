@@ -10,7 +10,9 @@
     "drill:live": "tsx src/live-client-drill.ts",
     "drill:rbac": "tsx src/live-rbac-drill.ts",
     "drill:credit": "tsx src/live-credit-drill.ts",
-    "drill:client": "tsx src/live-operations-drill.ts"
+    "drill:client": "tsx src/live-operations-drill.ts",
+    "drill:procure": "tsx src/live-procurement-drill.ts",
+    "drill:q1": "tsx src/live-distribution-drill.ts"
   },
   "dependencies": {
     "@erp/api": "workspace:*",
