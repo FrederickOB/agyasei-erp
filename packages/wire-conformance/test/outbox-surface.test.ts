@@ -138,6 +138,13 @@ const COVERED_BY_A_REAL_CLIENT_TEST: ReadonlySet<string> = new Set<DeviceOpKind>
   // enqueueBlockReport → drainOutbox → httpUploadTransport against the API's
   // own router and pipeline, including the wipe.
   'sequence.sync_block',
+  // stock-client-to-api.test.ts — the PWA's own recordAdjustment →
+  // buildMovementPayload → outbox → drainOutbox → httpUploadTransport against
+  // the API's own router and pipeline, recorded under a REAL partition and
+  // drained on reconnect. This entry was added only after that file existed:
+  // the pin below went red the moment `WIRE_KINDS` grew the kind, which is
+  // the tripwire working exactly as designed.
+  'stock.record_movement',
 ]);
 
 describe("the PWA's uploadable write surface", () => {
@@ -155,9 +162,15 @@ describe("the PWA's uploadable write surface", () => {
           `before adding the kind here.`,
       ).toBe(true);
     }
-    // And the pin itself: today the counter records sales, and reports its
-    // receipt-number cursor on reconnect. Nothing else.
-    expect([...emitted].sort()).toEqual(['sale.create', 'sequence.sync_block']);
+    // And the pin itself: today the counter records sales, adjusts stock, and
+    // reports its receipt-number cursor on reconnect. Nothing else. The two
+    // credit ops are still server-only — `data/api/credit.ts` reaches them
+    // over HTTP and says so out loud when it cannot.
+    expect([...emitted].sort()).toEqual([
+      'sale.create',
+      'sequence.sync_block',
+      'stock.record_movement',
+    ]);
   });
 
   it('emits only kinds the shared contract knows about', () => {

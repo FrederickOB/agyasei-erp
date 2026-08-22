@@ -94,6 +94,14 @@ export interface SeedProductInput {
   readonly unitPriceE4: bigint;
   /** The list this price belongs to; defaults to a non-provisioned test list. */
   readonly priceListId?: string;
+  /**
+   * Mirrors the server's NOT NULL DEFAULT 'STOCKED' (migration 0003), which is
+   * what the sync stream actually delivers. Overridable so a test can prove
+   * the adjustment screen leaves a non-stocked product out — the server
+   * answers PRECONDITION_FAILED for one, and that refusal is RETRYABLE, so it
+   * would wedge the outbox rather than dead-letter.
+   */
+  readonly stockTracking?: 'STOCKED' | 'NON_STOCKED';
 }
 
 export async function seedProduct(db: LocalDb, input: SeedProductInput): Promise<ProductWithPrice> {
@@ -122,8 +130,9 @@ export async function seedProduct(db: LocalDb, input: SeedProductInput): Promise
   await db.execute(
     `INSERT INTO product (id, tenant_id, sku_code, name, aliases, category_id, stocking_uom_id,
                           tax_code, stock_tracking, is_sellable, is_purchasable, hlc, updated_at)
-     VALUES (?, NULL, ?, ?, ?, ?, ?, NULL, NULL, 1, 1, NULL, NULL)`,
-    [id, input.code, input.name, input.aliases ?? null, categoryId, uomId],
+     VALUES (?, NULL, ?, ?, ?, ?, ?, NULL, ?, 1, 1, NULL, NULL)`,
+    [id, input.code, input.name, input.aliases ?? null, categoryId, uomId,
+     input.stockTracking ?? 'STOCKED'],
   );
   await db.execute(
     `INSERT INTO product_uom (id, tenant_id, product_id, uom_id, factor_num, factor_den,
@@ -151,4 +160,47 @@ export async function seedProduct(db: LocalDb, input: SeedProductInput): Promise
     priceListId,
     unitPriceE4: input.unitPriceE4,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Tenant vocabulary and customers, as the sync stream delivers them
+// ---------------------------------------------------------------------------
+
+/**
+ * A movement reason. TENANT data (`app.movement_reason`, tenant_reference
+ * bucket) — the tenant's own editable words, which the adjustment screen picks
+ * from and never compares to a literal.
+ */
+export async function seedMovementReason(
+  db: LocalDb,
+  input: { readonly code: string; readonly name: string },
+): Promise<void> {
+  await db.execute(
+    `INSERT INTO movement_reason (id, tenant_id, code, name, hlc, updated_at)
+     VALUES (?, NULL, ?, ?, NULL, NULL)`,
+    [uuidv7(), input.code, input.name],
+  );
+}
+
+/**
+ * A customer. IDENTITY ONLY, exactly as the `tenant_customers` bucket carries
+ * it — no balance, no limit, nothing about money. A fixture that carried one
+ * would be describing a device state that cannot exist.
+ */
+export async function seedCustomer(
+  db: LocalDb,
+  input: {
+    readonly id?: string;
+    readonly code: string;
+    readonly name: string;
+    readonly onAccount?: boolean;
+  },
+): Promise<string> {
+  const id = input.id ?? uuidv7();
+  await db.execute(
+    `INSERT INTO customer (id, tenant_id, code, name, phone, is_credit_customer, hlc, updated_at)
+     VALUES (?, NULL, ?, ?, NULL, ?, NULL, NULL)`,
+    [id, input.code, input.name, input.onAccount === false ? 0 : 1],
+  );
+  return id;
 }

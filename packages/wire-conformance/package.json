@@ -3,13 +3,14 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Probe package. Its only job is to import BOTH sides of the client<->server wire — apps/web's real payload builders and apps/api's real routers and HTTP routes — and prove they agree. No production code imports it.",
+  "description": "Probe package. Its only job is to import BOTH sides of the client<->server wire \u2014 apps/web's real payload builders and apps/api's real routers and HTTP routes \u2014 and prove they agree. No production code imports it.",
   "scripts": {
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "drill:live": "tsx src/live-client-drill.ts",
     "drill:rbac": "tsx src/live-rbac-drill.ts",
-    "drill:credit": "tsx src/live-credit-drill.ts"
+    "drill:credit": "tsx src/live-credit-drill.ts",
+    "drill:client": "tsx src/live-operations-drill.ts"
   },
   "dependencies": {
     "@erp/api": "workspace:*",
@@ -26,6 +27,7 @@
     "vitest": "^3.2.4",
     "@types/pg": "^8.11.10",
     "tsx": "^4.19.2",
-    "jose": "^5.9.6"
+    "jose": "^5.9.6",
+    "vite": "^5.4.11"
   }
 }

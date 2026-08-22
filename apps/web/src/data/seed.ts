@@ -322,7 +322,7 @@ export async function seedDevDataIfEmpty(
           `INSERT INTO product (id, tenant_id, sku_code, name, aliases, category_id,
                                 stocking_uom_id, tax_code, stock_tracking,
                                 is_sellable, is_purchasable, hlc, updated_at)
-           VALUES (?, NULL, ?, ?, ?, ?, ?, NULL, NULL, 1, 1, NULL, NULL)`,
+           VALUES (?, NULL, ?, ?, ?, ?, ?, NULL, 'STOCKED', 1, 1, NULL, NULL)`,
           [productId, p.code, p.name, p.aliases, categoryId, uomId],
         );
         await tx.execute(

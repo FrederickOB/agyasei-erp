@@ -93,3 +93,33 @@ export function readBearerScope(token: string | null | undefined): BearerScope {
   }
   return { kind: 'scoped', locationIds };
 }
+
+/**
+ * The `uid` claim — WHO this device's session belongs to.
+ *
+ * Same standing as `readBearerScope` above: decoded, never verified, and used
+ * for nothing but self-configuration. Its one job is to key device-local
+ * caches of things that belong to a person rather than to a device — today,
+ * the remembered capability list (`data/api/session.ts`), so a tablet handed
+ * from one member of staff to the next does not show the previous session's
+ * affordances while the radio is down. It is compared against a cache, never
+ * sent anywhere and never used to decide whether anything is allowed.
+ *
+ * `null` means "no readable subject", which callers must treat as "no usable
+ * cache" — never as "any cache will do".
+ */
+export function readBearerUserId(token: string | null | undefined): string | null {
+  if (typeof token !== 'string' || token.trim().length === 0) return null;
+  const parts = token.trim().split('.');
+  const payload = parts[1];
+  if (parts.length !== 3 || payload === undefined || payload.length === 0) return null;
+  let claims: unknown;
+  try {
+    claims = JSON.parse(decodeBase64Url(payload));
+  } catch {
+    return null;
+  }
+  if (typeof claims !== 'object' || claims === null || Array.isArray(claims)) return null;
+  const uid = (claims as Record<string, unknown>)['uid'];
+  return typeof uid === 'string' && uid.length > 0 ? uid : null;
+}

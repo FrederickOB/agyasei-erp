@@ -36,3 +36,45 @@ export function formatQtyScaled(qtyScaled: bigint, scale: number): string {
   const whole = padded.slice(0, split);
   return `${negative ? '-' : ''}${whole}${frac.length > 0 ? '.' + frac : ''}`;
 }
+
+/** Thrown when a typed quantity cannot be turned into an exact scaled integer. */
+export class QuantityInputError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'QuantityInputError';
+  }
+}
+
+/**
+ * A typed NON-NEGATIVE quantity, as an exact scaled integer.
+ *
+ * The inverse of `formatQtyScaled`, and the only way a keyboard produces a
+ * quantity in this client. Two things it deliberately refuses rather than
+ * absorbs:
+ *
+ *  · **more decimal places than the unit has.** `2.555` in a unit that counts
+ *    to three decimals is exact; in a unit that counts whole bags it is a
+ *    number somebody meant differently, and rounding it silently is how a
+ *    threshold ends up one bag off in the direction nobody checked.
+ *  · **anything a float would have accepted** — `1e3`, `0x10`, `1,5`, a bare
+ *    `.` — because `Number()` accepts all of them and every one of them is a
+ *    typo with a plausible reading (ADR-0004: no float ever holds a quantity).
+ */
+export function parseQtyScaled(text: string, scale: number): bigint {
+  assertQtyScale(scale);
+  const trimmed = text.trim();
+  const match = /^(\d+)(?:\.(\d*))?$|^\.(\d+)$/.exec(trimmed);
+  if (match === null) {
+    throw new QuantityInputError('Enter a quantity using digits, and a dot for any decimals.');
+  }
+  const whole = match[1] ?? '0';
+  const frac = match[2] ?? match[3] ?? '';
+  if (frac.length > scale) {
+    throw new QuantityInputError(
+      scale === 0
+        ? 'This unit is counted in whole numbers.'
+        : `This unit goes to ${String(scale)} decimal place${scale === 1 ? '' : 's'}.`,
+    );
+  }
+  return BigInt(whole + frac.padEnd(scale, '0'));
+}

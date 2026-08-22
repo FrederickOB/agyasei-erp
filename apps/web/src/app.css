@@ -1297,6 +1297,651 @@ button {
   color: var(--text-muted);
 }
 
+/* ─── DESTINATIONS ───────────────────────────────────────────────────────────
+   The shell keeps the counter MOUNTED and hides it (features/shell/Shell.tsx):
+   a cart half built, a tender panel half typed and a five-second undo all live
+   in component state, and losing them to a mis-tap is a counter failure. The
+   attribute — not a class — is what takes it out of the accessibility tree and
+   the tab order too, so this rule has to beat every display: flex below it. */
+[hidden] {
+  display: none !important;
+}
+
+/* Four destinations do not fit side by side at 360px with a readable label,
+   so the icon sits ABOVE the word until there is room for both on one line. */
+.view-switch-item {
+  position: relative;
+  flex-direction: column;
+  gap: var(--s-1);
+  padding: var(--s-1) var(--s-2);
+  font-size: var(--t-xs);
+}
+@media (min-width: 600px) {
+  .view-switch-item {
+    flex-direction: row;
+    gap: var(--s-2);
+    padding: 0 var(--s-3);
+    font-size: var(--t-md);
+  }
+}
+/* The cart's line count, so somebody two screens away can see the cart is
+   still there rather than going back to check. A count, never a total: one
+   more place a money figure could go stale is one place too many. */
+.view-switch-badge {
+  position: absolute;
+  top: 2px;
+  right: 6px;
+  min-width: 20px;
+  padding: 0 5px;
+  border-radius: var(--r-full);
+  background: var(--brand);
+  color: var(--brand-ink);
+  font-size: var(--t-xs);
+  font-weight: 700;
+  line-height: 20px;
+  text-align: center;
+}
+
+.view-pane {
+  display: block;
+}
+
+/* ─── SERVER-BACKED PANELS ───────────────────────────────────────────────────
+   Reporting, the low-stock alert and the capability list are the only things
+   in this product that are NOT on the device. They therefore have states the
+   rest of the app does not: waiting, slow, and a REASON. None of them is ever
+   an empty table — see features/shell/ServerAnswer.tsx. */
+.server-answer {
+  display: flex;
+  gap: var(--s-3);
+  padding: var(--s-4);
+  border: 1px solid var(--border);
+  border-left-width: 4px;
+  border-radius: var(--r-2);
+  line-height: 1.5;
+}
+.server-answer-calm {
+  background: var(--surface-2);
+  border-left-color: var(--control-border);
+  color: var(--text);
+}
+.server-answer-calm .icon {
+  color: var(--text-muted);
+}
+.server-answer-attn {
+  background: var(--attn-tint);
+  border-color: var(--attn);
+  color: var(--attn-ink);
+}
+.server-answer-attn .icon {
+  color: var(--attn);
+}
+.server-answer-body {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--s-2);
+}
+.server-answer-title {
+  margin: 0;
+  font-size: var(--t-lg);
+  font-weight: 700;
+}
+.server-answer-text {
+  margin: 0;
+  max-width: 60ch;
+}
+.server-answer-detail {
+  margin: 0;
+  max-width: 60ch;
+  font-size: var(--t-sm);
+  color: var(--text-muted);
+}
+.server-answer-attn .server-answer-detail {
+  color: var(--attn-ink);
+}
+.server-answer-detail-label {
+  font-weight: 700;
+}
+
+.server-pending {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+}
+.server-pending-note {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--t-sm);
+}
+.server-pending-rows {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+}
+
+.fetched-at {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-1);
+  color: var(--text-muted);
+  font-size: var(--t-sm);
+  white-space: nowrap;
+}
+
+/* ─── REPORTS ────────────────────────────────────────────────────────────── */
+.reports-screen,
+.stock-screen {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-5);
+  max-width: 70rem;
+}
+
+.report-range {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-3);
+}
+.report-range-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-1);
+  font-size: var(--t-sm);
+  font-weight: 650;
+  color: var(--text-muted);
+}
+.report-range-field input {
+  min-height: var(--tap);
+  padding: 0 var(--s-3);
+  border: 1px solid var(--control-border);
+  border-radius: var(--r-2);
+  background: var(--surface);
+  color: var(--text);
+  font-size: var(--t-md);
+  font-variant-numeric: tabular-nums;
+}
+
+.report-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+  padding: var(--s-4);
+  border: 1px solid var(--border);
+  border-radius: var(--r-3);
+  background: var(--surface);
+  box-shadow: var(--shadow-1);
+}
+.report-panel-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--s-2);
+}
+.report-panel-head h2 {
+  margin: 0;
+  font-size: var(--t-lg);
+}
+
+/* WHOSE TOTAL IS IT. A network figure and one outlet manager's figure look
+   identical as numbers and mean different things, so they never share a
+   presentation: different words, different icon, different colour family. */
+.scope-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-2);
+  align-self: flex-start;
+  padding: var(--s-1) var(--s-3);
+  border-radius: var(--r-full);
+  font-size: var(--t-sm);
+  font-weight: 700;
+}
+.scope-network {
+  background: var(--ok-tint);
+  color: var(--ok-ink);
+}
+.scope-network .icon {
+  color: var(--ok);
+}
+.scope-partial {
+  background: var(--wait-tint);
+  color: var(--wait-ink);
+}
+.scope-partial .icon {
+  color: var(--wait);
+}
+
+/* A wide table on a 360px screen scrolls INSIDE its panel; the page never
+   scrolls sideways under a thumb that meant to scroll down. */
+.report-table-scroll {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+.report-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--t-sm);
+}
+.report-table caption {
+  padding-bottom: var(--s-2);
+  color: var(--text-muted);
+  font-size: var(--t-sm);
+  text-align: left;
+}
+.report-table th,
+.report-table td {
+  padding: var(--s-2) var(--s-3);
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  vertical-align: top;
+  white-space: nowrap;
+}
+.report-table thead th {
+  color: var(--text-muted);
+  font-size: var(--t-xs);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.report-table tfoot th,
+.report-table tfoot td {
+  border-top: 2px solid var(--control-border);
+  border-bottom: 0;
+  font-weight: 700;
+  white-space: normal;
+}
+.report-table .numeric {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.report-loc-name {
+  display: block;
+  font-weight: 650;
+}
+.report-loc-code {
+  display: block;
+  color: var(--text-muted);
+  font-size: var(--t-xs);
+}
+
+/* A figure the server WITHHELD, rendered as the absence it is. Never a zero
+   and never an empty cell: both read as a number somebody would act on. */
+.figure-withheld {
+  color: var(--text-muted);
+  font-style: italic;
+  font-weight: 400;
+}
+
+.report-note {
+  margin: 0;
+  max-width: 70ch;
+  color: var(--text-muted);
+  font-size: var(--t-sm);
+  line-height: 1.5;
+}
+.report-caveats {
+  margin: 0;
+  padding-left: var(--s-5);
+  color: var(--text-muted);
+  font-size: var(--t-xs);
+  line-height: 1.55;
+}
+
+/* ─── LOW STOCK ──────────────────────────────────────────────────────────── */
+.stock-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+}
+.stock-row {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--s-2);
+  padding: var(--s-4);
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--wait);
+  border-radius: var(--r-3);
+  background: var(--surface);
+  box-shadow: var(--shadow-1);
+}
+.stock-row-gone {
+  border-left-color: var(--attn);
+}
+.stock-row-head {
+  display: flex;
+  flex-direction: column;
+}
+.stock-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-1);
+  padding: var(--s-1) var(--s-3);
+  border-radius: var(--r-full);
+  font-size: var(--t-xs);
+  font-weight: 700;
+}
+.stock-badge-low {
+  background: var(--wait-tint);
+  color: var(--wait-ink);
+}
+.stock-badge-low .icon {
+  color: var(--wait);
+}
+.stock-badge-gone {
+  background: var(--attn-tint);
+  color: var(--attn-ink);
+}
+.stock-badge-gone .icon {
+  color: var(--attn);
+}
+.stock-figures {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-4);
+  margin: 0;
+}
+.stock-figures dt {
+  color: var(--text-muted);
+  font-size: var(--t-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.stock-figures dd {
+  margin: 0;
+  font-size: var(--t-md);
+  font-weight: 650;
+}
+
+/* The empty state that is NOT good news. It is deliberately not the calm one:
+   "nobody has said what low means here" is work, not reassurance. */
+.empty-state-attention .empty-title {
+  color: var(--attn-ink);
+}
+.empty-state-attention .icon {
+  color: var(--attn);
+}
+
+.threshold-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-4);
+  padding: var(--s-4);
+  border: 1px solid var(--border);
+  border-radius: var(--r-3);
+  background: var(--surface);
+  box-shadow: var(--shadow-1);
+}
+.threshold-form-product {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+}
+.threshold-form-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+  font-weight: 650;
+}
+.threshold-form-input {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+}
+.threshold-form-input input,
+.threshold-form-field select {
+  flex: 1;
+  min-height: var(--tap);
+  padding: 0 var(--s-3);
+  border: 1px solid var(--control-border);
+  border-radius: var(--r-2);
+  background: var(--surface);
+  color: var(--text);
+  font-size: var(--t-lg);
+  font-variant-numeric: tabular-nums;
+}
+.threshold-form-uom {
+  color: var(--text-muted);
+  font-size: var(--t-md);
+  font-weight: 650;
+}
+.threshold-form-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-3);
+}
+
+/* For a caption a screen reader needs and a sighted reader already has from
+   the panel heading above it. */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ─── STOCK ADJUSTMENT ───────────────────────────────────────────────────────
+   The only destination that WRITES, so it borrows the sales list's badge
+   vocabulary rather than inventing a second one: a person who has learned what
+   "Waiting to send" means on a sale must not have to learn it again here. */
+.adjust-screen {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-4);
+  padding: var(--s-4);
+}
+.adjust-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-4);
+  padding: var(--s-4);
+  border: 1px solid var(--border);
+  border-radius: var(--r-3);
+  background: var(--surface);
+  box-shadow: var(--shadow-1);
+}
+.adjust-kinds {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+}
+.adjust-kinds legend {
+  padding: 0;
+  font-weight: 650;
+}
+.adjust-kind-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-2);
+}
+/* A 56dp target, per §8.7 — these are pressed with dusty hands in daylight. */
+.adjust-kind {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-2);
+  min-height: var(--tap);
+  padding: 0 var(--s-4);
+  border: 1px solid var(--control-border);
+  border-radius: var(--r-full);
+  background: var(--surface);
+  font-weight: 650;
+  cursor: pointer;
+}
+.adjust-kind input {
+  accent-color: var(--brand);
+  width: 1.1rem;
+  height: 1.1rem;
+}
+.adjust-kind-on {
+  background: var(--brand-tint);
+  color: var(--brand-text);
+}
+.adjust-kind-note {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--t-sm);
+}
+/* Offline is a calm, permanent statement here — never a warning, because
+   recording an adjustment offline is the expected case (§8.4). */
+.adjust-offline-note {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--t-sm);
+}
+.adjust-saved {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s-3);
+  margin: 0;
+  padding: var(--s-3) var(--s-4);
+  border-radius: var(--r-3);
+  background: var(--ok-tint);
+  color: var(--ok-ink);
+}
+.adjust-saved .icon {
+  color: var(--ok);
+  flex: none;
+}
+.adjust-list-head {
+  margin: var(--s-2) 0 0;
+  font-size: var(--t-md);
+}
+.adjust-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+}
+.adjust-row {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--s-2);
+  padding: var(--s-4);
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--border);
+  border-radius: var(--r-3);
+  background: var(--surface);
+  box-shadow: var(--shadow-1);
+}
+.adjust-row-attn {
+  border-left-color: var(--attn);
+}
+.adjust-delta {
+  font-size: var(--t-xl);
+  font-weight: 700;
+}
+.adjust-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-3);
+  color: var(--text-muted);
+  font-size: var(--t-sm);
+}
+.adjust-rejected {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s-2);
+  margin: 0;
+  padding: var(--s-3);
+  border-radius: var(--r-2);
+  background: var(--attn-tint);
+  color: var(--attn-ink);
+  font-size: var(--t-sm);
+}
+.adjust-rejected .icon {
+  color: var(--attn);
+  flex: none;
+}
+
+/* ─── CREDIT ─────────────────────────────────────────────────────────────── */
+.credit-screen {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-4);
+  padding: var(--s-4);
+}
+.credit-chooser {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-4);
+  align-items: flex-end;
+}
+.credit-chooser .threshold-form-field {
+  flex: 1 1 16rem;
+}
+.credit-figures {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-5);
+  margin: 0;
+}
+.credit-figures dt {
+  color: var(--text-muted);
+  font-size: var(--t-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.credit-figures dd {
+  margin: 0;
+  font-size: var(--t-lg);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.credit-status {
+  font-variant-numeric: normal;
+}
+/* Past the limit is not styled as an error: it is a fact somebody has to make
+   a decision about, and the decision is a person's, not the till's. */
+.credit-over dt,
+.credit-over dd {
+  color: var(--attn-ink);
+}
+.credit-warn {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s-2);
+  margin: 0;
+  padding: var(--s-3);
+  border-radius: var(--r-2);
+  background: var(--surface-2);
+  font-size: var(--t-sm);
+}
+.credit-warn .icon {
+  flex: none;
+}
+.credit-aside th,
+.credit-aside td {
+  color: var(--text-muted);
+}
+.credit-gate {
+  margin-top: var(--s-3);
+}
+
 /* ─── REDUCED MOTION ─────────────────────────────────────────────────────────
    Not a courtesy: motion sensitivity is common, and every animation in here is
    a nicety on top of something that already works without it. */
