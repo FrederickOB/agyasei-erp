@@ -137,11 +137,34 @@ async function readResponse(tenantId: string, key: string): Promise<SyncBlockAck
   return res.rows[0]!.response_body;
 }
 
-async function tokenFor(tenantId: string, locationId: string, deviceId: string): Promise<string> {
+/**
+ * A bearer for a REAL principal standing at `locationId`.
+ *
+ * `sequence.syncBlock` requires `sale.record` there (see SYNC_BLOCK_PERMISSION
+ * in the router): a block of receipt numbers is the stock a till spends
+ * printing the documents it is authorised to produce, so the right to be
+ * handed one is the right to produce them. Every device in this file is a
+ * till, so every one of them gets the template's lowest counter role — the
+ * narrowest principal that can legitimately trade — rather than an owner.
+ * A token on its own is not authority; the row in `app.user_role_assignment`
+ * is.
+ *
+ * The `role` CLAIM is deliberately a nonsense label: nothing on the platform
+ * reads it (CLAUDE.md §2.9), and a test that passed because it said
+ * 'outlet_manager' would be proving the opposite of what this file claims.
+ */
+async function tokenFor(
+  tenantId: string,
+  locationId: string,
+  deviceId: string,
+  roleRef = 'counter_staff',
+): Promise<string> {
+  const uid = uuidv7();
+  await h.grantRole(tenantId, uid, roleRef, locationId);
   return signDevToken(JWT_SECRET, {
     tid: tenantId,
-    uid: uuidv7(),
-    role: 'outlet_manager',
+    uid,
+    role: 'opaque-label-nothing-branches-on',
     locs: [locationId],
     dev: deviceId,
   });
@@ -268,6 +291,124 @@ describe('block allocation (03 §3.7.5)', () => {
     ]);
     expect(res.acks[0]!.status).toBe('rejected');
     expect(res.acks[0]!.reason).toMatch(/PRECONDITION_FAILED.*no INVOICE sequence counter/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The capability guard (02 §2.4; CLAUDE.md §2.6)
+//
+// Burning a block and opening a severity-1 review is a MUTATION with a human
+// cost. It used to enforce location scope and nothing else, so any valid
+// tenant bearer whose token named an in-scope location could do it. These
+// tests pin the narrowing down, and every refusal has a positive control on
+// the same route, at the same location, with the same payload.
+// ---------------------------------------------------------------------------
+
+describe('sequence.syncBlock requires the capability to produce what it numbers', () => {
+  const block = (locationId: string) => ({
+    idempotency_key: uuidv7(),
+    kind: 'sequence.sync_block',
+    payload: { locationId, sequenceKey: 'RECEIPT', report: null, wantBlock: true },
+  });
+
+  it('a signed, verified bearer belonging to NO principal is refused', async () => {
+    // The token is real: this file's own signer, this API's own verifier, a
+    // location scope that assertLocationInScope is perfectly happy with. It
+    // authorises nothing, because authority is rows in a database.
+    const bearer = await signDevToken(JWT_SECRET, {
+      tid: tenantA,
+      uid: uuidv7(),
+      role: 'opaque-label-nothing-branches-on',
+      locs: [outletA.id],
+      dev: uuidv7(),
+    });
+    const res = await upload(bearer, [block(outletA.id)]);
+    expect(res.acks[0]!.status).toBe('rejected');
+    expect(res.acks[0]!.reason).toMatch(/FORBIDDEN.*PERMISSION_DENIED/);
+
+    // Nothing was burned, nothing was allocated, no review was opened.
+    const counter = await h.db.withTenant(tenantA, async (tx) => {
+      const r = await tx.query<{ next_start: string }>(
+        `select next_start::text from app.sequence_counter
+          where sequence_key = 'RECEIPT' and location_id = $1`,
+        [outletA.id],
+      );
+      return r.rows[0]!.next_start;
+    });
+
+    // THE POSITIVE CONTROL: the same payload, from a principal who may sell
+    // here, allocates — and it is the allocation that moves the counter.
+    const deviceId = uuidv7();
+    const ok = await upload(await tokenFor(tenantA, outletA.id, deviceId), [block(outletA.id)]);
+    expect(ok.acks[0]!.status).toBe('applied');
+    const moved = await h.db.withTenant(tenantA, async (tx) => {
+      const r = await tx.query<{ next_start: string }>(
+        `select next_start::text from app.sequence_counter
+          where sequence_key = 'RECEIPT' and location_id = $1`,
+        [outletA.id],
+      );
+      return r.rows[0]!.next_start;
+    });
+    expect(BigInt(moved)).toBeGreaterThan(BigInt(counter));
+  });
+
+  it('the back-office principal at the tenant ROOT may not burn a counter’s block', async () => {
+    // This is the hole, named. `accounts` is granted at the widest node there
+    // is and its token names the outlet, so neither scope nor the token is
+    // what refuses: the role simply carries no `sale.record`, anywhere. Scope
+    // is not authority.
+    const uid = uuidv7();
+    const root = await h.locationByCode(tenantA, 'ROOT');
+    await h.grantRole(tenantA, uid, 'accounts', root);
+    const bearer = await signDevToken(JWT_SECRET, {
+      tid: tenantA,
+      uid,
+      role: 'opaque-label-nothing-branches-on',
+      locs: [root, outletA.id],
+      dev: uuidv7(),
+    });
+
+    const res = await upload(bearer, [block(outletA.id)]);
+    expect(res.acks[0]!.status).toBe('rejected');
+    expect(res.acks[0]!.reason).toMatch(/FORBIDDEN.*PERMISSION_DENIED/);
+  });
+
+  it('counter staff — the narrowest principal that trades — MAY take a block', async () => {
+    // The positive control for the row above, stated on its own because the
+    // guard would also "pass" every negative test if it refused everyone.
+    const deviceId = uuidv7();
+    const d = new Device(
+      deviceId,
+      tenantA,
+      outletA.id,
+      await tokenFor(tenantA, outletA.id, deviceId, 'counter_staff'),
+    );
+    const res = await d.syncBlock();
+    expect(res.status).toBe('ok');
+    expect(res.block).not.toBeNull();
+  });
+
+  it('a wiped device can still CONFESS: the guard narrows who, never when', async () => {
+    // The dangerous failure would be an authorisation rule that locks a
+    // regressed device out of reporting — it would keep trading on numbers
+    // the server has already issued and nobody would learn. Every principal
+    // who can ring a sale on the device can report from it.
+    const deviceId = uuidv7();
+    const d = new Device(
+      deviceId,
+      tenantA,
+      outletA.id,
+      await tokenFor(tenantA, outletA.id, deviceId, 'counter_staff'),
+    );
+    await d.syncBlock();
+    for (let i = 0; i < 3; i += 1) d.issue();
+    await d.syncBlock({ wantBlock: false });
+
+    d.wipeLocalDb();
+    const res = await d.syncBlock();
+    expect(res.status).toBe('regression');
+    expect(res.review!.severity).toBe(1);
+    expect(res.burned).not.toBeNull();
   });
 });
 

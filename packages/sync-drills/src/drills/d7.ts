@@ -61,8 +61,21 @@ export async function runD7(cx: DrillContext): Promise<DrillResult> {
   const tenantA = cx.tenants.tenantA.id;
 
   // A dedicated device at OUT-01, so the wipe cannot disturb A1/A2.
+  //
+  // Its principal must be PROVISIONED, exactly like A1/A2/A3/B1 are in
+  // `context.ts`. `sequence.syncBlock` is now guarded on `sale.record` at the
+  // request's location (see SYNC_BLOCK_PERMISSION in
+  // `apps/api/src/routers/sequence.ts`), and permissions are re-derived from
+  // the database on every request — so a signed token belonging to a user with
+  // no grant is refused at the first call, and this drill died at its first
+  // block report with `PERMISSION_DENIED: sale.record`. A6 was created here
+  // rather than in the shared context, so it was the one device the context's
+  // provisioning loop never covered. A real enrolled till belongs to a real
+  // principal who holds `sale.record` at their outlet; this makes the drill's
+  // device the same kind of thing rather than an identity nobody granted.
   const a6 = new DrillDevice('device-a6', tenantA, cx.locA1);
   await a6.open();
+  await cx.server.provisionDevicePrincipal(tenantA, a6.userId, a6.name);
 
   try {
     // ---- 1. a block, allocated by the SERVER ------------------------------

@@ -32,6 +32,7 @@ import { SalesList } from './features/sales/SalesList';
 import { StatusBar } from './features/shell/StatusBar';
 import { useUpdateReady } from './features/shell/use-update';
 import { CurrencyProvider } from './money/CurrencyContext';
+import { Icon } from './ui/Icon';
 import { readApiBearerToken, syncConfigured } from './data/powersync';
 import { blocksSales, type DeviceLocationState } from './data/session/device-location';
 import {
@@ -133,6 +134,9 @@ export function App({ db, deviceLocation, devicePriceList }: AppProps): ReactNod
   if (spec === null) {
     return (
       <main className="provisioning">
+        <span className="gate-crest waiting">
+          <Icon name="sync" size={28} />
+        </span>
         <h1>Setting up this till</h1>
         <p>
           This device has no configuration yet. It will be ready once provisioning completes on
@@ -151,43 +155,56 @@ export function App({ db, deviceLocation, devicePriceList }: AppProps): ReactNod
   return (
     <CurrencyProvider spec={spec}>
       <div className="app-shell">
-        <StatusBar
-          state={syncState}
-          localOnly={!syncConfigured()}
-          updateReady={updateReady}
-          onApplyUpdate={onApplyUpdate}
-        />
-        {notice !== null && notice !== dismissedNotice ? (
-          // A reconciliation that MOVED this device says so, out loud, once —
-          // the previous location is not being traded on any more, or the
-          // prices it charges have changed to the ones this counter is set up
-          // for, and whoever is standing here should know before the first
-          // sale. Both are the same kind of news, so they share one notice.
-          <p className="device-notice" role="status">
-            <span>{notice}</span>
-            <button type="button" onClick={() => setDismissedNotice(notice)}>
-              Got it
+        {/* Status and view switch travel together as one sticky app bar, so
+            the connection state is never scrolled off the screen — it is the
+            answer to "did that sale go?" and it has to be there when asked. */}
+        <header className="app-bar">
+          <StatusBar
+            state={syncState}
+            localOnly={!syncConfigured()}
+            updateReady={updateReady}
+            onApplyUpdate={onApplyUpdate}
+          />
+          {notice !== null && notice !== dismissedNotice ? (
+            // A reconciliation that MOVED this device says so, out loud, once —
+            // the previous location is not being traded on any more, or the
+            // prices it charges have changed to the ones this counter is set up
+            // for, and whoever is standing here should know before the first
+            // sale. Both are the same kind of news, so they share one notice.
+            <p className="device-notice" role="status">
+              <Icon name="pin" size={20} />
+              <span>{notice}</span>
+              <button type="button" className="pressable" onClick={() => setDismissedNotice(notice)}>
+                Got it
+              </button>
+            </p>
+          ) : null}
+          {/* TWO views, mutually exclusive: a segmented control, not tabs and
+              not a bottom bar. The bottom of a phone screen is the only part a
+              thumb reaches without regripping, and on this app it belongs to
+              the cart — putting navigation there would have the till's primary
+              action and its navigation fighting over the same 56px. */}
+          <nav className="view-switch" aria-label="Main">
+            <button
+              type="button"
+              className="view-switch-item pressable"
+              aria-current={view === 'counter'}
+              onClick={() => setView('counter')}
+            >
+              <Icon name="cart" size={20} />
+              Counter
             </button>
-          </p>
-        ) : null}
-        <nav className="tab-nav" aria-label="Main">
-          <button
-            type="button"
-            className={`tab${view === 'counter' ? ' active' : ''}`}
-            aria-current={view === 'counter'}
-            onClick={() => setView('counter')}
-          >
-            Counter
-          </button>
-          <button
-            type="button"
-            className={`tab${view === 'sales' ? ' active' : ''}`}
-            aria-current={view === 'sales'}
-            onClick={() => setView('sales')}
-          >
-            Recent sales
-          </button>
-        </nav>
+            <button
+              type="button"
+              className="view-switch-item pressable"
+              aria-current={view === 'sales'}
+              onClick={() => setView('sales')}
+            >
+              <Icon name="receipt" size={20} />
+              Recent sales
+            </button>
+          </nav>
+        </header>
         <main className="app-main">
           {view === 'counter' ? <Counter db={db} /> : <SalesList db={db} />}
         </main>

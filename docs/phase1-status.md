@@ -1,17 +1,48 @@
 # Phase 1 status — integration & QA report
 
-**Date:** 2026-08-21 (merge of the RBAC/contracts pass with the receipt-number
-regression pass) · **Author:** QA engineer
-**Verdict:** two independent work-packages are now one tree. From `origin/main`:
+**Date:** 2026-08-21 (verification pass over the sale-path guard, cross-location
+reporting and low-stock alerts) · **Author:** QA engineer
+
+> **What changed in this revision.** The sale path is now permission-guarded and
+> **the credit bound is demonstrated over real HTTP** — §6 item 1, the single
+> most important line in the previous revision, is CLOSED. Cross-location
+> reporting (`reports.*`) and the low-stock alert (`inventory.lowStock` +
+> reorder points, migration `0007`) landed and are guarded. Acceptance
+> criterion 3 moved from "tested, not demonstrated" to **balance and ageing
+> DEMONSTRATED live, facility fee still gated on Q4** (§5). One new bug was
+> found — by running the drills, not by the suite — and is ledgered as §0 row 9.
+
+**Verdict from the previous revision (the merge pass), kept for the record:**
+two independent work-packages are now one tree. From `origin/main`:
 the `@erp/contracts` shared wire contract, RBAC enforcement resolved per request
 from the database, device price-list provisioning, and the wire-conformance
 suite. From PR #4: receipt-number regression detection — server-allocated
 blocks, burn-and-reissue on reconnect, the conflict-review queue, and the
 collision landing path that stops the outbox wedging.
 
-**Post-merge verification, on the merged tree:** the whole workspace installs,
-builds, typechecks and passes — **616 tests, 51 files, 0 failures** across seven
-packages — `tools/lint-money.mjs` is clean, and `pnpm stack:reset` (docker
+**Verification for THIS pass (2026-08-21, clean slate).** The whole workspace
+builds and typechecks (12/12 turbo tasks) and every suite passes:
+
+| Package | Tests | Files | Previous | Δ |
+|---|---:|---:|---:|---:|
+| `@erp/contracts` | **105** | 4 | 80 | +25 (`reports.test.ts`) |
+| `@erp/money` | **56** | 4 | 56 | — |
+| `@erp/sequence` | **14** | 1 | 14 | — |
+| `@erp/db` | **99** | 9 | 99 | — |
+| `@erp/api` | **233** | 15 | 143 | +90 (`sales-rbac` 44, `reports` 26, `reorder-points` 16, +4 in existing files) |
+| `@erp/wire-conformance` | **35** | 4 | 35 | — |
+| **non-web total** | **542** | **37** | 427 | **+115** |
+| `@erp/web` *(another session's tree — observed, not owned)* | 265 | 26 | 189 | +76 |
+
+**807 tests, 63 files, 0 failures.** No baseline went down; every delta is
+additive. `node tools/lint-money.mjs` is clean.
+
+Live, against the real stack from a destroyed docker volume (`pnpm stack:reset`
+→ 7 migrations → seed → API on :3001): **D1–D7 7/7**, **D8 (RBAC) 30/30**,
+**D9 (credit) 13/13** — 50 live checks over real HTTP.
+
+**The previous revision's post-merge figures, kept for the record:** *616 tests, 51 files, 0
+failures* across seven packages — `tools/lint-money.mjs` is clean, and `pnpm stack:reset` (docker
 volume destroyed, six migrations + seed from scratch) followed by
 `pnpm --filter @erp/sync-drills drill` passes **7/7 drills against the real
 stack**: real Postgres 16, real self-hosted PowerSync, real API, real
@@ -21,18 +52,22 @@ both pass in the same tree, which is the thing neither branch could show on its
 own. Per-package figures below are post-merge counts.
 
 Acceptance criteria **1, 2, 4 and 5 are demonstrated, not asserted** — measured numbers in §5.
-Criterion 3 remains tested-at-API-level with the Q4 human gate outstanding.
+**Criterion 3 is now demonstrated for balance and ageing** (D9, live, across two outlets); its
+facility-fee clause remains gated on the Q4 human decision and the criterion is therefore **not
+fully met** — stated precisely in §5.3.
 
-**Access control is now enforced on the stock and credit write paths and is NOT enforced on the
-sale path.** That is the single most important sentence in this document; the detail is in §1a and
-the gap is item 1 of §6. This is not a Phase 1 sign-off: the remaining gaps are in §6, and the
+**Access control is now enforced on the sale path, including the credit bound.** A counter clerk
+bounded at `max_order_value_minor: "0"` is refused a credit sale over real HTTP, and an outlet
+manager is allowed under `"500000"` and refused over it, measured against the SERVER's repriced
+total. That was §6 item 1 of the previous revision and it is closed; the evidence is D8 checks
+8a–8g. This is still **not** a Phase 1 sign-off: the remaining gaps are in §6, and the
 `product-manager` owns the gate decision.
 
 ---
 
 ## 0. Read this before trusting the drill suite again
 
-**A green suite has now failed EIGHT times to notice that a written path had never been executed.**
+**A green suite has now failed NINE times to notice that a written path had never been executed.**
 The count is kept here deliberately, and it goes up, because the pattern is the project's most
 reliable defect source: code is written, unit-tested against a harness that agrees with it, and
 never once run against the real stack.
@@ -47,6 +82,7 @@ never once run against the real stack.
 | **Currency spec** | The currency the client assumed and the one the server used were never compared. | green | No shared declaration existed to compare them against. |
 | **Sequence reporting (this merge)** | Two halves of PR #4 were written and reachable by nothing. (a) `apps/web/src/data/sequence.ts`'s whole reconnect half — `buildBlockReport`, `enqueueBlockReport`, adoption — was imported by its own unit test and by **no production module**: `powersync.ts` drained the outbox with no `onResult`, and `checkout` allocated numbers through a different function entirely. (b) the review it opens routed on `required_permission = 'sequence.review'`, a code absent from `platform.permission`; the column has no FK, so nothing complained and **no user could ever have held it** — every severity-1 receipt-number review would have landed in a queue nobody could read. | its own suite: green | The unit test imported the module directly, so "does anything call this?" was never asked; and the permission string was asserted against itself (`expect(required_permission).toBe('sequence.review')`) rather than against the catalogue. |
 | **RBAC enforcement (this pass)** | Permission checks were added to the API's stock and credit routes with **535 unit tests green**. On the live stack: migration `0005` had never been applied, so `app.effective_permission` did not exist; `applyTemplate` seeds roles but deliberately seeds **no users and no role assignments**, so every tenant had 5 roles and **0 grants**; and every drill device mints a fresh random `uid`. The result: **the entire Phase 1 acceptance drill suite died at warm-up** with `FORBIDDEN: PERMISSION_DENIED: stock.adjust is not held by this user`, and `pnpm dev:token` produced a bearer that no guarded route would accept. | 535/535 PASS | `apps/api/test/util.ts` grants every test identity the **owner role by default** (`identityFor(..., grant: 'owner')`). Every API test therefore ran as a principal holding the whole catalogue, so no test could observe that no real principal existed. The drills would have caught it in one run — they were not run, because they need docker. |
+| **`sequence.syncBlock` guard (this pass)** | `sequence.syncBlock` was correctly tightened from "scope only" to `sale.record` at the request's location. **`apps/api/test/sequence-regression.test.ts` went from 20 tests to 26, all green.** On the live stack the entire receipt-number regression drill died at its first call: `FORBIDDEN: PERMISSION_DENIED: sale.record is not held by this user`. D7 builds its own device (`device-a6`) inside `runD7` rather than in the shared `context.ts`, and the context's provisioning loop covers only `a1/a2/a3/b1` — so A6 was the one device in the repository whose principal had never been granted anything. It worked for as long as the route required no capability. | 26/26 PASS, and D1–D6 PASS in the same run | The API harness grants every test identity the **owner role** (`identityFor(..., grant: 'owner')`), so no unit test can observe a principal with no grant. It is §0's RBAC row again, one layer down: the harness default is still the third thing that agrees with neither the drill's seed data nor the live stack. Caught in one drill run; the fix is one line in `d7.ts`. |
 
 One root cause, stated once: **both sides were only ever tested against a third thing that agreed
 with neither of them** — a fixture, a harness default, or a hand-written payload. The RBAC entry is
@@ -126,23 +162,36 @@ context. No permission claim is read from the token, and `role` is never touched
 | `credit.accrueFacilityFee` | yes | **YES** | `credit.fee.accrue` tenant-wide |
 | `credit.exposure` / `ageing` / `previewFacilityFee` | no | **YES** | `credit.view` |
 | `session.permissions` | no | n/a | reads only the caller's own grants; a UX affordance, explicitly not a control |
-| **`sales.createSale`** | **yes** | ❌ **NO** | **see §6 item 1 — the sale path is unguarded** |
-| `sales.get` / `sales.recomputeCheck` | no | ❌ no | `sale.view` exists in the catalogue and is never checked |
-| **`sequence.syncBlock`** (new, PR #4) | **yes** | **scope only** | No capability check. `assertLocationInScope` holds, so a device cannot report or take a block at a location its token does not scope — but any valid tenant bearer at an in-scope location may burn a block and open a severity-1 review. Arguably inherent to being an enrolled device rather than a delegable capability; recorded here so the choice is visible rather than implied. Revisit with §6 item 1. |
+| **`sales.createSale`** | **yes** | **YES** | derived from `tender` via the TypeScript-total `SALE_PERMISSION` map → `sale.record` (CASH) / `sale.record.credit` (CREDIT), at the request's location. A credit sale is checked **twice**: the middleware for the capability, then `ctx.permissions.requireWithinAmount('sale.record.credit', locationId, total)` inside the plan against the **server's repriced total** — never `clientTotalMinor`. Demonstrated live: D8 8a–8g |
+| `sales.get` / `sales.recomputeCheck` | no | **YES** | `sale.view`, in two steps: `at: 'any'` on the procedure, then `requireAt('sale.view', sale.locationId)` once the row's location is known |
+| **`sequence.syncBlock`** | **yes** | **YES** | `sale.record` at the request's location. A block is the stock of numbers a till spends printing documents it is authorised to produce, so the right to be handed one is the right to produce them — no new code, no migration, no template edit. Deliberately **not** derived from `sequenceKey`, which is tenant vocabulary (CLAUDE.md §2.9). It narrows WHO, never WHEN: a wiped device that can still ring a sale can always confess. **This guard broke drill D7 — see §0 row 9.** |
+| `inventory.setReorderPoint` | yes | **YES** | `stock.reorder.manage` at the location. Demonstrated live: D8 10a/10b |
+| `inventory.ensureReorderPoints` | yes | **YES** | `stock.reorder.manage` at the location |
+| `inventory.reorderPoints` | no | **YES** | `stock.view` at the location |
+| **`inventory.lowStock`** | no | **YES** | `stock.view`, `at: 'any'`, then the location set resolved per request by `./scope.ts` and intersected with the request's. Guarded by `stock.view` rather than a reporting capability **on purpose**: the person who has to tell a customer "we're out" should see it coming. Demonstrated live: D8 10c/10d/10e |
+| `reports.salesByLocation` / `stockOnHand` / `cashPosition` | no | **YES** | `report.view.location`, `at: 'any'`; `report.view.tenant` **widens** to the network when held at every root. A widener, not an alternative — a role composed with the tenant code alone is refused at the door. Demonstrated live: D8 9a/9b/9c |
+| `reports.inventoryDays` / `distributionCost` | no | **YES** | `report.view.margin` — a strictly narrower audience, so an outlet manager sees their takings and not what the goods cost. Demonstrated live: D8 9d/9e |
 | `catalogue.list` / `search` / `detail` | no | ❌ no | `catalogue.view` exists and is never checked |
 | `provisioning.applyTemplate` | yes | ❌ no | `admin.template.apply` exists and is never checked. Defensible — this is the bootstrap edge that *creates* the roles there would be something to check against — but it is a mutation any valid tenant bearer can call. |
 | `provisioning.createTenant` | yes | operator | platform-operator plane, not tenant RBAC |
 
-**Catalogue wiring: 11 of 36 codes have a production enforcement site.** The other 25 are declared
-and never checked. Most are honest placeholders for endpoints that do not exist yet (`payroll.*`,
-`report.*`, `admin.user.manage`, `sync.conflict.review`, `sale.void`). Four of them, however,
-correspond to endpoints that **do** exist and are listed unguarded above: `sale.record`,
-`sale.record.credit`, `catalogue.view`, `admin.template.apply`. A permission code that nothing
-checks is not a control; it is a comment with a primary key.
+**Catalogue wiring: 19 of 37 codes now have a production enforcement site** (was 11 of 36;
+`stock.reorder.manage` is the code migration `0007` adds). The other 18 are declared and never
+checked. Most remain honest placeholders for endpoints that do not exist yet (`payroll.*`,
+`admin.user.manage`, `admin.role.manage`, `admin.location.manage`, `admin.device.*`,
+`catalogue.manage`, `catalogue.price_list.manage`, `credit.policy.manage`, `sale.void`,
+`sale.receipt.reprint`, `sale.discount.apply`). **Three still correspond to endpoints that DO
+exist and are unguarded:** `catalogue.view` (`catalogue.list`/`search`/`detail`),
+`admin.template.apply` (`provisioning.applyTemplate`), and `customer.view`/`customer.manage`
+(reachable through `credit.openAccount`'s `newCustomer`). `sale.override_price` guards nothing
+because no override path exists — see §6 item 2, which is the good kind of unwired. A permission
+code that nothing checks is not a control; it is a comment with a primary key.
 
-### What the live drill demonstrates (`drill:rbac`, 13/13 over HTTP on :3001)
+### What the live drill demonstrates (`drill:rbac`, **30/30** over HTTP on :3001)
 
-Every refusal is paired with a positive control on the same route with the same payload.
+Every refusal is paired with a positive control on the same route with the same payload. Checks
+1–7 are unchanged from the previous revision; **8–10 are new in this pass** and are the reason
+§6 item 1 could be closed.
 
 | # | Demonstrated |
 |---|---|
@@ -153,11 +202,50 @@ Every refusal is paired with a positive control on the same route with the same 
 | 5 | Accounts, at the tenant **root** — the widest scope there is — **denied** a stock adjustment. Scope is not authority |
 | 6 | Revoking the grant refuses **the same unexpired token** on the very next request — the decision is a database read per request, never a token claim |
 | 7 | A counter-staff principal whose token says `role: "head_of_operations"` is refused identically — nothing branches on that string (CLAUDE.md §2.9) |
+| **8** | **THE CREDIT BOUND.** Counter staff, bounded `max_order_value_minor: "0"`, **refused** a CREDIT sale — and **allowed** the byte-identical cart for CASH, so the refusal is provably the bound and not a broken route. Outlet manager **allowed** at a server-priced 494,400 (≤ 500,000) and **refused** at 618,000, same role, same customer, same counter. The refusal message names **618000**, the server's own repriced total. Re-sent with `clientTotalMinor: "1"` it is refused against 618000 again — a till cannot talk its way under its own bound. Neither refused sale left an `app.sale` row: the whole transaction rolls back |
+| **9** | **REPORTING.** Counter staff **refused** `reports.salesByLocation` (`report.view.location` absent); outlet manager **allowed** and told `network=false` over 1 location — a true total of what that caller may see, labelled as such; Accounts **allowed** with `network=true` over 25 — the widener held at the root. Outlet manager **refused** `reports.inventoryDays`, Accounts **allowed** — cost and margin are a narrower audience than takings |
+| **10** | **LOW STOCK.** Counter staff **refused** `inventory.setReorderPoint`; outlet manager **allowed**. Counter staff then **allowed** `inventory.lowStock` at their own outlet with a **non-empty** list (a vacuous empty list would prove nothing, so the check asserts ≥ 1 alert). Accounts **refused** — no `stock.view` at any scope, root included. The manager **refused** when narrowing the alert to an outlet outside their scope |
+
+### What the credit drill demonstrates (`drill:credit`, **13/13** over HTTP) — NEW
+
+`packages/wire-conformance/src/live-credit-drill.ts` (**D9**) is acceptance criterion 3, live.
+Cash and credit sales rung at **two different outlets** by one regional-manager principal granted
+once at REG-BONO; then the real read paths are asked what the customer owes. Measured figures in
+§5.3. It carries its own honest verdict in the machine-readable result, so a report generator
+cannot summarise it as a plain green tick: `facilityFee: "GATED — Q4 unconfirmed"`.
 
 ### Dead surface — exported, never called from production
 
 Listed because "exported and tested" reads as "wired" and is not the same thing. None of these is
 a security hole; all of them are API surface a reviewer could mistake for a control.
+
+**Audited mechanically this pass** (`export const|function|type|interface` in every changed or
+added non-test file, cross-referenced against every non-test file in the repo). Result: **every
+new exported entry point of this pass reaches production code.** `reportsRouter` is mounted in
+`routers/index.ts`; all five report schemas and `lowStockInput` are `.input()` of a live route;
+`setReorderPointInput` likewise; `resolveLocationScope` is called by six routes across two
+routers; `resolveGroupRollup` by one; `salePermission`/`SALE_PERMISSION` by `createSale`'s
+middleware; `applyReorderPoints` by `inventory.ensureReorderPoints`. Nothing new is test-only.
+Four residual notes, none of them defects:
+
+- **The new routes have no CLIENT.** `reports.*`, `inventory.lowStock`, `inventory.reorderPoints`,
+  `inventory.setReorderPoint` and `inventory.ensureReorderPoints` are reachable over HTTP and
+  proven live (D8 checks 9 and 10), but `apps/web` calls **none** of them — grep confirms zero
+  references. So `packages/contracts/src/reports.ts` is today a contract with **one** party: the
+  "a disagreement is a `tsc` error" guarantee that justifies the package does not yet exist for
+  these shapes, because there is no second importer to disagree. That is the HQ-reporting client
+  work-package (§6 item 13), not a fault in what landed.
+- **Nothing in onboarding calls `ensureReorderPoints`.** `applyReorderPoints` deliberately seeds
+  thresholds only where the ledger already shows stock, so applying it at template time correctly
+  seeds nothing — and `infra/scripts/bootstrap.ts` never calls it afterwards. A freshly
+  provisioned tenant therefore has **zero** reorder points and **zero** low-stock alerts until a
+  human calls the route. Correct behaviour, invisible default: verified live, where a clean
+  `stack:reset` leaves `app.reorder_point` empty.
+- **`app.reorder_point` is not in the PowerSync publication** (18 tables) and appears in no sync
+  rule, so **the low-stock alert is online-only**. In an offline-first product that is a real
+  limitation of the feature, not of its code — recorded as §6 item 14.
+- **`REORDER_FRACTION_BP`** is re-exported from `@erp/db/seed` and used only inside
+  `template.ts`. Harmless; noted for symmetry with `requireKnownCode` below.
 
 - **`session.permissions` has no client.** The route works (verified live: a counter-staff bearer
   gets its 8 codes across 57 locations, including the `max_order_value_minor: "0"` bound). **The
@@ -207,7 +295,7 @@ tracked as §6 item 1.
   from the database per request, and a tenant with roles but no assignments is a
   tenant nobody can use (§0).
 
-### `packages/contracts` — 80 tests (3 files), build + typecheck clean
+### `packages/contracts` — 105 tests (4 files), build + typecheck clean
 **The one client↔server wire contract.** zod only, so it bundles into the browser build of the
 PWA; a test asserts that by scanning every source file for a non-zod import, so browser safety is
 enforced rather than promised. Both `apps/api` and `apps/web` import it, which is what makes a
@@ -233,11 +321,20 @@ shape disagreement a compile error instead of a `BAD_REQUEST` at a till in Techi
   here, the pricing-authority refusals (`unitPriceE4`/`lineTotalMinor`/`totalMinor` rejected),
   tenant-identity refusals, money/quantity discipline past float64 range
 - `wire` (17) — primitives, HLC wire projection, envelope, browser-bundle safety
+- `reports` (25) — **added by this pass.** `reports.ts` declares the five reporting inputs and
+  `lowStockInput`; `inventory.ts` gains `setReorderPointInput`. The tests pin the rules that matter:
+  every one is `.strict()` and refuses all three spellings of a tenant identity (CLAUDE.md §2.1);
+  `locationIds` NARROWS and is capped; a reversed date range is REFUSED rather than normalised (a
+  silent swap turns an operator's typo into a confidently wrong report); `stockReportInput` carries
+  no date range at all, because on-hand is a position and an `asOf` that replays the ledger does not
+  exist yet; and `setReorderPointInput` carries **no `uomCode`** — the threshold is denominated in
+  the product's stocking unit, resolved server-side, so "reorder at 10" cannot mean bars to one
+  caller and tonnes to the next (04 §4.4.1)
 - `device-ops` (22) — the registry is exhaustive; every registered schema requires the idempotency
   key and refuses all three spellings of tenant identity; movement/credit money as strings; no
   `SALE` movement kind and no `FEE` entry kind on the device surface; the `/sync/token` shape
 
-### `packages/wire-conformance` — 35 tests (4 files), typecheck clean
+### `packages/wire-conformance` — 35 tests (4 files) + 2 live drills, typecheck clean
 **A probe package whose only job is to prove the two sides agree.** No production code imports it.
 It exists because it is the only place that can import `apps/web`'s sources *and* `apps/api`'s:
 the PWA resolves modules as a bundler would and its imports carry no file extensions, which
@@ -265,6 +362,10 @@ the PWA resolves modules as a bundler would and its imports carry no file extens
   API-signed token: one location, many locations in the same order, and an empty claim scoping the
   device nowhere. The fourth pins the rule that matters — the client reads the claim **without
   verifying it**, and that is all it is trusted for; enforcement is the server's.
+- **`drill:rbac` (D8, 30 live checks)** and **`drill:credit` (D9, 13 live checks)** — not vitest
+  suites; `tsx` scripts against the deployed stack. D8 is the authorization matrix (§1a); D9 is
+  acceptance criterion 3 (§5.3). Both mint real HS256 bearers for real `provisionPrincipal`
+  principals and assert on real 403s and real Postgres rows.
 - `sequence-client-to-api` (4) — **added by this merge**, and the reason §0's *Sequence reporting*
   ledger row could be closed rather than merely noted. PR #4's reconnect half was reachable from its own unit
   test and from no production module; the only way to prove it is wired is to drive the PWA's own
@@ -343,7 +444,7 @@ Postgres 16 — one DDL, two harnesses.
 - `seed` (15) — the "Construction materials distribution — Ghana" template applies
   as ordinary editable rows (ADR-0006); templates never seed prices
 
-### `apps/api` — 143 tests (12 files), typecheck clean
+### `apps/api` — 233 tests (15 files), typecheck clean
 Fastify + tRPC write path, now with the sync seam wired. Verified-token identity
 (`tid` is the **only** source of tenant identity; roles are opaque tenant-defined
 strings, never branched on), one idempotent pipeline over `app.write_log` with
@@ -377,7 +478,22 @@ and tax computation exist; **no** invoice issuance/clearance fields.
 - `sync-token` (5) — refuses unauthenticated calls; tid only from the verified session
 - `sync-upload` (6) — ordered batch processing, per-op ack (`applied`/`duplicate`/
   rejection), idempotent replay through the one pipeline
-- `sequence-regression` (20) — 03 §3.7.5 / conflict class #14: server block
+- `sales-rbac` (44) — **added by this pass.** The sale path's guard: the capability follows the
+  TENDER through a TypeScript-total map (adding a tender without deciding its capability is a
+  compile error), an unrecognised tender denies rather than defaulting to the weaker code, the
+  credit bound is measured against the server's repriced total and not `clientTotalMinor`, and a
+  refused credit sale leaves no sale, no stock movement and no credit entry
+- `reports` (26) — **added by this pass.** Σ(per-location) = the independently aggregated total as
+  an exact bigint identity (checked at runtime by the router itself, not only in the test);
+  inter-location transfers inflate neither revenue nor COGS; the scope is the intersection and a
+  requested out-of-scope location is REFUSED, never silently dropped; an empty scope DENIES rather
+  than returning an empty report, because "you may see nothing" and "nothing happened" must not
+  look alike; tenant isolation on every new read path
+- `reorder-points` (16) — **added by this pass.** Migration `0007`: the threshold's unit is the
+  product's stocking unit and the constraint trigger refuses a row that drifts from it; `is_low` is
+  derived from the movement ledger, never a counter; a tenant-tuned threshold is never overwritten
+  by a re-seed
+- `sequence-regression` (26, was 20) — 03 §3.7.5 / conflict class #14: server block
   allocation from the tenant's own format (a location with no counter row is
   refused, never defaulted), the three regression shapes
   (`LOST_CURSOR`, `CONSUMED_UPTO_REGRESSION`, `UNKNOWN_BLOCK`), burn + reissue +
@@ -385,7 +501,9 @@ and tax computation exist; **no** invoice issuance/clearance fields.
   database refusing a regression directly, the collision landing path, and
   tenant isolation across all four new read paths
 
-### `apps/web` — 189 tests (18 files), build (Vite + PWA) + typecheck clean
+### `apps/web` — 265 tests (26 files), build (Vite + PWA) + typecheck clean
+**Owned by another session during this pass and deliberately not touched.** Counts observed on
+2026-08-21; the per-file breakdown below is the previous revision's and is now stale.
 Installable PWA shell and POS skeleton, now with the full sync connector
 (`src/data/sync/`: `credentials.ts`, `upload.ts`, `transport.ts`, `runtime.ts`,
 wired through `src/data/powersync.ts`). `fetchCredentials` exchanges the dev API
@@ -541,7 +659,7 @@ skipped or deleted; there is no `.only`/`.skip`/`.todo` anywhere.
 | **Receipt-printing spike** | Needs the physical thermal printer decision (Bluetooth ESC/POS vs. USB) and real hardware; nothing in the current data model blocks it. |
 | **Real device trial** | Requires representative low-end Android tablets. The stack and drills exist now; what remains untested is OPFS persistence, worker behaviour and performance on target hardware. |
 | **`app.credit_policy` migration + Q4 confirmation** | The per-tenant credit policy (Q4's five fee decisions) lives behind an in-memory store seam in `apps/api/src/credit-policy.ts` with the same fields, gate and defaults as the designed effective-dated table. Default state is UNCONFIRMED → the accrual fails closed. Moving it into a migration is straightforward; the accountant's confirmation of the five decisions is the blocking human gate. |
-| **RBAC permission matrix** | Roles are opaque tenant-editable strings and location scoping is enforced on every mutation, but the composable permission→action mapping (§2.6) is not yet implemented or tested. The sync rules carry documented **interim fail-closed mechanisms** until it lands: location scope from the signed `location_id` token claim (set server-side, never a client parameter; no claim → zero rows) instead of `user_location_scope`; the credit book **not synced at all** rather than ungated; `sale_line`/`sale_tax_line` in a tenant-scoped interim bucket pending the §3.11.10 denormalisation migration (tenant isolation intact, location narrowing not yet). Must land before the pilot. |
+| **RBAC permission matrix** | *(Largely landed — 19 of 37 codes now have an enforcement site, and the sale path's bound is demonstrated live. What remains is the SYNC-RULE half.)* Roles are opaque tenant-editable strings and location scoping is enforced on every mutation. The sync rules carry documented **interim fail-closed mechanisms** until it lands: location scope from the signed `location_id` token claim (set server-side, never a client parameter; no claim → zero rows) instead of `user_location_scope`; the credit book **not synced at all** rather than ungated; `sale_line`/`sale_tax_line` in a tenant-scoped interim bucket pending the §3.11.10 denormalisation migration (tenant isolation intact, location narrowing not yet). Must land before the pilot. |
 
 (The previous revision's "PowerSync cloud wiring" deferral is **done** — see §1 and §5.)
 
@@ -555,7 +673,7 @@ Prereqs: Node ≥ 20, pnpm 9 (`corepack enable`), Docker.
 pnpm install                # from the repo root
 pnpm build                  # turbo: tsc for @erp/money, Vite+PWA for @erp/web
 pnpm typecheck              # all packages
-pnpm test                   # all suites (616 tests, 51 files; PGlite suites take ~30s)
+pnpm test                   # all suites (807 tests, 63 files; PGlite suites take ~30s)
 pnpm lint:money             # ADR-0004 money-type lint
 
 # Per package (dependency order contracts → money → sequence → db → api → web → conformance):
@@ -571,7 +689,8 @@ pnpm --filter @erp/wire-conformance test   # the PWA's real payload vs the API's
 pnpm stack:reset                    # docker down -v → up → migrate → seed 2 tenants
 pnpm --filter @erp/sync-drills drill  # 7 drills; spawns the API on :3001 if absent
 pnpm --filter @erp/wire-conformance drill:live   # D6 alone, against the running stack
-pnpm --filter @erp/wire-conformance drill:rbac   # D8 — 13 authorization checks over real HTTP
+pnpm --filter @erp/wire-conformance drill:rbac   # D8 — 30 authorization checks over real HTTP
+pnpm --filter @erp/wire-conformance drill:credit # D9 — acceptance criterion 3, 13 checks
 pnpm dev:token --role counter_staff  # a bearer for a REAL provisioned principal;
                                     # refs: counter_staff, outlet_manager,
                                     # regional_manager, accounts, head_of_operations
@@ -625,16 +744,56 @@ real-device trial (§3) is where field latency gets measured.
    idempotency backstop: **verbatim replay of all 7 acked batches (9 ops) → 9/9
    acked `duplicate`, zero new effects, state byte-identical**.
 
-3. **Credit balance, ageing and facility fee across outlets — TESTED, NOT YET
-   FULLY DEMONSTRATED.** The maths (exposure = Σ(entries) derived identically in
-   API and database, 30E/360 accrual, delta posting, truncation in the
-   customer's favour, ageing buckets) is covered by 14 API tests including mixed
-   cash/credit — but (a) no accountant has confirmed the Q4 fee decisions, so
-   the gate correctly refuses to post and every fee figure is provisional;
-   (b) the policy store is in-memory pending its migration; (c) the credit book
-   is deliberately **not synced** to devices until the RBAC permission tables
-   exist (fail-closed), so the cross-outlet credit view is online-only today.
-   This is the one criterion still short of "demonstrated".
+3. **Credit balance, ageing and facility fee across outlets — BALANCE AND
+   AGEING DEMONSTRATED (D9); FACILITY FEE GATED. The criterion is NOT fully
+   met, and the reason is a human decision, not missing code.**
+
+   `pnpm --filter @erp/wire-conformance drill:credit` — **13/13 over real
+   HTTP**, clean slate. One regional-manager principal granted **once** at
+   REG-BONO rings four sales through the real router: at **OUT-01** cash
+   247,200 + credit 370,800; at **OUT-03** cash 123,600 + credit 494,400.
+   Then the real read paths are asked what the customer owes.
+
+   *Balance — demonstrated.* `credit.exposure` answers **865,200 = 370,800 +
+   494,400** as an exact bigint identity: the two credit sales, rung at two
+   different outlets, both landing on the ONE tenant-level account. The
+   **370,800 of cash trade at the same two counters is absent** — the check
+   that a report which totalled *sales* instead of *entries* would fail, and
+   that a suite ringing only credit sales could never catch.
+   `availableMinor` = **4,134,800 = 5,000,000 − 865,200**. And it is
+   **derived**: Σ(`app.credit_entry.amount_minor`) read straight out of
+   Postgres equals the API's figure over 2 entries, tracing back to sales at
+   **2 distinct locations**.
+
+   *Ageing — demonstrated.* At 16 days past a 30-day due date both charges age
+   as **separate invoices** (`dpd=[16, 16]`, bucket `1-30`,
+   `agedBy=days_past_due`) and **Σ(buckets) = 865,200 = the balance, exactly**
+   across 5 buckets. The same account read one day after the sale is
+   `current` (`dpd=[-29, -29]`) — ageing moves with the as-of date, not with
+   the clock. A payment applied to the **OUT-01** charge clears that invoice
+   and leaves OUT-03 aged where it was (1 invoice, outstanding **494,400**),
+   with balance and buckets both falling by exactly the amount paid and still
+   agreeing. That last check is the sharp one: if the two outlets' sales were
+   aged as one lump it would move both or neither.
+
+   *Facility fee — VISIBLE, PROVISIONAL, AND CORRECTLY REFUSING TO POST.*
+   `previewFacilityFee` answers in shadow mode with
+   `provisional=true`, `label="provisional — not chargeable"`,
+   `totalDeltaMinor=5273` over 1 accrual. `accrueFacilityFee` answers
+   **HTTP 412 `FEE_POLICY_UNCONFIRMED`** and the account carries **zero**
+   `FEE` entries. The gate holding is the correct behaviour and a silent
+   posting would be the bug — so what is demonstrated is *"the fee is visible
+   and refuses to be chargeable"*, **not** *"the fee is correct"*.
+
+   **What remains, precisely.** (a) **Q4 is `NEEDS-HUMAN`**: until a qualified
+   accountant confirms the five fee decisions (D-1..D-5), every fee figure is
+   provisional and nothing may be billed — §6 item 5. (b) The policy store is
+   still in-memory pending its `app.credit_policy` migration. (c) **These reads
+   are ONLINE.** `app.credit_entry` is deliberately absent from every sync
+   bucket (fail-closed), so a partitioned outlet cannot see a balance at all —
+   and in an offline-first product "visible" has to mean visible from the till.
+   The criterion's first two clauses are demonstrated; the third is gated and
+   the offline half of "visible" is not built.
 
 4. **HQ post-sync view across locations — DEMONSTRATED (D3).** After a second
    location's device (OUT-03) flushed its outbox (2 ops, 34ms, acks `applied`),
@@ -674,71 +833,38 @@ every `pnpm test`, plus D6 in the drill report.
 
 ## 6. Remaining gaps before Phase 1 sign-off
 
-1. **THE SALE PATH IS NOT PERMISSION-GUARDED.** Read this before reading anything
-   else in this section.
+1. **THE SALE PATH — CLOSED 2026-08-21.** Kept here, at the top, because it was the previous
+   revision's single most important gap and because the shape of the fix is the record.
 
-   The permission model is built, tested (99 db + 121 api tests) and enforced live
-   on the stock and credit routes (§1a). **`apps/api/src/routers/sales.ts` is
-   untouched**: `sales.createSale` is still a bare `tenantProcedure`, so **any valid
-   tenant bearer can record a cash or credit sale at any location in its `locs`
-   claim**, with no capability check and — critically — **no enforcement of the
-   `sale.record.credit` bound**. The template's "credit sales up to a limit"
-   (counter staff `max_order_value_minor: "0"`, outlet manager `"500000"`, regional
-   `"2000000"`) is **data that nothing reads**. A counter clerk can today open an
-   unbounded credit exposure through the sale path.
+   *What was wrong.* `sales.createSale` was a bare `tenantProcedure`. Any valid tenant bearer
+   could record a cash or credit sale at any location in its `locs` claim, with no capability
+   check and **no enforcement of the `sale.record.credit` bound**. The template's "credit sales up
+   to a limit" (counter staff `"0"`, outlet manager `"500000"`, regional `"2000000"`) was data
+   nothing read. A counter clerk could open unbounded credit exposure.
 
-   Why it was not fixed: `sales.ts`, `pipeline.ts`, `packages/contracts/src/sale.ts`
-   and `infra/powersync/sync_rules.yaml` were owned by two other concurrent sessions
-   during this pass and were deliberately not edited. This is a **concurrency
-   artefact, not a design decision.**
+   *What landed.* `.use(requiresPermission({ code: salePermission, at: 'input' }))`, declared
+   **after** `.input()` so both the location and the derived capability come from a payload zod
+   has already validated. The capability follows the **tender** — platform vocabulary, a closed
+   `z.enum(['CASH','CREDIT'])` in `@erp/contracts` — through
+   `SALE_PERMISSION: Record<SaleTender, PermissionCode>`, which is TypeScript-total over the
+   contract's union: adding a tender without deciding its capability is a **compile error**, not a
+   sale that silently needs nothing. `salePermission()` returns `undefined` for anything
+   unrecognised and the middleware turns that into a refusal — never a default, never the weaker
+   code. Inside the plan, once the pipeline has repriced,
+   `ctx.permissions.requireWithinAmount('sale.record.credit', input.locationId, total)` checks the
+   bound **against the server's own total**, synchronously against the snapshot the middleware
+   already resolved (so it opens no second transaction inside `runIdempotent`). `sales.get` and
+   `sales.recomputeCheck` take `sale.view` in two steps.
 
-   The exact follow-up patch, ready to apply in one edit:
+   *How it is known to work.* Not by the 44 new unit tests — those would have passed against a
+   harness that grants `owner` by default, which is how this project has been fooled eight times.
+   By **D8 checks 8a–8g over real HTTP**: counter staff refused a credit sale and allowed the
+   identical cart for cash; outlet manager allowed at 494,400 and refused at 618,000; the refusal
+   naming **618000**, the server's figure; the same cart re-sent claiming `clientTotalMinor: "1"`
+   refused against 618000 again; and neither refused sale leaving an `app.sale` row behind.
 
-   ```ts
-   // apps/api/src/routers/sales.ts
-   // 1. import the middleware alongside what is already imported:
-   import { assertLocationInScope, requiresPermission, router, tenantProcedure } from '../trpc.js';
-
-   // 2. the capability follows the TENDER, which is platform vocabulary
-   //    ('CASH' | 'CREDIT'), never a tenant's words:
-   function salePermission(input: Record<string, unknown>): string | undefined {
-     const tender = input['tender'];
-     if (tender === 'CASH') return 'sale.record';
-     if (tender === 'CREDIT') return 'sale.record.credit';
-     return undefined;   // unrecognised => the middleware refuses; never a default
-   }
-
-   // 3. declare it AFTER .input(), so the location and the derived code come
-   //    from a payload zod has already validated:
-   createSale: tenantProcedure
-     .input(createSaleInput)
-     .use(requiresPermission({ code: salePermission, at: 'input' }))
-     .mutation(async ({ ctx, input }) => { /* body unchanged */ }),
-   ```
-
-   And **inside** the handler, once the pipeline has computed the server-priced
-   total — the bound must be checked against the server's figure, never the till's:
-
-   ```ts
-   if (input.tender === 'CREDIT') {
-     ctx.permissions.requireWithinAmount('sale.record.credit', input.locationId, totalMinor);
-   }
-   ```
-
-   `ctx.permissions` is the snapshot the middleware already resolved for this
-   request, so the call is synchronous and opens no second transaction inside
-   `runIdempotent` (see the transaction-discipline header in
-   `apps/api/src/permissions.ts`).
-
-   Two further items in the same package, both currently unguarded:
-   `sales.get` / `sales.recomputeCheck` need `sale.view`, and
-   `provisioning.applyTemplate` needs a decision recorded either way about
-   `admin.template.apply`.
-
-   Once `sales.ts` is guarded, extend `drill:rbac` with the pair that matters most:
-   counter staff **denied** a CREDIT sale above their `"0"` bound, outlet manager
-   **allowed** one below `"500000"` and **denied** one above it. Until that check
-   exists and passes over HTTP, the bound is not demonstrated.
+   *Still open in the same package:* `provisioning.applyTemplate` needs a decision recorded either
+   way about `admin.template.apply`, and `catalogue.*` still never checks `catalogue.view`.
 
 2. **Price override has no path — and therefore no check.** The good news, stated
    precisely so nobody mistakes it for the item above: `createSale` never accepts a
@@ -876,7 +1002,20 @@ every `pnpm test`, plus D6 in the drill report.
    `WHOLESALE` was rejected deliberately: it would charge every walk-in customer
    off a list the tenant did not choose for them, silently, all day.
 
-   Verified on the live stack this pass: a device provisioned from a real
+   **The dev stack no longer reproduces this, and that is worth knowing.**
+   `infra/scripts/bootstrap.ts` now flips `RETAIL` to tax-EXCLUSIVE after
+   seeding and says so loudly on every run
+   (`DEV FIXTURE: made RETAIL tax-EXCLUSIVE so a counter can ring them.
+   Neither the client nor sales.createSale can price a tax-inclusive list yet;
+   the shipped template is unchanged`). The shipped template
+   (`packages/db/src/seed/template.ts`, `inclusive: true`) really is unchanged,
+   so the blocker is intact for a real tenant — but **no drill can rediscover
+   it**, because every live drill runs against a stack where the condition has
+   been fixtured away. It is announced rather than hidden, which is the right
+   call; recorded here so nobody reads "7/7 drills pass" as evidence that
+   tenant #1 can ring a retail sale. It cannot.
+
+   Verified on the live stack in the previous pass: a device provisioned from a real
    `dev-token` bearer resolves `RETAIL` and blocks; with `RETAIL` out of scope it
    resolves `WHOLESALE`, ships `priceListCode: 'WHOLESALE'`, and the API **applies**
    the sale (`PLVERIFY-651564`, server-priced 5000 net + 1000 tax = 6000). So the
@@ -885,7 +1024,47 @@ every `pnpm test`, plus D6 in the drill report.
    sale at all. It is the POS pricing package, and it is a Phase 1 blocker, not a
    deferral.
 
-13. Smaller but real: auth is a dev-grade HS256 flow (shared dev secret, static
+13. **The new reporting and alert routes have NO CLIENT.** `reports.salesByLocation`,
+   `stockOnHand`, `cashPosition`, `inventoryDays`, `distributionCost` and `inventory.lowStock` /
+   `reorderPoints` / `setReorderPoint` / `ensureReorderPoints` all work and are all guarded —
+   proven live in D8 checks 9 and 10 — and **`apps/web` calls none of them**. HQ reporting
+   (criterion 4) is demonstrated at the database and the API; there is no screen. Two consequences
+   worth naming rather than discovering: `packages/contracts/src/reports.ts` currently has ONE
+   importer, so the "a shape disagreement is a `tsc` error" guarantee that justifies the contracts
+   package does not yet apply to these shapes; and the moment a client is written it must be
+   written against those exports, not against a second hand-rolled shape — which is precisely how
+   §0's second row happened. `apps/web` was owned by another session during this pass and was
+   deliberately not touched.
+
+14. **The low-stock alert is ONLINE-ONLY.** `app.reorder_point` (migration `0007`) is not in the
+   PowerSync publication (18 tables) and appears in no sync rule, so a partitioned outlet — the
+   condition this product exists for — cannot see its own low-stock list. Phase 1 lists "low-stock
+   alerts" under core operations and §2.2 says every location must trade fully offline. Adding the
+   table to `PUBLICATION_TABLES` and a per-location bucket is small; it is listed because it was
+   not done, not because it is hard.
+
+15. **Nothing in onboarding seeds a reorder point.** `applyReorderPoints` correctly seeds nothing
+   at template time (thresholds exist only where the ledger already shows stock) and
+   `infra/scripts/bootstrap.ts` never calls `ensureReorderPoints` afterwards. A freshly provisioned
+   tenant therefore has zero thresholds and an always-empty alert list until a human calls the
+   route — verified on a clean `stack:reset`, where `app.reorder_point` is empty. The seeded level
+   is also `REORDER_FRACTION_BP` = 25% of opening stock, flagged `needsFounderReview` and labelled
+   `[NEEDS-FOUNDER]` in the row's own notes, which is honest but means the pilot's first alert list
+   is a template guess until the founder tunes it.
+
+16. **One unexplained authorization refusal, observed once, not reproduced.** During a clean-slate
+   run in the sequence *reset → sync drills → RBAC drill*, `inventory.recordMovement` answered
+   `403 PERMISSION_DENIED: stock.receive is not held by this user` for a freshly provisioned
+   outlet-manager principal that demonstrably held the code — the same principal had succeeded on
+   six earlier calls in the same run, and `app.effective_permission` for that user id showed
+   `stock.receive` at 2 locations afterwards. It did not recur in four subsequent runs of the same
+   sequence, and a deliberate probe of **144 concurrent guarded writes** as one principal produced
+   **zero** spurious denials, so there is no evidence of a pooled-connection GUC leak. Recorded
+   rather than dropped: an authorization check that answers "not held" for a principal who holds it
+   is the wrong direction to hand-wave, and the next person to see it should find this note rather
+   than start from nothing.
+
+17. Smaller but real: auth is a dev-grade HS256 flow (shared dev secret, static
    bearer in the PWA env) — the real login/credential flow is §8.2 work;
    `pnpm build` warns at ~600 kB main bundle (code-split before pilot).
 

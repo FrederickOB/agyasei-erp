@@ -23,6 +23,7 @@ import {
   type LocationChoice,
 } from '../../data/session/device-location';
 import { useLiveQuery } from '../../data/use-live-query';
+import { Icon } from '../../ui/Icon';
 
 function labelFor(choice: LocationChoice): { primary: string; secondary: string | null } {
   if (choice.name !== null) {
@@ -73,6 +74,9 @@ export function DeviceLocationGate({
 
   return (
     <main className="device-gate">
+      <span className="gate-crest">
+        <Icon name="pin" size={28} />
+      </span>
       <h1>This till is not set up yet</h1>
       <p className="device-gate-message">{state.message}</p>
       {state.status === 'ambiguous' ? (
@@ -85,7 +89,7 @@ export function DeviceLocationGate({
                 <li key={choice.id}>
                   <button
                     type="button"
-                    className="device-gate-choice"
+                    className="device-gate-choice pressable"
                     disabled={busy !== null}
                     onClick={() => onChoose(choice.id)}
                   >
@@ -106,6 +110,7 @@ export function DeviceLocationGate({
       ) : null}
       {error !== null ? (
         <p className="device-gate-error" role="alert">
+          <Icon name="alert" size={20} />
           {error}
         </p>
       ) : null}

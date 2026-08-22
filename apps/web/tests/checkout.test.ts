@@ -20,7 +20,7 @@
 import { createSaleInput } from '@erp/contracts';
 import { describe, expect, it } from 'vitest';
 import { CLAIMED_HLC_RE } from '../src/lib/hlc';
-import { UUID_RE } from '../src/lib/uuidv7';
+import { UUID_RE, uuidv7 } from '../src/lib/uuidv7';
 import { addProductToCart, createCart, setCartLineQty } from '../src/data/mutations/cart';
 import {
   buildSalePayload,
@@ -237,6 +237,31 @@ describe('checkout', () => {
 
     await expect(
       checkout(db, { cartId, tenderedMinor: 2_000_000n, hlc: fixedHlc() }),
+    ).rejects.toThrow(SaleContextIncompleteError);
+    expect(await db.getAll('SELECT id FROM outbox')).toHaveLength(0);
+    expect(await getCartLines(db, cartId)).toHaveLength(2);
+  });
+
+  it('refuses to record against a list that lapsed overnight, at the counter', async () => {
+    // The row RESOLVES — it is right there — so this used to go up the wire
+    // and come back refused by the API hours later (`no price list X in
+    // force`), after the customer had gone. `effective_to` is exclusive,
+    // matching the API's own window exactly.
+    const db = openTestDb();
+    const { cartId } = await cartWithTwoLines(db);
+    await db.execute(
+      `UPDATE price_list SET tenant_id = ?, effective_from = '2026-08-01', effective_to = ?
+        WHERE id = (SELECT price_list_id FROM cart WHERE id = ?)`,
+      [uuidv7(), '2026-08-21', cartId],
+    );
+
+    await expect(
+      checkout(db, {
+        cartId,
+        tenderedMinor: 2_000_000n,
+        hlc: fixedHlc(),
+        nowIso: '2026-08-21T09:00:00.000Z',
+      }),
     ).rejects.toThrow(SaleContextIncompleteError);
     expect(await db.getAll('SELECT id FROM outbox')).toHaveLength(0);
     expect(await getCartLines(db, cartId)).toHaveLength(2);

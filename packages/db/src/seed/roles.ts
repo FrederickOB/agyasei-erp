@@ -102,6 +102,10 @@ const OUTLET_MANAGER: TemplateRole = {
     { code: 'stock.transfer.receive' },
     { code: 'stock.receive' },
     { code: 'stock.count.perform' },
+    // Sets the low-stock threshold for their own location's SKUs. The person
+    // who lives with the stock-out is the person who tunes the alert; a
+    // tenant that wants that centralised removes this row.
+    { code: 'stock.reorder.manage' },
     { code: 'catalogue.view' },
     { code: 'customer.view' },
     { code: 'customer.manage' },

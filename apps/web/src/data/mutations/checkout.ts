@@ -62,7 +62,8 @@ import type { ReceiptNumberFormat } from '../../lib/receipt-number';
 import { uuidv7 } from '../../lib/uuidv7';
 import type { DbExecutor, LocalDb } from '../db';
 import { getCartLines, getOpenCart, type CartLineRow, type CartRow } from '../queries/cart';
-import { readDeviceLocation, readReceiptFormat, resolvePriceListCode } from '../queries/session';
+import { readDeviceLocation, readReceiptFormat } from '../queries/session';
+import { resolveCartPriceList } from '../session/device-price-list';
 import { allocateReceiptNumber } from '../sequence';
 
 export class EmptyCartError extends Error {
@@ -276,20 +277,30 @@ export async function loadSaleContext(
       'This location has no code yet — waiting for setup data to arrive.',
     );
   }
-  const priceListCode = await resolvePriceListCode(tx, cart.priceListId);
-  if (priceListCode === null) {
+  // The trading day is settled BEFORE the price list is judged, and then the
+  // list is judged against that same day. A sale filed under one date and
+  // priced against a list in force on another is exactly the disagreement the
+  // server resolves by refusing.
+  const businessDate =
+    businessDateOverride === undefined
+      ? businessDateFor(occurredAt, location.timeZone)
+      : assertBusinessDate(businessDateOverride);
+  // Not "does this id match a row" but "is this a list this counter may sell
+  // from today" (data/session/device-price-list.ts). A list that lapsed
+  // overnight resolves perfectly well and is then refused by the API hours
+  // later, after the customer has gone; this catches it here, with the cart
+  // still on the screen and the refusal still actionable.
+  const priceList = await resolveCartPriceList(tx, cart.priceListId, occurredAt, businessDate);
+  if (priceList.code === null) {
     throw new SaleContextIncompleteError(
-      'The price list for this sale is not recognised on this device.',
+      priceList.message ?? 'This cart cannot be sold: its price list cannot be named.',
     );
   }
   return {
     locationId: location.id,
     locationCode: location.code,
-    priceListCode,
-    businessDate:
-      businessDateOverride === undefined
-        ? businessDateFor(occurredAt, location.timeZone)
-        : assertBusinessDate(businessDateOverride),
+    priceListCode: priceList.code,
+    businessDate,
     receiptFormat: await readReceiptFormat(tx),
   };
 }

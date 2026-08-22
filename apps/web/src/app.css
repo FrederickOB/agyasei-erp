@@ -1,22 +1,156 @@
 /*
- * Counter styling for the actual counter (§8.7): daylight on the screen,
- * dusty hands, hurried taps. Minimum 56px touch targets on the sale path,
- * high contrast, text always carries the meaning — colour is a reinforcement,
- * never the only channel.
+ * ═══════════════════════════════════════════════════════════════════════════
+ * THE COUNTER'S DESIGN SYSTEM
+ * ═══════════════════════════════════════════════════════════════════════════
+ * Designed for the room it is used in, not for a screenshot: a hardware
+ * counter in daylight, a low-end Android tablet, dusty hands, a queue, and a
+ * network that may have been gone for two days.
+ *
+ * What that rules IN — a real token system, one strong accent, generous touch
+ * targets, immediate press feedback, skeletons instead of blank screens, a
+ * dark scheme for evening trading, and motion short enough to feel like
+ * response rather than decoration.
+ *
+ * What it rules OUT, deliberately, against fashion:
+ *   · NO backdrop-filter / glass. It costs a compositor pass per frame on the
+ *     GPUs these devices actually have, and it lowers text contrast in exactly
+ *     the lighting where contrast is already the problem.
+ *   · NO web fonts. This app is expected to run offline for days; a font that
+ *     cannot be fetched is a font that is not there. The system stack is
+ *     already installed, already cached, and renders at the first frame.
+ *   · NO dark canvas by default. Dark UI in direct sunlight is unreadable;
+ *     the scheme follows the device (@media prefers-color-scheme) instead of
+ *     asserting a mood.
+ *   · NO colour-only meaning, anywhere. Every state carries an icon and words.
+ *
+ * Money and quantities are tabular-lined everywhere they appear, so a column
+ * of figures does not shift as it updates (§ number-tabular).
  */
+
+/* ─── TOKENS ─────────────────────────────────────────────────────────────── */
 :root {
-  --tap-min: 56px;
-  --gap: 12px;
-  --ink: #1c1f24;
-  --paper: #f5f4f0;
-  --card: #ffffff;
-  --line: #d8d5cd;
-  --accent: #2456a6;
-  --ok: #2e6b45;
-  --wait: #7a5d18;
-  --attn: #8a3b12;
+  /* Spacing — a 4px rhythm, used for every gap, pad and inset. */
+  --s-1: 4px;
+  --s-2: 8px;
+  --s-3: 12px;
+  --s-4: 16px;
+  --s-5: 24px;
+  --s-6: 32px;
+  --s-7: 48px;
+  --s-8: 64px;
+
+  /* Touch. 56px on the sale path is above the 44/48 floor on purpose: these
+     taps are made standing up, in a hurry, sometimes with a glove on. */
+  --tap: 56px;
+  --tap-min: 48px;
+
+  /* Radius + icon sizes as tokens, never ad-hoc values. */
+  --r-1: 8px;
+  --r-2: 12px;
+  --r-3: 16px;
+  --r-4: 22px;
+  --r-full: 999px;
+  --icon-sm: 18px;
+  --icon-md: 22px;
+  --icon-lg: 28px;
+
+  /* Type — fluid, bottoming out at a size readable at arm's length. */
+  --t-xs: 0.8125rem;
+  --t-sm: 0.9375rem;
+  --t-md: 1rem;
+  --t-lg: 1.125rem;
+  --t-xl: clamp(1.25rem, 1.1rem + 0.6vw, 1.5rem);
+  --t-2xl: clamp(1.5rem, 1.2rem + 1.4vw, 2rem);
+  --t-3xl: clamp(1.75rem, 1.3rem + 2.2vw, 2.5rem);
+
+  /* Motion. Everything is transform/opacity; nothing animates layout. */
+  --dur-1: 110ms;
+  --dur-2: 180ms;
+  --dur-3: 260ms;
+  --ease: cubic-bezier(0.2, 0.8, 0.3, 1);
+  --ease-in: cubic-bezier(0.5, 0, 0.9, 0.4);
+
+  /* Layers, declared once so nothing has to guess. */
+  --z-sticky: 10;
+  --z-dock: 30;
+  --z-scrim: 40;
+  --z-sheet: 45;
+  --z-gate: 60;
+
+  /* ── Colour: light scheme (the default, because daylight is the default) ── */
+  --bg: #f4f6f8;
+  --surface: #ffffff;
+  --surface-2: #eef1f5;
+  --surface-3: #e3e8ee;
+  --text: #0d1117;
+  --text-muted: #4b5563;
+  --border: #dfe3ea;
+  /* The boundary of an INTERACTIVE thing, held at 3:1 against both the
+     surface and the page (WCAG 1.4.11). It is separate from --border on
+     purpose: a card's edge is decoration and may be soft, but the edge of an
+     input, a chip or a tappable card is the only thing saying "this is a
+     control", and at 1.65:1 it was saying it to nobody in daylight. The value
+     sits where Material's own `outline` token sits, for the same reason. */
+  --control-border: #7f8a9b;
+
+  --brand: #1b4ddb;
+  --brand-ink: #ffffff;
+  --brand-strong: #163cad;
+  --brand-tint: #eaf0ff;
+  --brand-text: #1743c4;
+
+  --ok: #12693f;
+  --ok-tint: #e4f2ea;
+  --ok-ink: #0a4e2e;
+  --wait: #8a5b00;
+  --wait-tint: #fbf0d9;
+  --wait-ink: #6a4500;
+  --attn: #b3320f;
+  --attn-tint: #fce9e2;
+  --attn-ink: #8a2609;
+
+  --shadow-1: 0 1px 2px rgb(13 17 23 / 0.06), 0 1px 3px rgb(13 17 23 / 0.05);
+  --shadow-2: 0 2px 4px rgb(13 17 23 / 0.06), 0 8px 20px rgb(13 17 23 / 0.09);
+  --scrim: rgb(9 12 17 / 0.52);
 }
 
+/* ── Colour: dark scheme. Re-toned, never inverted: surfaces lift with
+      lightness rather than with shadow, and every pair below was chosen
+      against its own background, not carried over from the light scheme. ── */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0c1016;
+    --surface: #151b23;
+    --surface-2: #1d242e;
+    --surface-3: #263040;
+    --text: #eef2f7;
+    --text-muted: #a8b3c2;
+    --border: #29323e;
+    --control-border: #626f81;
+
+    --brand: #3a66e8;
+    --brand-ink: #ffffff;
+    --brand-strong: #5b83f7;
+    --brand-tint: #16223c;
+    --brand-text: #9db7ff;
+
+    --ok: #35a06a;
+    --ok-tint: #10251b;
+    --ok-ink: #7ddaa8;
+    --wait: #c08a1f;
+    --wait-tint: #241c0c;
+    --wait-ink: #f0c66e;
+    --attn: #e2643f;
+    --attn-tint: #2a1410;
+    --attn-ink: #ffa285;
+
+    --shadow-1: 0 1px 2px rgb(0 0 0 / 0.4);
+    --shadow-2: 0 2px 6px rgb(0 0 0 / 0.45), 0 12px 28px rgb(0 0 0 / 0.35);
+    --scrim: rgb(0 0 0 / 0.62);
+  }
+}
+
+/* ─── BASE ───────────────────────────────────────────────────────────────── */
 * {
   box-sizing: border-box;
 }
@@ -25,155 +159,502 @@ html,
 body {
   margin: 0;
   padding: 0;
-  background: var(--paper);
-  color: var(--ink);
+  background: var(--bg);
+  color: var(--text);
   font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
-  font-size: 18px;
+  font-size: 17px;
+  line-height: 1.5;
   -webkit-text-size-adjust: 100%;
+  /* Text is selected by nobody at a till and mis-selected by everybody. */
+  -webkit-tap-highlight-color: transparent;
 }
 
 #root,
 .app-shell {
   min-height: 100vh;
+  min-height: 100dvh;
   display: flex;
   flex-direction: column;
 }
 
-/* ---- status bar: persistent chrome, never a toast (§8.4) ---- */
-.status-bar {
-  position: sticky;
-  top: 0;
-  z-index: 10;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  min-height: 44px;
-  padding: 6px 14px;
-  font-weight: 600;
-  border-bottom: 2px solid var(--line);
-  background: #e9e7e1;
-}
-.status-online_synced {
-  background: #e2ede5;
-}
-.status-offline {
-  background: #e7e9ee;
-}
-.status-syncing {
-  background: #e5ebf5;
-}
-.status-stuck {
-  background: #f3e3cf;
-}
-.status-icon {
-  font-size: 14px;
-}
-.status-text {
-  flex: 1;
-}
-.update-chip {
-  min-height: 36px;
-  border: 1px solid var(--accent);
-  border-radius: 18px;
-  background: var(--card);
-  color: var(--accent);
-  font-weight: 600;
-  padding: 0 14px;
+h1,
+h2,
+h3 {
+  margin: 0;
+  line-height: 1.25;
+  letter-spacing: -0.01em;
 }
 
-/* ---- tabs ---- */
-.tab-nav {
+button,
+input {
+  font: inherit;
+  color: inherit;
+}
+
+button {
+  cursor: pointer;
+  /* Kills the 300ms tap delay without disabling zoom (§ tap-delay). */
+  touch-action: manipulation;
+}
+
+/* Focus is never removed — only replaced with something better than the
+   platform default: a 3px ring with an offset so it reads on any surface. */
+:focus-visible {
+  outline: 3px solid var(--brand);
+  outline-offset: 2px;
+  border-radius: var(--r-1);
+}
+
+.money,
+.tabular {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum' 1;
+}
+
+.icon {
+  flex: none;
+  display: block;
+}
+
+/* ─── PRESS FEEDBACK ─────────────────────────────────────────────────────────
+   The single biggest reason the old interface felt dead: a tap changed
+   nothing until the state changed. Every control now answers within one
+   frame, with transform + colour only, so nothing around it moves. */
+.pressable {
+  transition:
+    transform var(--dur-1) var(--ease),
+    background-color var(--dur-1) linear,
+    border-color var(--dur-1) linear,
+    box-shadow var(--dur-2) var(--ease);
+}
+.pressable:active:not(:disabled) {
+  transform: scale(0.97);
+}
+@media (hover: hover) {
+  /* A state layer, not a border change: the border is already at the 3:1 that
+     identifies the control, and lightening it on hover would have taken it
+     BELOW that at the exact moment someone is aiming at it. */
+  .pressable:hover:not(:disabled) {
+    background-color: var(--surface-3);
+  }
+}
+
+/* ─── APP BAR + VIEW SWITCH ──────────────────────────────────────────────── */
+.app-bar {
+  position: sticky;
+  top: 0;
+  z-index: var(--z-sticky);
   display: flex;
-  gap: var(--gap);
-  padding: 10px 14px 0;
+  flex-direction: column;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  padding-top: env(safe-area-inset-top);
 }
-.tab {
-  min-height: var(--tap-min);
+
+/* Two mutually exclusive views: a segmented control says that, and it leaves
+   the bottom of the screen — the only part a thumb reaches — for the cart. */
+.view-switch {
+  display: flex;
+  gap: var(--s-1);
+  margin: var(--s-3) var(--s-4);
+  padding: var(--s-1);
+  background: var(--surface-2);
+  border: 1px solid var(--control-border);
+  border-radius: var(--r-3);
+}
+.view-switch-item {
   flex: 1;
-  font-size: 18px;
-  font-weight: 700;
-  border: 2px solid var(--line);
-  border-radius: 10px 10px 0 0;
-  background: #eceae4;
-  color: var(--ink);
+  min-height: var(--tap-min);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--s-2);
+  padding: 0 var(--s-3);
+  border: 0;
+  border-radius: var(--r-2);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: var(--t-md);
+  font-weight: 600;
 }
-.tab.active {
-  background: var(--card);
-  border-bottom-color: var(--card);
+.view-switch-item[aria-current='true'] {
+  background: var(--surface);
+  color: var(--text);
+  font-weight: 700;
+  box-shadow: var(--shadow-1);
 }
 
 .app-main {
   flex: 1;
-  padding: 14px;
+  padding: var(--s-4);
+  /* Room for the cart dock; the bar is fixed, so the list has to end above it
+     rather than behind it (§ scroll-and-fixed coexistence). */
+  padding-bottom: calc(var(--s-8) + var(--tap) + env(safe-area-inset-bottom));
 }
-
-/* ---- counter layout ---- */
-.counter {
-  display: grid;
-  gap: var(--gap);
-  grid-template-columns: 1fr;
-}
-@media (min-width: 800px) {
-  .counter {
-    grid-template-columns: 3fr 2fr;
-    align-items: start;
+@media (min-width: 900px) {
+  .app-main {
+    padding-bottom: var(--s-6);
   }
 }
 
+/* ─── STATUS BAR ─────────────────────────────────────────────────────────────
+   Persistent chrome, never a toast (§8.4). Icon + words + count, so the state
+   survives being read at a glance, in sunlight, by someone who is colourblind. */
+.status-bar {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  min-height: var(--tap-min);
+  padding: var(--s-2) var(--s-4);
+  font-size: var(--t-sm);
+  font-weight: 600;
+  background: var(--surface);
+  color: var(--text-muted);
+  overflow: hidden;
+}
+.status-dot {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--r-full);
+  background: var(--surface-2);
+  color: var(--text-muted);
+}
+.status-text {
+  flex: 1;
+  min-width: 0;
+}
+.status-online_synced .status-dot {
+  background: var(--ok-tint);
+  color: var(--ok);
+}
+.status-offline .status-dot {
+  background: var(--surface-3);
+  color: var(--text-muted);
+}
+.status-syncing .status-dot {
+  background: var(--brand-tint);
+  color: var(--brand-text);
+}
+.status-stuck .status-dot {
+  background: var(--attn-tint);
+  color: var(--attn);
+}
+.status-stuck .status-text {
+  color: var(--attn-ink);
+}
+
+/* An indeterminate line while the outbox drains — the one place motion is
+   allowed to loop, because it is reporting that work is genuinely in flight. */
+.status-progress {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  height: 2px;
+  width: 100%;
+  overflow: hidden;
+  background: var(--brand-tint);
+}
+.status-progress::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: var(--brand);
+  transform-origin: left;
+  animation: indeterminate 1.4s var(--ease) infinite;
+}
+@keyframes indeterminate {
+  0% {
+    transform: translateX(-100%) scaleX(0.4);
+  }
+  60% {
+    transform: translateX(60%) scaleX(0.6);
+  }
+  100% {
+    transform: translateX(200%) scaleX(0.4);
+  }
+}
+
+.update-chip {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  min-height: 40px;
+  padding: 0 var(--s-3);
+  border: 1px solid var(--brand);
+  border-radius: var(--r-full);
+  background: var(--brand-tint);
+  color: var(--brand-text);
+  font-size: var(--t-sm);
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+/* ─── COUNTER LAYOUT ─────────────────────────────────────────────────────────
+   Phone: the catalogue owns the screen and the cart is a bar at the thumb.
+   Tablet (≥900px): the cart is docked beside it and never leaves view — the
+   old layout put it BELOW the whole catalogue, so on a phone the total and
+   the pay button were a full scroll away from the thing that changed them. */
+.counter {
+  display: grid;
+  gap: var(--s-4);
+  grid-template-columns: 1fr;
+  align-items: start;
+}
+@media (min-width: 900px) {
+  .counter {
+    grid-template-columns: minmax(0, 1fr) minmax(320px, 380px);
+  }
+}
+
+/* ─── SEARCH + FILTERS ───────────────────────────────────────────────────── */
+.search-field {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+.search-field .search-icon {
+  position: absolute;
+  left: var(--s-4);
+  color: var(--text-muted);
+  pointer-events: none;
+}
 .search-input {
   width: 100%;
-  min-height: var(--tap-min);
-  font-size: 20px;
-  padding: 0 14px;
-  border: 2px solid var(--line);
-  border-radius: 10px;
-  background: var(--card);
+  min-height: var(--tap);
+  padding: 0 var(--s-4) 0 calc(var(--s-4) * 2 + var(--icon-md));
+  font-size: var(--t-lg);
+  border: 1px solid var(--control-border);
+  border-radius: var(--r-3);
+  background: var(--surface);
+  box-shadow: var(--shadow-1);
+  transition: border-color var(--dur-1) linear;
 }
-.search-empty {
-  padding: 12px 2px;
+.search-input::placeholder {
+  color: var(--text-muted);
+}
+.search-input:focus {
+  border-color: var(--brand);
 }
 
+/* Filter chips, built from the catalogue's own categories — tenant data, not
+   a list anybody typed here. Horizontal scroll with snap, because a builders'
+   merchant has more departments than fit a phone. */
+.chip-row {
+  display: flex;
+  gap: var(--s-2);
+  margin-top: var(--s-3);
+  padding-bottom: var(--s-1);
+  overflow-x: auto;
+  scroll-snap-type: x proximity;
+  scrollbar-width: none;
+}
+.chip-row::-webkit-scrollbar {
+  display: none;
+}
+.chip {
+  flex: none;
+  scroll-snap-align: start;
+  min-height: var(--tap-min);
+  padding: 0 var(--s-4);
+  border: 1px solid var(--control-border);
+  border-radius: var(--r-full);
+  background: var(--surface);
+  color: var(--text-muted);
+  font-size: var(--t-sm);
+  font-weight: 600;
+}
+.chip[aria-pressed='true'] {
+  background: var(--brand);
+  border-color: var(--brand);
+  color: var(--brand-ink);
+}
+
+/* ─── PRODUCT GRID ───────────────────────────────────────────────────────── */
 .product-grid {
   list-style: none;
-  margin: var(--gap) 0 0;
+  margin: var(--s-4) 0 0;
   padding: 0;
   display: grid;
-  gap: var(--gap);
-  grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+  gap: var(--s-3);
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+}
+@media (min-width: 600px) {
+  .product-grid {
+    grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  }
 }
 .product-card {
+  position: relative;
   width: 100%;
-  min-height: 84px;
+  min-height: 116px;
   display: flex;
   flex-direction: column;
+  align-items: flex-start;
   justify-content: space-between;
-  gap: 6px;
+  gap: var(--s-2);
+  padding: var(--s-3);
   text-align: left;
-  padding: 10px 12px;
-  border: 2px solid var(--line);
-  border-radius: 10px;
-  background: var(--card);
-  font-size: 17px;
+  border: 1px solid var(--control-border);
+  border-radius: var(--r-3);
+  background: var(--surface);
+  box-shadow: var(--shadow-1);
+  overflow: hidden;
+}
+.product-card:active:not(:disabled) {
+  box-shadow: none;
 }
 .product-name {
-  font-weight: 700;
+  font-size: var(--t-md);
+  font-weight: 650;
+  line-height: 1.3;
+  /* Wrap rather than truncate; a cut-off product name is a mis-sale. */
+  overflow-wrap: anywhere;
 }
-.product-meta {
-  color: #454a52;
+.product-price {
+  font-size: var(--t-lg);
+  font-weight: 750;
+  letter-spacing: -0.01em;
+}
+.product-unit {
+  color: var(--text-muted);
+  font-size: var(--t-xs);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.product-foot {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s-2);
+  flex-wrap: wrap;
 }
 
-/* ---- cart ---- */
-.cart-panel {
-  border: 2px solid var(--line);
-  border-radius: 10px;
-  background: var(--card);
-  padding: var(--gap);
+/* Cause and effect: the card you tapped confirms it was the card you tapped,
+   which is the whole answer to "did that go in?" in a queue. */
+.product-added {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--s-2);
+  background: var(--ok-tint);
+  color: var(--ok-ink);
+  font-weight: 700;
+  animation: added var(--dur-3) var(--ease) forwards;
+}
+@keyframes added {
+  0% {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+  25% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  75% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+/* ─── SKELETONS ──────────────────────────────────────────────────────────────
+   A local read resolves in milliseconds, but "milliseconds" on these devices
+   is still two or three frames of nothing. A blank screen at a counter reads
+   as a broken till; a shape that is about to be a product reads as a moment. */
+.skeleton {
+  background: var(--surface-2);
+  border-radius: var(--r-2);
+  position: relative;
+  overflow: hidden;
+}
+.skeleton::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, var(--surface-3), transparent);
+  transform: translateX(-100%);
+  animation: shimmer 1.2s var(--ease) infinite;
+}
+@keyframes shimmer {
+  100% {
+    transform: translateX(100%);
+  }
+}
+.skeleton-card {
+  min-height: 116px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-3);
+}
+.skeleton-row {
+  min-height: 68px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-3);
+}
+
+/* ─── EMPTY STATES ───────────────────────────────────────────────────────── */
+.empty-state {
   display: flex;
   flex-direction: column;
-  gap: var(--gap);
+  align-items: center;
+  gap: var(--s-2);
+  padding: var(--s-7) var(--s-4);
+  text-align: center;
+  color: var(--text-muted);
 }
-.cart-empty {
-  margin: 8px 4px;
+.empty-state .icon {
+  color: var(--control-border);
+}
+.empty-title {
+  color: var(--text);
+  font-size: var(--t-lg);
+  font-weight: 700;
+}
+.empty-body {
+  margin: 0;
+  max-width: 34ch;
+  line-height: 1.5;
+}
+
+/* ─── CART: DOCK, BAR AND SHEET ──────────────────────────────────────────── */
+.cart-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+  padding: var(--s-4);
+  border: 1px solid var(--border);
+  border-radius: var(--r-3);
+  background: var(--surface);
+  box-shadow: var(--shadow-1);
+}
+@media (min-width: 900px) {
+  .cart-dock {
+    position: sticky;
+    top: calc(var(--tap-min) + 88px);
+  }
+}
+
+.cart-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  font-size: var(--t-lg);
+  font-weight: 700;
+}
+.cart-count {
+  margin-left: auto;
+  padding: 2px var(--s-2);
+  border-radius: var(--r-full);
+  background: var(--surface-2);
+  color: var(--text-muted);
+  font-size: var(--t-xs);
+  font-weight: 700;
 }
 .cart-lines {
   list-style: none;
@@ -181,320 +662,660 @@ body {
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: var(--gap);
+  gap: var(--s-2);
+  /* The list scrolls; the total and the pay button never do. */
+  max-height: min(46vh, 420px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 .cart-line {
-  border-bottom: 1px solid var(--line);
-  padding-bottom: var(--gap);
+  padding: var(--s-3);
+  border: 1px solid var(--border);
+  border-radius: var(--r-2);
+  background: var(--surface);
+  animation: line-in var(--dur-2) var(--ease);
+}
+@keyframes line-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
 }
 .cart-line-main {
   display: flex;
   justify-content: space-between;
-  gap: var(--gap);
-  font-weight: 700;
+  align-items: baseline;
+  gap: var(--s-3);
+}
+.cart-line-name {
+  font-weight: 650;
+  overflow-wrap: anywhere;
+}
+.cart-line-total {
+  font-weight: 750;
+  white-space: nowrap;
 }
 .cart-line-controls {
   display: flex;
   align-items: center;
-  gap: var(--gap);
-  margin-top: 8px;
+  gap: var(--s-2);
+  margin-top: var(--s-3);
 }
 .qty-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
   min-width: var(--tap-min);
   min-height: var(--tap-min);
-  font-size: 26px;
-  font-weight: 700;
-  border: 2px solid var(--line);
-  border-radius: 10px;
-  background: #f0eee8;
+  border: 1px solid var(--control-border);
+  border-radius: var(--r-2);
+  background: var(--surface-2);
+  color: var(--text);
 }
 .qty-display {
-  min-width: 90px;
+  flex: 1;
   text-align: center;
-  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  white-space: nowrap;
 }
 .line-remove {
-  margin-left: auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: var(--tap-min);
   min-height: var(--tap-min);
-  padding: 0 14px;
-  border: 2px solid var(--line);
-  border-radius: 10px;
-  background: var(--card);
+  border: 1px solid var(--control-border);
+  border-radius: var(--r-2);
+  background: var(--surface);
+  color: var(--attn);
 }
+
 .undo-bar {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: var(--gap);
-  padding: 8px 12px;
-  border: 2px dashed var(--line);
-  border-radius: 10px;
+  gap: var(--s-3);
+  padding: var(--s-2) var(--s-3);
+  border: 1px solid var(--border);
+  border-radius: var(--r-2);
+  background: var(--surface-2);
+  font-size: var(--t-sm);
+}
+.undo-bar span {
+  flex: 1;
+  min-width: 0;
 }
 .undo-button {
-  min-height: 44px;
-  padding: 0 18px;
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  min-height: var(--tap-min);
+  padding: 0 var(--s-3);
+  border: 1px solid var(--brand);
+  border-radius: var(--r-2);
+  background: var(--surface);
+  color: var(--brand-text);
   font-weight: 700;
-  border: 2px solid var(--accent);
-  border-radius: 10px;
-  background: var(--card);
-  color: var(--accent);
 }
+
 .cart-footer {
   display: flex;
   flex-direction: column;
-  gap: var(--gap);
+  gap: var(--s-3);
+  padding-top: var(--s-3);
+  border-top: 1px solid var(--border);
 }
-.cart-total-row,
-.tender-total-row,
-.tender-change-row,
-.receipt-total-row,
-.receipt-change-row {
+.total-row {
   display: flex;
   justify-content: space-between;
-  font-size: 22px;
-  font-weight: 700;
+  align-items: baseline;
+  gap: var(--s-3);
+}
+.total-label {
+  color: var(--text-muted);
+  font-weight: 600;
+}
+.total-value {
+  font-size: var(--t-2xl);
+  font-weight: 800;
+  letter-spacing: -0.02em;
 }
 
-.primary-action {
-  min-height: var(--tap-min);
-  font-size: 20px;
+/* The bar a phone always sees: count, live total, and the one primary action,
+   pinned in the thumb zone above the gesture bar. */
+.cart-bar {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: var(--z-dock);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+  padding: var(--s-3) var(--s-4);
+  padding-bottom: calc(var(--s-3) + env(safe-area-inset-bottom));
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+  box-shadow: var(--shadow-2);
+}
+@media (min-width: 900px) {
+  .cart-bar {
+    display: none;
+  }
+}
+.cart-bar-row {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+}
+/* Why the pay button is dead, pinned where the pay button is. */
+.cart-bar-blocked {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  margin: 0;
+  padding: var(--s-1) var(--s-2);
+  border-radius: var(--r-1);
+  background: var(--attn-tint);
+  color: var(--attn-ink);
+  font-size: var(--t-sm);
+  font-weight: 650;
+}
+.cart-bar-blocked .icon {
+  color: var(--attn);
+}
+.cart-bar-summary {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  flex: 1;
+  min-width: 0;
+  min-height: var(--tap);
+  padding: 0 var(--s-3);
+  border: 1px solid var(--control-border);
+  border-radius: var(--r-2);
+  background: var(--surface-2);
+  text-align: left;
+}
+.cart-bar-lines {
+  color: var(--text-muted);
+  font-size: var(--t-xs);
   font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.cart-bar-total {
+  font-size: var(--t-lg);
+  font-weight: 800;
+}
+.cart-bar .primary-action {
+  flex: 1;
+  max-width: 55%;
+}
+
+.sheet-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-scrim);
   border: 0;
-  border-radius: 10px;
-  background: var(--accent);
-  color: #ffffff;
+  padding: 0;
+  background: var(--scrim);
+  animation: fade var(--dur-2) var(--ease);
+}
+@keyframes fade {
+  from {
+    opacity: 0;
+  }
+}
+.cart-sheet {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: var(--z-sheet);
+  max-height: 86dvh;
+  border-radius: var(--r-4) var(--r-4) 0 0;
+  border: 1px solid var(--border);
+  padding-bottom: calc(var(--s-4) + env(safe-area-inset-bottom));
+  box-shadow: var(--shadow-2);
+  /* Rises from the bar it was opened from — spatial continuity, not a pop. */
+  animation: sheet-up var(--dur-3) var(--ease);
+}
+@keyframes sheet-up {
+  from {
+    transform: translateY(12%);
+    opacity: 0.6;
+  }
+}
+.sheet-close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: var(--tap-min);
+  min-height: var(--tap-min);
+  margin-left: auto;
+  border: 1px solid var(--control-border);
+  border-radius: var(--r-full);
+  background: var(--surface-2);
+}
+
+/* ─── ACTIONS ────────────────────────────────────────────────────────────── */
+.primary-action {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--s-2);
+  min-height: var(--tap);
+  padding: 0 var(--s-4);
+  border: 0;
+  border-radius: var(--r-2);
+  background: var(--brand);
+  color: var(--brand-ink);
+  font-size: var(--t-lg);
+  font-weight: 700;
+  box-shadow: var(--shadow-1);
 }
 .primary-action:disabled {
-  background: #9aa4b5;
+  background: var(--surface-3);
+  color: var(--text-muted);
+  box-shadow: none;
+  cursor: not-allowed;
+}
+@media (hover: hover) {
+  .primary-action:hover:not(:disabled) {
+    background: var(--brand-strong);
+  }
 }
 .secondary-action {
-  min-height: var(--tap-min);
-  font-size: 18px;
-  font-weight: 600;
-  border: 2px solid var(--line);
-  border-radius: 10px;
-  background: var(--card);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--s-2);
+  min-height: var(--tap);
+  padding: 0 var(--s-4);
+  border: 1px solid var(--control-border);
+  border-radius: var(--r-2);
+  background: var(--surface);
+  font-size: var(--t-md);
+  font-weight: 650;
 }
 
-/* ---- tender ---- */
-.tender-panel {
-  max-width: 520px;
+/* ─── TENDER + RECEIPT ───────────────────────────────────────────────────── */
+.tender-panel,
+.receipt-view {
+  max-width: 34rem;
   margin: 0 auto;
   display: flex;
   flex-direction: column;
-  gap: var(--gap);
-  border: 2px solid var(--line);
-  border-radius: 10px;
-  background: var(--card);
-  padding: 16px;
+  gap: var(--s-4);
+  padding: var(--s-5);
+  border: 1px solid var(--border);
+  border-radius: var(--r-3);
+  background: var(--surface);
+  box-shadow: var(--shadow-1);
+}
+.tender-due {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-1);
+  padding: var(--s-4);
+  border-radius: var(--r-2);
+  background: var(--brand-tint);
+  color: var(--brand-text);
+}
+.tender-due .total-value {
+  color: var(--text);
 }
 .tender-label {
-  font-weight: 600;
+  font-weight: 650;
 }
 .tender-input {
-  min-height: var(--tap-min);
-  font-size: 26px;
-  padding: 0 14px;
-  border: 2px solid var(--line);
-  border-radius: 10px;
-  font-variant-numeric: tabular-nums;
+  min-height: 64px;
+  padding: 0 var(--s-4);
+  font-size: var(--t-2xl);
+  font-weight: 700;
+  border: 1px solid var(--control-border);
+  border-radius: var(--r-2);
+  background: var(--surface);
 }
-.tender-exact {
-  min-height: var(--tap-min);
-  border: 2px solid var(--line);
-  border-radius: 10px;
-  background: #f0eee8;
-  font-size: 18px;
-  font-weight: 600;
+.tender-input:focus {
+  border-color: var(--brand);
+}
+.tender-hint {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--t-sm);
+}
+.tender-quick {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-2);
+}
+.tender-quick .chip {
+  flex: 1 1 30%;
+  justify-content: center;
+  display: flex;
+  align-items: center;
+  color: var(--text);
+  font-weight: 700;
+}
+.tender-change {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: var(--s-3);
+  padding: var(--s-4);
+  border-radius: var(--r-2);
+  background: var(--surface-2);
+}
+.tender-change.ready {
+  background: var(--ok-tint);
+  color: var(--ok-ink);
 }
 .tender-actions {
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: var(--gap);
+  grid-template-columns: 1fr;
+  gap: var(--s-3);
+}
+@media (min-width: 480px) {
+  .tender-actions {
+    grid-template-columns: auto 1fr;
+  }
 }
 
-/* ---- receipt ---- */
-.receipt-view {
-  max-width: 520px;
-  margin: 0 auto;
+.receipt-crest {
   display: flex;
-  flex-direction: column;
-  gap: var(--gap);
-  border: 2px solid var(--line);
-  border-radius: 10px;
-  background: var(--card);
-  padding: 16px;
+  align-items: center;
+  justify-content: center;
+  width: 64px;
+  height: 64px;
+  margin: 0 auto;
+  border-radius: var(--r-full);
+  background: var(--ok-tint);
+  color: var(--ok);
+  animation: pop var(--dur-3) var(--ease);
+}
+@keyframes pop {
+  from {
+    transform: scale(0.7);
+    opacity: 0;
+  }
 }
 .receipt-heading {
-  margin: 0;
-  font-size: 24px;
+  font-size: var(--t-xl);
+  text-align: center;
+}
+.receipt-number {
+  display: block;
+  margin-top: var(--s-1);
+  font-size: var(--t-3xl);
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  text-align: center;
+}
+.receipt-rows {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+  padding: var(--s-4);
+  border-radius: var(--r-2);
+  background: var(--surface-2);
 }
 
-/* ---- per-record sync badges (§8.5): text first, colour second ---- */
+/* ─── SYNC BADGES ────────────────────────────────────────────────────────── */
 .sync-badge {
-  display: inline-block;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-2);
   margin: 0;
-  padding: 6px 12px;
-  border-radius: 16px;
+  padding: var(--s-1) var(--s-3);
+  border-radius: var(--r-full);
+  border: 1px solid;
+  font-size: var(--t-xs);
   font-weight: 700;
-  font-size: 15px;
-  border: 2px solid;
+  white-space: nowrap;
 }
 .badge-pending {
-  color: var(--wait);
+  color: var(--wait-ink);
   border-color: var(--wait);
-  background: #f6efdc;
+  background: var(--wait-tint);
 }
 .badge-synced {
-  color: var(--ok);
+  color: var(--ok-ink);
   border-color: var(--ok);
-  background: #e2ede5;
+  background: var(--ok-tint);
 }
 .badge-attention {
-  color: var(--attn);
+  color: var(--attn-ink);
   border-color: var(--attn);
-  background: #f6e4d8;
+  background: var(--attn-tint);
 }
 
-/* ---- sales list ---- */
+/* ─── SALES LIST ─────────────────────────────────────────────────────────── */
 .sales-list {
   list-style: none;
   margin: 0;
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: var(--gap);
+  gap: var(--s-2);
 }
 .sales-row {
   display: grid;
-  grid-template-columns: 1fr auto auto auto;
-  gap: var(--gap);
+  grid-template-columns: 1fr auto;
+  gap: var(--s-1) var(--s-3);
   align-items: center;
-  min-height: var(--tap-min);
-  border: 2px solid var(--line);
-  border-radius: 10px;
-  background: var(--card);
-  padding: 8px 14px;
-  font-size: 17px;
+  padding: var(--s-3) var(--s-4);
+  border: 1px solid var(--border);
+  border-radius: var(--r-3);
+  background: var(--surface);
+  box-shadow: var(--shadow-1);
 }
 .sales-number {
   font-weight: 700;
 }
 .sales-total {
-  font-variant-numeric: tabular-nums;
+  font-size: var(--t-lg);
+  font-weight: 750;
+  text-align: right;
 }
-.sales-empty,
-.provisioning {
-  padding: 24px 16px;
+.sales-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  color: var(--text-muted);
+  font-size: var(--t-sm);
 }
 
-.money {
-  font-variant-numeric: tabular-nums;
-}
-
-/* ---- a refused sale is WORK, not a toast (§8.5) ----
-   Permanent until the cashier acts on it: the cart is still there, the sale
-   was not recorded, and a message that faded would leave someone believing it
-   was. Attention colour, full width, above everything on the counter. */
+/* ─── REFUSALS, NOTICES, GATES ───────────────────────────────────────────────
+   A refused sale is WORK, not a toast (§8.5): it stays until acted on, the
+   cart is still behind it, and nothing about it fades. */
 .sale-refused {
-  margin: 0 0 var(--gap);
-  padding: var(--gap);
-  border: 2px solid var(--attn);
-  border-radius: 8px;
-  background: var(--card);
-  color: var(--attn);
+  display: flex;
+  gap: var(--s-3);
+  margin: 0 0 var(--s-4);
+  padding: var(--s-4);
+  border: 1px solid var(--attn);
+  border-left-width: 4px;
+  border-radius: var(--r-2);
+  background: var(--attn-tint);
+  color: var(--attn-ink);
   font-weight: 600;
-  line-height: 1.4;
+  line-height: 1.5;
 }
-
-/* ---- device setup gate: a hard block, never a half-working till (§8.1) ----
-   Full screen, plain words, and the only actions offered are the ones the
-   session already permits. Text carries the meaning; colour reinforces it. */
-.device-gate {
-  padding: 24px 16px;
+.sale-refused .icon {
+  color: var(--attn);
+  margin-top: 2px;
+}
+/* A refusal that HAS a way out carries it, rather than describing one. */
+.sale-refused-body {
   display: flex;
   flex-direction: column;
-  gap: var(--gap);
+  align-items: flex-start;
+  gap: var(--s-3);
+}
+.sale-refused-body .secondary-action {
+  color: var(--attn-ink);
+  border-color: var(--attn);
+  background: var(--surface);
+}
+
+.device-notice {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  margin: 0;
+  padding: var(--s-3) var(--s-4);
+  background: var(--brand-tint);
+  color: var(--brand-text);
+  border-bottom: 1px solid var(--border);
+  font-size: var(--t-sm);
+  line-height: 1.45;
+}
+.device-notice span {
+  flex: 1;
+}
+.device-notice button {
+  min-height: var(--tap-min);
+  padding: 0 var(--s-3);
+  border: 1px solid var(--brand);
+  border-radius: var(--r-2);
+  background: var(--surface);
+  color: var(--brand-text);
+  font-weight: 700;
+}
+
+.device-gate {
+  min-height: 100vh;
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-4);
+  align-items: flex-start;
   max-width: 40rem;
+  margin: 0 auto;
+  padding: var(--s-7) var(--s-4) calc(var(--s-7) + env(safe-area-inset-bottom));
+}
+.gate-crest {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 56px;
+  height: 56px;
+  border-radius: var(--r-3);
+  background: var(--surface-2);
+  color: var(--text-muted);
+}
+.gate-crest.waiting {
+  background: var(--brand-tint);
+  color: var(--brand-text);
 }
 .device-gate h1 {
-  margin: 0;
-  font-size: 1.4rem;
+  font-size: var(--t-2xl);
 }
 .device-gate h2 {
-  margin: var(--gap) 0 0;
-  font-size: 1.1rem;
+  font-size: var(--t-lg);
+  margin-top: var(--s-2);
 }
 .device-gate-message {
   margin: 0;
-  padding: var(--gap);
-  border: 2px solid var(--attn);
-  border-radius: 8px;
-  background: var(--card);
-  color: var(--attn);
-  font-weight: 600;
-  line-height: 1.4;
+  max-width: 46ch;
+  color: var(--text-muted);
+  font-size: var(--t-lg);
+  line-height: 1.55;
 }
 .device-gate-choices {
   list-style: none;
   margin: 0;
   padding: 0;
+  width: 100%;
   display: flex;
   flex-direction: column;
-  gap: var(--gap);
+  gap: var(--s-3);
 }
 .device-gate-choice {
   width: 100%;
-  min-height: var(--tap-min);
-  padding: var(--gap);
+  min-height: var(--tap);
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: 4px;
-  border: 2px solid var(--line);
-  border-radius: 8px;
-  background: var(--card);
-  color: inherit;
-  font: inherit;
+  gap: var(--s-1);
+  padding: var(--s-4);
+  border: 1px solid var(--control-border);
+  border-radius: var(--r-3);
+  background: var(--surface);
+  box-shadow: var(--shadow-1);
   text-align: left;
 }
 .device-gate-choice:disabled {
-  opacity: 0.6;
+  opacity: 0.55;
+  cursor: progress;
 }
 .device-gate-choice-name {
+  font-size: var(--t-lg);
   font-weight: 700;
 }
 .device-gate-choice-code {
-  font-size: 0.9rem;
+  color: var(--text-muted);
+  font-size: var(--t-sm);
 }
-.device-gate-note,
-.device-gate-error {
+.device-gate-note {
   margin: 0;
-  line-height: 1.4;
+  max-width: 46ch;
+  color: var(--text-muted);
+  font-size: var(--t-sm);
+  line-height: 1.5;
 }
 .device-gate-error {
-  color: var(--attn);
-  font-weight: 600;
+  display: flex;
+  gap: var(--s-2);
+  margin: 0;
+  padding: var(--s-3);
+  border-radius: var(--r-2);
+  background: var(--attn-tint);
+  color: var(--attn-ink);
+  font-weight: 650;
 }
 
-/* ---- a device that was re-bound says so, above the counter, until read ---- */
-.device-notice {
-  margin: 0;
-  padding: var(--gap);
+/* A device with no configuration at all still gets a face, not a bare line. */
+.provisioning {
+  min-height: 100vh;
+  min-height: 100dvh;
   display: flex;
+  flex-direction: column;
   align-items: center;
-  gap: var(--gap);
-  border-bottom: 2px solid var(--line);
-  background: var(--card);
-  line-height: 1.4;
+  justify-content: center;
+  gap: var(--s-3);
+  padding: var(--s-6) var(--s-4);
+  text-align: center;
 }
-.device-notice button {
-  min-height: 44px;
-  padding: 0 var(--gap);
-  border: 2px solid var(--line);
-  border-radius: 8px;
-  background: var(--paper);
-  color: inherit;
-  font: inherit;
-  font-weight: 600;
+.provisioning h1 {
+  font-size: var(--t-xl);
+}
+.provisioning p {
+  max-width: 40ch;
+  margin: 0;
+  color: var(--text-muted);
+}
+
+/* ─── REDUCED MOTION ─────────────────────────────────────────────────────────
+   Not a courtesy: motion sensitivity is common, and every animation in here is
+   a nicety on top of something that already works without it. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+  .pressable:active:not(:disabled) {
+    transform: none;
+  }
+  /* The one thing that must still MOVE is the indeterminate progress line —
+     without it, "sending" and "stuck" look identical. Slowed, not stopped. */
+  .status-progress::after {
+    animation: indeterminate 2.4s linear infinite !important;
+    animation-duration: 2.4s !important;
+    animation-iteration-count: infinite !important;
+  }
 }

@@ -37,7 +37,7 @@ import { deterministicUuid } from '@erp/db';
 import { blockEnd, nextNumber, remaining } from '@erp/sequence';
 import type { Queryable } from '../db.js';
 import { runIdempotent, type JsonValue } from '../pipeline.js';
-import { assertLocationInScope, router, tenantProcedure } from '../trpc.js';
+import { assertLocationInScope, requiresPermission, router, tenantProcedure } from '../trpc.js';
 
 /** Conflict class #14 (03 §3.6, §3.7.5). */
 export const RECEIPT_REGRESSION_CLASS = 'SEQUENCE_CONSUMED_UPTO_REGRESSION';
@@ -56,6 +56,53 @@ export const SEVERITY_BLOCKING = 1;
  * grant is a review nobody sees.
  */
 export const SEQUENCE_REVIEW_PERMISSION = 'sync.conflict.review';
+
+/**
+ * WHAT `syncBlock` REQUIRES, AND WHY IT IS THIS CODE (02 §2.4; CLAUDE.md §2.6).
+ *
+ * This endpoint is a MUTATION with a human cost: it can burn the remainder of
+ * a live block, advance a counter that never rewinds, and open a severity-1
+ * review that a person must work. Until now it enforced location scope and no
+ * capability, so any valid tenant bearer at an in-scope location could do all
+ * three — including the back-office `accounts` principal granted at the tenant
+ * root, who never stands at a counter and has no business consuming a
+ * flagship's receipt numbers. That is the hole; this closes it.
+ *
+ * **The capability is `sale.record`, at the request's location.** A
+ * document-number block is not an end in itself — it is the stock of numbers a
+ * till spends printing the documents it is authorised to produce. The right to
+ * be handed one is therefore the right to produce them, and that right is
+ * already a catalogued capability held by exactly the principals who stand at
+ * a counter: counter staff, outlet manager, regional manager, head of
+ * operations. Nobody else, and no new grant, no new role, no migration.
+ *
+ * **It is NOT derived from `sequenceKey`, and that is not an oversight.**
+ * `sequence_key` is pack + tenant vocabulary with deliberately no platform
+ * enum and no CHECK list (migration 0006; the contract validates its SHAPE
+ * only). Branching authority on it would make the platform read a tenant's
+ * words — the same mistake `movementPermission` refuses when it reads
+ * `sourceKind` and not `reasonCode` (CLAUDE.md §2.9), and one a tenant could
+ * rename its way around. Every sequence a tenant configures today numbers
+ * documents a seller produces; if one ever numbers something else, the
+ * discriminator must be a PLATFORM-declared document kind on the counter row,
+ * not the tenant's string. Recorded here so that change is a decision rather
+ * than a discovery.
+ *
+ * **Why not mint `sequence.block.take`?** It would be the tidier code and it
+ * is the wrong trade today. A new code needs a `platform.permission` migration
+ * AND a template-seed edit, and until a tenant granted it, every till at every
+ * location would be refused a block — an authorisation change that takes the
+ * pilot's numbering offline is not a security improvement. `sale.record`
+ * already means precisely "may produce the documents this block numbers".
+ *
+ * **What this must never do is refuse a REPORT.** The guard narrows WHO, never
+ * WHEN. A device that has been wiped is at its most dangerous exactly when it
+ * reconnects, and locking it out of reporting would leave it trading on
+ * self-issued numbers with the server none the wiser — the failure this whole
+ * mechanism exists to detect. Every principal who can ring a sale on that
+ * device can report from it, so a till that is trading can always confess.
+ */
+const SYNC_BLOCK_PERMISSION = 'sale.record' as const;
 /** §3.6.2 escalate_only step 1 — the tenant-configured chain lands with the
  *  conflict_classes registry; until then the first step is 24h. */
 const FIRST_ESCALATION_HOURS = 24;
@@ -291,274 +338,282 @@ export const sequenceRouter = router({
    * Called on every reconnect. Goes through the ONE idempotent pipeline like
    * every other write, so a retried report is a no-op that replays its stored
    * answer rather than burning a second block.
+   *
+   * The requirement sits AFTER `.input()` so the location it checks comes from
+   * a payload zod has already validated: a malformed one is a BAD_REQUEST, not
+   * a FORBIDDEN that tells a till the wrong thing. See SYNC_BLOCK_PERMISSION
+   * above for why the capability is `sale.record` and not a code of its own.
    */
-  syncBlock: tenantProcedure.input(syncBlockInput).mutation(async ({ ctx, input }) => {
-    assertLocationInScope(ctx.identity, input.locationId);
-    const tenantId = ctx.identity.tenantId;
-    const deviceId = ctx.identity.deviceId;
+  syncBlock: tenantProcedure
+    .input(syncBlockInput)
+    .use(requiresPermission({ code: SYNC_BLOCK_PERMISSION, at: 'input' }))
+    .mutation(async ({ ctx, input }) => {
+      assertLocationInScope(ctx.identity, input.locationId);
+      const tenantId = ctx.identity.tenantId;
+      const deviceId = ctx.identity.deviceId;
 
-    const result = await runIdempotent(
-      { runner: ctx.deps.runner, clock: ctx.deps.clock },
-      ctx.identity,
-      {
-        op: 'sequence.sync_block',
-        idempotencyKey: input.idempotencyKey,
-        claimedHlc: input.claimedHlc,
-        clientWallAt: input.clientWallAt,
-        locationId: input.locationId,
-      },
-      input,
-      async (tx) => {
-        // The row lock §3.7.5 requires: allocation is serialised per
-        // (tenant, location, sequence_key), so two devices reconnecting at once
-        // cannot be handed the same range.
-        const counterRes = await tx.query<CounterRow>(
-          `select c.id, c.next_start::text, c.block_size, c.number_format, c.number_prefix,
-                  l.code as location_code
-             from app.sequence_counter c
-             join app.location l on l.tenant_id = c.tenant_id and l.id = c.location_id
-            where c.sequence_key = $1 and c.location_id = $2 and c.deleted_at is null
-            for update of c`,
-          [input.sequenceKey, input.locationId],
-        );
-        const counter = counterRes.rows[0];
-        if (!counter) {
-          // Fail closed. The numbering format is tenant data; the platform
-          // never invents one, in any jurisdiction (ADR-0007, §2.9).
-          throw new TRPCError({
-            code: 'PRECONDITION_FAILED',
-            message:
-              `no ${input.sequenceKey} sequence counter configured for this location — ` +
-              `numbering format is tenant configuration and has no platform default (03 §3.7.5)`,
-          });
-        }
-
-        const liveRes = await tx.query<BlockRow>(
-          `select id, block_start::text, block_size, consumed_upto::text
-             from app.sequence_block
-            where sequence_key = $1 and location_id = $2 and device_id = $3
-              and exhausted_at is null
-            for update`,
-          [input.sequenceKey, input.locationId, deviceId],
-        );
-        const liveRow = liveRes.rows[0];
-        const live: LiveBlock | null = liveRow
-          ? {
-              id: liveRow.id,
-              blockStart: BigInt(liveRow.block_start),
-              blockSize: liveRow.block_size,
-              consumedUpto: liveRow.consumed_upto === null ? null : BigInt(liveRow.consumed_upto),
-            }
-          : null;
-
-        // Blocks we already closed for this device: a device that keeps
-        // reporting a burned block must not reopen the same review each time.
-        const closedRes = await tx.query<{ block_start: string }>(
-          `select block_start::text from app.sequence_block
-            where sequence_key = $1 and location_id = $2 and device_id = $3
-              and exhausted_at is not null`,
-          [input.sequenceKey, input.locationId, deviceId],
-        );
-        const closedStarts = closedRes.rows.map((r) => BigInt(r.block_start));
-
-        const regression = detectRegression(live, input.report, closedStarts);
-
-        // ---- decide what happens to the incumbent block -------------------
-        let closeLive: { reason: string; burnedFrom: bigint; burnedTo: bigint } | null = null;
-        let recordConsumed: bigint | null = null;
-
-        if (live !== null) {
-          if (regression !== null) {
-            // Burn the remainder. A block is never reused, never returned and
-            // never reissued to a device that has been reset (§3.7.5).
-            closeLive = {
-              reason: 'REGRESSION_BURN',
-              burnedFrom: live.consumedUpto === null ? live.blockStart : live.consumedUpto + 1n,
-              burnedTo: blockEnd(live),
-            };
-          } else if (input.report !== null && input.report.blockStart === live.blockStart) {
-            // Normal reporting: the high-water mark only ever rises.
-            const reported = input.report.consumedUpto;
-            if (reported !== null && (live.consumedUpto === null || reported > live.consumedUpto)) {
-              recordConsumed = reported;
-            }
-            const effective = recordConsumed ?? live.consumedUpto;
-            if (nextNumber(live, effective) === null) {
-              closeLive = {
-                reason: 'EXHAUSTED',
-                burnedFrom: blockEnd(live) + 1n,
-                burnedTo: blockEnd(live),
-              };
-            }
+      const result = await runIdempotent(
+        { runner: ctx.deps.runner, clock: ctx.deps.clock },
+        ctx.identity,
+        {
+          op: 'sequence.sync_block',
+          idempotencyKey: input.idempotencyKey,
+          claimedHlc: input.claimedHlc,
+          clientWallAt: input.clientWallAt,
+          locationId: input.locationId,
+        },
+        input,
+        async (tx) => {
+          // The row lock §3.7.5 requires: allocation is serialised per
+          // (tenant, location, sequence_key), so two devices reconnecting at once
+          // cannot be handed the same range.
+          const counterRes = await tx.query<CounterRow>(
+            `select c.id, c.next_start::text, c.block_size, c.number_format, c.number_prefix,
+                    l.code as location_code
+               from app.sequence_counter c
+               join app.location l on l.tenant_id = c.tenant_id and l.id = c.location_id
+              where c.sequence_key = $1 and c.location_id = $2 and c.deleted_at is null
+              for update of c`,
+            [input.sequenceKey, input.locationId],
+          );
+          const counter = counterRes.rows[0];
+          if (!counter) {
+            // Fail closed. The numbering format is tenant data; the platform
+            // never invents one, in any jurisdiction (ADR-0007, §2.9).
+            throw new TRPCError({
+              code: 'PRECONDITION_FAILED',
+              message:
+                `no ${input.sequenceKey} sequence counter configured for this location — ` +
+                `numbering format is tenant configuration and has no platform default (03 §3.7.5)`,
+            });
           }
-        }
 
-        const liveSurvives = live !== null && closeLive === null;
-
-        // A replacement is issued only when the incumbent is gone. One live
-        // block per device is enforced by sequence_block_live_uq, so this is a
-        // structural invariant, not a convention.
-        const issueNew = (input.wantBlock || regression !== null) && !liveSurvives;
-        const newStart = BigInt(counter.next_start);
-        const newSize = counter.block_size;
-        const newBlockId = issueNew ? deterministicUuid(input.idempotencyKey, 'sequence_block') : null;
-        const reviewId = regression !== null ? deterministicUuid(input.idempotencyKey, 'conflict_review') : null;
-
-        const effectiveBlock = issueNew
-          ? { blockStart: newStart, blockSize: newSize, consumedUpto: null as bigint | null }
-          : liveSurvives && live !== null
+          const liveRes = await tx.query<BlockRow>(
+            `select id, block_start::text, block_size, consumed_upto::text
+               from app.sequence_block
+              where sequence_key = $1 and location_id = $2 and device_id = $3
+                and exhausted_at is null
+              for update`,
+            [input.sequenceKey, input.locationId, deviceId],
+          );
+          const liveRow = liveRes.rows[0];
+          const live: LiveBlock | null = liveRow
             ? {
-                blockStart: live.blockStart,
-                blockSize: live.blockSize,
-                consumedUpto: recordConsumed ?? live.consumedUpto,
+                id: liveRow.id,
+                blockStart: BigInt(liveRow.block_start),
+                blockSize: liveRow.block_size,
+                consumedUpto: liveRow.consumed_upto === null ? null : BigInt(liveRow.consumed_upto),
               }
             : null;
 
-        const response = {
-          status: regression === null ? 'ok' : 'regression',
-          sequenceKey: input.sequenceKey,
-          block:
-            effectiveBlock === null
-              ? null
-              : {
-                  blockStart: effectiveBlock.blockStart.toString(10),
-                  blockSize: effectiveBlock.blockSize,
-                  blockEnd: blockEnd(effectiveBlock).toString(10),
-                  nextNumber:
-                    nextNumber(effectiveBlock, effectiveBlock.consumedUpto)?.toString(10) ?? null,
-                  remaining: remaining(effectiveBlock, effectiveBlock.consumedUpto).toString(10),
-                },
-          format:
-            effectiveBlock === null
-              ? null
-              : {
-                  format: counter.number_format,
-                  prefix: counter.number_prefix,
-                  locationCode: counter.location_code,
-                },
-          burned:
-            closeLive === null || live === null
-              ? null
-              : {
-                  blockStart: live.blockStart.toString(10),
-                  blockEnd: blockEnd(live).toString(10),
-                  consumedUpto: live.consumedUpto?.toString(10) ?? null,
-                  burnedFrom: closeLive.burnedFrom.toString(10),
-                  burnedTo: closeLive.burnedTo.toString(10),
-                  reason: closeLive.reason,
-                },
-          review:
-            regression === null || reviewId === null
-              ? null
-              : {
-                  id: reviewId,
+          // Blocks we already closed for this device: a device that keeps
+          // reporting a burned block must not reopen the same review each time.
+          const closedRes = await tx.query<{ block_start: string }>(
+            `select block_start::text from app.sequence_block
+              where sequence_key = $1 and location_id = $2 and device_id = $3
+                and exhausted_at is not null`,
+            [input.sequenceKey, input.locationId, deviceId],
+          );
+          const closedStarts = closedRes.rows.map((r) => BigInt(r.block_start));
+
+          const regression = detectRegression(live, input.report, closedStarts);
+
+          // ---- decide what happens to the incumbent block -------------------
+          let closeLive: { reason: string; burnedFrom: bigint; burnedTo: bigint } | null = null;
+          let recordConsumed: bigint | null = null;
+
+          if (live !== null) {
+            if (regression !== null) {
+              // Burn the remainder. A block is never reused, never returned and
+              // never reissued to a device that has been reset (§3.7.5).
+              closeLive = {
+                reason: 'REGRESSION_BURN',
+                burnedFrom: live.consumedUpto === null ? live.blockStart : live.consumedUpto + 1n,
+                burnedTo: blockEnd(live),
+              };
+            } else if (input.report !== null && input.report.blockStart === live.blockStart) {
+              // Normal reporting: the high-water mark only ever rises.
+              const reported = input.report.consumedUpto;
+              if (reported !== null && (live.consumedUpto === null || reported > live.consumedUpto)) {
+                recordConsumed = reported;
+              }
+              const effective = recordConsumed ?? live.consumedUpto;
+              if (nextNumber(live, effective) === null) {
+                closeLive = {
+                  reason: 'EXHAUSTED',
+                  burnedFrom: blockEnd(live) + 1n,
+                  burnedTo: blockEnd(live),
+                };
+              }
+            }
+          }
+
+          const liveSurvives = live !== null && closeLive === null;
+
+          // A replacement is issued only when the incumbent is gone. One live
+          // block per device is enforced by sequence_block_live_uq, so this is a
+          // structural invariant, not a convention.
+          const issueNew = (input.wantBlock || regression !== null) && !liveSurvives;
+          const newStart = BigInt(counter.next_start);
+          const newSize = counter.block_size;
+          const newBlockId = issueNew ? deterministicUuid(input.idempotencyKey, 'sequence_block') : null;
+          const reviewId = regression !== null ? deterministicUuid(input.idempotencyKey, 'conflict_review') : null;
+
+          const effectiveBlock = issueNew
+            ? { blockStart: newStart, blockSize: newSize, consumedUpto: null as bigint | null }
+            : liveSurvives && live !== null
+              ? {
+                  blockStart: live.blockStart,
+                  blockSize: live.blockSize,
+                  consumedUpto: recordConsumed ?? live.consumedUpto,
+                }
+              : null;
+
+          const response = {
+            status: regression === null ? 'ok' : 'regression',
+            sequenceKey: input.sequenceKey,
+            block:
+              effectiveBlock === null
+                ? null
+                : {
+                    blockStart: effectiveBlock.blockStart.toString(10),
+                    blockSize: effectiveBlock.blockSize,
+                    blockEnd: blockEnd(effectiveBlock).toString(10),
+                    nextNumber:
+                      nextNumber(effectiveBlock, effectiveBlock.consumedUpto)?.toString(10) ?? null,
+                    remaining: remaining(effectiveBlock, effectiveBlock.consumedUpto).toString(10),
+                  },
+            format:
+              effectiveBlock === null
+                ? null
+                : {
+                    format: counter.number_format,
+                    prefix: counter.number_prefix,
+                    locationCode: counter.location_code,
+                  },
+            burned:
+              closeLive === null || live === null
+                ? null
+                : {
+                    blockStart: live.blockStart.toString(10),
+                    blockEnd: blockEnd(live).toString(10),
+                    consumedUpto: live.consumedUpto?.toString(10) ?? null,
+                    burnedFrom: closeLive.burnedFrom.toString(10),
+                    burnedTo: closeLive.burnedTo.toString(10),
+                    reason: closeLive.reason,
+                  },
+            review:
+              regression === null || reviewId === null
+                ? null
+                : {
+                    id: reviewId,
+                    conflictClass: RECEIPT_REGRESSION_CLASS,
+                    severity: SEVERITY_BLOCKING,
+                    kind: regression.kind,
+                    overlapFrom: regression.overlapFrom.toString(10),
+                    overlapTo: regression.overlapTo.toString(10),
+                  },
+          } satisfies JsonValue & Record<string, unknown>;
+
+          return {
+            response,
+            apply: async (atx: Queryable): Promise<void> => {
+              const hlc = ctx.deps.clock.next();
+
+              if (recordConsumed !== null && live !== null) {
+                await atx.query(
+                  `update app.sequence_block
+                      set consumed_upto = $1, reported_at = transaction_timestamp(),
+                          updated_at = transaction_timestamp()
+                    where id = $2`,
+                  [recordConsumed.toString(10), live.id],
+                );
+              }
+              if (closeLive !== null && live !== null) {
+                await atx.query(
+                  `update app.sequence_block
+                      set exhausted_at = transaction_timestamp(), closed_reason = $1,
+                          updated_at = transaction_timestamp()
+                    where id = $2`,
+                  [closeLive.reason, live.id],
+                );
+              }
+              if (issueNew && newBlockId !== null) {
+                await atx.query(
+                  `insert into app.sequence_block
+                     (tenant_id, id, write_id, hlc, sequence_key, location_id, device_id,
+                      block_start, block_size)
+                   values ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+                  [
+                    tenantId,
+                    newBlockId,
+                    input.idempotencyKey,
+                    hlc,
+                    input.sequenceKey,
+                    input.locationId,
+                    deviceId,
+                    newStart.toString(10),
+                    newSize,
+                  ],
+                );
+                await atx.query(
+                  `update app.sequence_counter
+                      set next_start = $1, updated_at = transaction_timestamp()
+                    where id = $2`,
+                  [(newStart + BigInt(newSize)).toString(10), counter.id],
+                );
+              }
+              if (regression !== null && reviewId !== null) {
+                await openConflictReview(atx, {
+                  tenantId,
+                  writeId: input.idempotencyKey,
+                  hlc,
+                  reviewId,
                   conflictClass: RECEIPT_REGRESSION_CLASS,
                   severity: SEVERITY_BLOCKING,
-                  kind: regression.kind,
-                  overlapFrom: regression.overlapFrom.toString(10),
-                  overlapTo: regression.overlapTo.toString(10),
-                },
-        } satisfies JsonValue & Record<string, unknown>;
-
-        return {
-          response,
-          apply: async (atx: Queryable): Promise<void> => {
-            const hlc = ctx.deps.clock.next();
-
-            if (recordConsumed !== null && live !== null) {
-              await atx.query(
-                `update app.sequence_block
-                    set consumed_upto = $1, reported_at = transaction_timestamp(),
-                        updated_at = transaction_timestamp()
-                  where id = $2`,
-                [recordConsumed.toString(10), live.id],
-              );
-            }
-            if (closeLive !== null && live !== null) {
-              await atx.query(
-                `update app.sequence_block
-                    set exhausted_at = transaction_timestamp(), closed_reason = $1,
-                        updated_at = transaction_timestamp()
-                  where id = $2`,
-                [closeLive.reason, live.id],
-              );
-            }
-            if (issueNew && newBlockId !== null) {
-              await atx.query(
-                `insert into app.sequence_block
-                   (tenant_id, id, write_id, hlc, sequence_key, location_id, device_id,
-                    block_start, block_size)
-                 values ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-                [
-                  tenantId,
-                  newBlockId,
-                  input.idempotencyKey,
-                  hlc,
-                  input.sequenceKey,
-                  input.locationId,
-                  deviceId,
-                  newStart.toString(10),
-                  newSize,
-                ],
-              );
-              await atx.query(
-                `update app.sequence_counter
-                    set next_start = $1, updated_at = transaction_timestamp()
-                  where id = $2`,
-                [(newStart + BigInt(newSize)).toString(10), counter.id],
-              );
-            }
-            if (regression !== null && reviewId !== null) {
-              await openConflictReview(atx, {
-                tenantId,
-                writeId: input.idempotencyKey,
-                hlc,
-                reviewId,
-                conflictClass: RECEIPT_REGRESSION_CLASS,
-                severity: SEVERITY_BLOCKING,
-                entityTable: 'app.sequence_block',
-                entityId: live?.id ?? newBlockId!,
-                fieldPath: 'consumed_upto',
-                proposals: [
-                  {
-                    party: 'server',
-                    detail: 'last consumption this server recorded for the block',
-                    sequenceKey: input.sequenceKey,
-                    blockStart: live?.blockStart.toString(10) ?? null,
-                    consumedUpto: live?.consumedUpto?.toString(10) ?? null,
+                  entityTable: 'app.sequence_block',
+                  entityId: live?.id ?? newBlockId!,
+                  fieldPath: 'consumed_upto',
+                  proposals: [
+                    {
+                      party: 'server',
+                      detail: 'last consumption this server recorded for the block',
+                      sequenceKey: input.sequenceKey,
+                      blockStart: live?.blockStart.toString(10) ?? null,
+                      consumedUpto: live?.consumedUpto?.toString(10) ?? null,
+                    },
+                    {
+                      party: 'device',
+                      detail: 'what the device reported on reconnect',
+                      deviceId,
+                      userId: ctx.identity.userId,
+                      locationId: input.locationId,
+                      claimedHlc: input.claimedHlc ?? null,
+                      blockStart: regression.reportedBlockStart?.toString(10) ?? null,
+                      consumedUpto: regression.reportedConsumedUpto?.toString(10) ?? null,
+                    },
+                  ],
+                  pendingState: 'safe_default',
+                  pendingValue: {
+                    kind: regression.kind,
+                    // The numbers a human must chase: these may be printed twice.
+                    overlapFrom: regression.overlapFrom.toString(10),
+                    overlapTo: regression.overlapTo.toString(10),
+                    burnedBlockStart: live?.blockStart.toString(10) ?? null,
+                    replacementBlockStart: issueNew ? newStart.toString(10) : null,
+                    note:
+                      'The block was burned and a fresh one issued. Every receipt in the ' +
+                      'overlap range may exist twice — reconcile the printed copies before closing.',
                   },
-                  {
-                    party: 'device',
-                    detail: 'what the device reported on reconnect',
-                    deviceId,
-                    userId: ctx.identity.userId,
-                    locationId: input.locationId,
-                    claimedHlc: input.claimedHlc ?? null,
-                    blockStart: regression.reportedBlockStart?.toString(10) ?? null,
-                    consumedUpto: regression.reportedConsumedUpto?.toString(10) ?? null,
-                  },
-                ],
-                pendingState: 'safe_default',
-                pendingValue: {
-                  kind: regression.kind,
-                  // The numbers a human must chase: these may be printed twice.
-                  overlapFrom: regression.overlapFrom.toString(10),
-                  overlapTo: regression.overlapTo.toString(10),
-                  burnedBlockStart: live?.blockStart.toString(10) ?? null,
-                  replacementBlockStart: issueNew ? newStart.toString(10) : null,
-                  note:
-                    'The block was burned and a fresh one issued. Every receipt in the ' +
-                    'overlap range may exist twice — reconcile the printed copies before closing.',
-                },
-                requiredPermission: SEQUENCE_REVIEW_PERMISSION,
-                locationIds: [input.locationId],
-              });
-            }
-          },
-        };
-      },
-    );
+                  requiredPermission: SEQUENCE_REVIEW_PERMISSION,
+                  locationIds: [input.locationId],
+                });
+              }
+            },
+          };
+        },
+      );
 
-    return result.response;
-  }),
+      return result.response;
+    }),
 });

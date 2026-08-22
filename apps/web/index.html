@@ -3,7 +3,11 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-    <meta name="theme-color" content="#20242b" />
+    <!-- The bar the OS paints around the app follows the device's scheme, so
+         the chrome and the app agree in both (app.css defines the same pair). -->
+    <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#151b23" media="(prefers-color-scheme: dark)" />
+    <meta name="color-scheme" content="light dark" />
     <link rel="icon" href="/icon.svg" type="image/svg+xml" />
     <title>Counter</title>
   </head>

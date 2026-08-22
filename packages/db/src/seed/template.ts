@@ -556,3 +556,142 @@ export async function applySequenceCounters(tx: Queryable, tenantId: string): Pr
   );
   return outlets.rows.length;
 }
+
+/**
+ * Low-stock thresholds for the SKUs a location DEMONSTRABLY CARRIES
+ * (migration 0007).
+ *
+ * ---------------------------------------------------------------------------
+ * WHY THIS DOES NOT SEED A ROW PER (LOCATION × CATALOGUE)
+ * ---------------------------------------------------------------------------
+ * 25 locations × 219 SKUs is 5,475 thresholds nobody chose. Every one of them
+ * would be breached on the morning of 1 August 2026, because on-hand is zero
+ * until the opening stock is loaded — so the pilot's first low-stock screen
+ * would be five thousand rows long and would be ignored forever after. An
+ * alert list that is always full is not an alert list.
+ *
+ * So the rule is: a threshold exists where the LEDGER already shows the
+ * location holding the product. Run this after the opening balances land
+ * (`provisioning.ensureReorderPoints`, or a second applyTemplate) and it seeds
+ * exactly the SKUs that location carries, at a level derived from what it
+ * actually opened with. Run it at onboarding, before any stock exists, and it
+ * correctly seeds nothing.
+ *
+ * ---------------------------------------------------------------------------
+ * THE LEVEL, AND ITS HONEST PROVENANCE
+ * ---------------------------------------------------------------------------
+ * A reorder point is properly expected demand over the supplier lead time.
+ * This system has neither demand history nor lead times on the day a tenant
+ * is onboarded — Phase 2 brings suppliers and lead times, and demand needs
+ * trading days to exist at all. So the seed uses the one quantity that IS
+ * observable: what the location opened with, at REORDER_FRACTION_BP of it,
+ * never below one whole stocking unit.
+ *
+ * That fraction is an ARBITRARY STARTING POINT chosen by the template author,
+ * exactly like the assumed 100 m roll in skus.ts, and it is flagged the same
+ * way — the applier returns `needsFounderReview` so onboarding can put the
+ * list in front of a human rather than let a guessed number look authoritative.
+ * It is NOT a computed reorder point and nothing in the platform treats it as
+ * one; it is a row the tenant edits (`inventory.setReorderPoint`).
+ *
+ * Idempotent and additive, like every other module here: the unique index on
+ * (tenant, location, product) is the conflict target, so a threshold the
+ * tenant has since tuned is NEVER overwritten and a SKU that arrives later
+ * gets its row on the next run.
+ */
+export const REORDER_FRACTION_BP = 2500; // 25% of opening stock. Founder tunes.
+
+export interface ApplyReorderPointsResult {
+  /** Rows inserted by this run. Zero on a re-run, and zero before stock exists. */
+  seeded: number;
+  /**
+   * True whenever anything was seeded: the level is a template guess, not a
+   * computed figure, and onboarding must show it to a human (§4.16 pattern).
+   */
+  needsFounderReview: boolean;
+}
+
+export async function applyReorderPoints(
+  tx: Queryable,
+  tenantId: string,
+  opts: { locationId?: string } = {},
+): Promise<ApplyReorderPointsResult> {
+  // Candidates: stock-tracked products with a POSITIVE derived balance at a
+  // selling or stock-holding location, that have no live threshold yet.
+  //
+  // qty_on_hand comes from app.stock_on_hand — SUM over the append-only
+  // ledger, never a counter (CLAUDE.md §2.2) — and the unit comes from the
+  // product's STOCKING unit, which is the only denomination the ledger and
+  // therefore the threshold may be in (04 §4.4.3).
+  const candidates = await tx.query<{
+    location_id: string;
+    location_code: string;
+    product_id: string;
+    sku_code: string;
+    uom_id: string;
+    qty_scale: number;
+    qty_on_hand: string;
+  }>(
+    `select l.id      as location_id,
+            l.code    as location_code,
+            p.id      as product_id,
+            p.sku_code,
+            p.stocking_uom_id as uom_id,
+            u.qty_scale,
+            soh.qty_on_hand::text
+       from app.stock_on_hand soh
+       join app.location l
+         on l.tenant_id = soh.tenant_id and l.id = soh.location_id
+        and l.deleted_at is null and l.kind in ('OUTLET', 'WAREHOUSE')
+       join app.product p
+         on p.tenant_id = soh.tenant_id and p.id = soh.product_id
+        and p.deleted_at is null and p.stock_tracking = 'STOCKED'
+       join app.unit_of_measure u
+         on u.tenant_id = p.tenant_id and u.id = p.stocking_uom_id
+      where soh.qty_on_hand > 0
+        and ($1::uuid is null or l.id = $1::uuid)
+        and not exists (
+          select 1 from app.reorder_point rp
+           where rp.tenant_id = soh.tenant_id
+             and rp.location_id = soh.location_id
+             and rp.product_id = soh.product_id
+             and rp.deleted_at is null
+        )
+      order by l.code, p.sku_code`,
+    [opts.locationId ?? null],
+  );
+  if (candidates.rows.length === 0) return { seeded: 0, needsFounderReview: false };
+
+  const writeId = await moduleWrite(tx, tenantId, 'reorder_points');
+  const cols = ['tenant_id', 'id', 'write_id', 'hlc', 'location_id', 'product_id', 'uom_id',
+    'qty_scale', 'reorder_point_qty', 'reorder_up_to_qty', 'is_active', 'notes',
+    'origin_template_id', 'origin_ref'];
+
+  const rows = candidates.rows.map((c) => {
+    const ref = `reorderpoint:${c.location_code}:${c.sku_code}`;
+    // bigint throughout: an opening balance of 400 tonnes at scale 3 is
+    // 400_000_000 scaled units and a float64 would already be lying about
+    // larger ones (ADR-0004).
+    const onHand = BigInt(c.qty_on_hand);
+    const scaled = (onHand * BigInt(REORDER_FRACTION_BP)) / 10_000n; // truncating: a LOWER threshold
+    const point = scaled > 0n ? scaled : 1n;
+    return [
+      tenantId,
+      rowId(tenantId, ref),
+      writeId,
+      hlcClock.next(),
+      c.location_id,
+      c.product_id,
+      c.uom_id,           // the stocking unit; the 0007 trigger refuses anything else
+      c.qty_scale,
+      point.toString(10),
+      onHand.toString(10), // order back up to what the location opened with
+      true,
+      `[NEEDS-FOUNDER: seeded at ${REORDER_FRACTION_BP / 100}% of opening stock — no demand history or lead time exists yet]`,
+      TEMPLATE_ID,
+      ref,
+    ];
+  });
+  await batchInsert(tx, 'app.reorder_point', cols, rows);
+  return { seeded: rows.length, needsFounderReview: true };
+}

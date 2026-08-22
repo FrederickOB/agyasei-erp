@@ -28,6 +28,7 @@ import { describe, expect, it } from 'vitest';
 import type { LocalDb } from '../src/data/db';
 import { addProductToCart, createCart } from '../src/data/mutations/cart';
 import { checkout, SaleContextIncompleteError } from '../src/data/mutations/checkout';
+import { getCartLines } from '../src/data/queries/cart';
 import { loadActiveProducts } from '../src/data/queries/products';
 import {
   CONFIG_KEY_LOCATION_CODE,
@@ -37,11 +38,13 @@ import {
 } from '../src/data/queries/session';
 import { seedDevDataIfEmpty } from '../src/data/seed';
 import {
+  blocksSale,
   blocksSales,
   chooseDevicePriceList,
   PriceListChoiceNotOfferedError,
   readPriceListCandidates,
   reconcileDevicePriceList,
+  resolveCartPriceList,
 } from '../src/data/session/device-price-list';
 import { readPendingOps } from '../src/data/sync/upload';
 import { uuidv7 } from '../src/lib/uuidv7';
@@ -413,8 +416,8 @@ describe('the dev seed’s placeholder list', () => {
     // Nothing is even OFFERED: the counter's catalogue is priced from the
     // device's own list, so with no list there is no shelf to ring from.
     expect(await loadActiveProducts(db, NOW)).toEqual([]);
-    // And the refusal still stands one layer down, for a cart held from
-    // before the list was cleared — the counter, not the API hours later.
+    // And a cart minted AFTER the clear carries no list, so checkout refuses
+    // at the counter rather than the API refusing hours later.
     const product = await seedProduct(db, {
       code: 'P-1',
       name: 'A product',
@@ -425,6 +428,42 @@ describe('the dev seed’s placeholder list', () => {
     await expect(
       checkout(db, { cartId, tenderedMinor: 100_000_000n, hlc: fixedHlc(), nowIso: NOW }),
     ).rejects.toBeInstanceOf(SaleContextIncompleteError);
+  });
+
+  it('also refuses a cart that was already OPEN when the list was cleared', async () => {
+    // The case the test above was described as covering and did not: it minted
+    // its cart after reconciliation, so what it proved was "a cart created
+    // with no list has no list". The dangerous cart is the one that was
+    // already open, holding a pin to a row that has since gone — because
+    // nothing reconciles a cart, and only a completed sale deletes one.
+    const db = openTestDb();
+    await seedDevDataIfEmpty(db);
+    await provisionLocation(db);
+    const seeded = await readActivePriceListId(db);
+    if (seeded === null) throw new Error('the dev seed provisions a placeholder list');
+
+    const product = await seedProduct(db, {
+      code: 'P-1',
+      name: 'A product',
+      unitPriceE4: 620_000_000n,
+      priceListId: seeded,
+    });
+    const cartId = await createCart(db, { nowIso: NOW });
+    await addProductToCart(db, cartId, product);
+    // Now the device reconciles onto the tenant's configuration, and the
+    // placeholder the cart is pinned to stops being sellable.
+    await db.execute('DELETE FROM price_list WHERE id = ?', [seeded]);
+    const state = await reconcileDevicePriceList(db, devBearer([uuidv7()]), NOW);
+    expect(state.status).toBe('awaiting-config');
+
+    // The cart it left behind is refused, with its lines intact...
+    await expect(
+      checkout(db, { cartId, tenderedMinor: 100_000_000n, hlc: fixedHlc(), nowIso: NOW }),
+    ).rejects.toBeInstanceOf(SaleContextIncompleteError);
+    expect(await getCartLines(db, cartId)).toHaveLength(1);
+    // ...and the counter can say why, rather than only refusing.
+    const verdict = await resolveCartPriceList(db, seeded, NOW);
+    expect(blocksSale(verdict)).toBe(true);
   });
 
   it('does not stop the seed being idempotent', async () => {
