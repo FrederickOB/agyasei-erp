@@ -326,15 +326,23 @@ describe('THE TWO HARD PROHIBITIONS (brief; 02 §2.4)', () => {
   /**
    * PRICE OVERRIDE.
    *
-   * `apps/api/src/routers/sales.ts` is owned by another session as this is
-   * written, so the guard call cannot be placed in it here. These assertions
-   * are therefore against the decision the guard makes — the same
+   * There is no override PATH to drive, and therefore no route to refuse:
+   * `createSale` never accepts a price (`@erp/contracts` — the client sends
+   * what was sold, the server reprices), and no `setUnitPrice` endpoint
+   * exists. So the prohibition holds STRUCTURALLY today, and these assertions
+   * are against the decision the guard would make — the same
    * `loadPermissionState()` the middleware calls, resolved from the same
-   * database rows, at the same location — so the moment the two-line patch
-   * lands in sales.ts the behaviour is already proven. See the follow-up
-   * patch in this task's summary.
+   * database rows, at the same location. The day an override field is added,
+   * it must be wired to `sale.override_price` and this block must grow a
+   * route-level test; that is the one place a future change silently breaks
+   * a guarantee that currently costs nothing.
+   *
+   * The OTHER half of the sale path — the tender capability and the credit
+   * BOUND — is no longer hypothetical: `sales.createSale` is guarded and
+   * `apps/api/test/sales-rbac.test.ts` drives it through the real router and
+   * through `POST /sync/upload`.
    */
-  describe('price override (guard proven here; sales.ts wiring is the follow-up)', () => {
+  describe('price override (no path exists to guard; the decision is proven here)', () => {
     it('counter staff hold no price-override capability at their own counter', async () => {
       const state = await loadPermissionState({ deps: h.deps, identity: p('counter_staff').identity });
       expect(state.holdsAt('sale.override_price', outletA)).toBe(false);

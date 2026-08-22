@@ -57,6 +57,7 @@ export const PERMISSION_CODES = [
   'stock.transfer.receive',
   'stock.receive',
   'stock.count.perform',
+  'stock.reorder.manage',
 
   'catalogue.view',
   'catalogue.manage',

@@ -226,9 +226,20 @@ beforeAll(async () => {
     qtyScale: picked.qtyScale,
   };
   await h.seedWholesalePrice(tenantId, product.id, SERVER_UNIT_PRICE_E4);
+
+  // A TOKEN IS NOT AUTHORITY. `sales.createSale` resolves the caller's
+  // capability from `app.effective_permission` on every request, so this uid
+  // needs a real role assignment or every sale below is a FORBIDDEN that
+  // says nothing about the wire contract this file exists to test. The grant
+  // is deliberately BREADTH — who may do what is proven in
+  // `apps/api/test/sales-rbac.test.ts` and `apps/api/test/rbac.test.ts`,
+  // where an authorisation refusal is the subject rather than noise. Same
+  // reasoning, same shape as `sequence-client-to-api.test.ts`.
+  const uid = '018f3a1e-0000-7000-8000-0000000000aa';
+  await h.grantOwner(tenantId, uid);
   bearer = await signDevToken(JWT_SECRET, {
     tid: tenantId,
-    uid: '018f3a1e-0000-7000-8000-0000000000aa',
+    uid,
     role: 'outlet-manager',
     locs: [outlet.id],
   });

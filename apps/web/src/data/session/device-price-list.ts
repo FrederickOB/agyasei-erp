@@ -400,6 +400,154 @@ export async function reconcileDevicePriceList(
   return state('ambiguous', null, ambiguousMessage(tied), { choices: tied, replaced: stored });
 }
 
+// ---------------------------------------------------------------------------
+// The CART's price list — the same question, asked of a sale in progress
+// ---------------------------------------------------------------------------
+
+/**
+ * Can the cart in front of the cashier actually be sold?
+ *
+ * ═══════════════════════════════════════════════════════════════════════════
+ * WHY A CART NEEDS ITS OWN ANSWER, AND WHAT WENT WRONG WITHOUT ONE.
+ * ═══════════════════════════════════════════════════════════════════════════
+ * A cart pins its price list ONCE, when it is created (mutations/cart.ts), and
+ * nothing ever revisited that pin. Reconciliation above repairs `local_config`
+ * — the list the NEXT cart will be created with — and deliberately does not
+ * touch a cart that is already open. That left two ways to wedge a till, and
+ * both of them happened:
+ *
+ *   1. THE PIN NAMES A ROW THAT IS GONE. A device healing itself drops its
+ *      synced tables and keeps its local-only ones, so that an unsent sale in
+ *      the outbox survives (data/powersync.ts). `price_list` is synced; `cart`
+ *      is not. The cart outlived the row it pointed at, `resolvePriceListCode`
+ *      returned null, and checkout refused — forever, because the ONLY thing
+ *      that deletes a cart is a successful sale. Every retry refused, no new
+ *      cart was ever minted, and emptying the lines changed nothing. The only
+ *      escape was clearing the device's storage.
+ *   2. THE PIN NAMES A ROW THAT NO LONGER APPLIES. A list that lapsed
+ *      overnight still RESOLVES — the row is right there — so the code went up
+ *      the wire and the API refused the sale hours later (`no price list X in
+ *      force`). That is the recorded-then-rejected failure this whole module
+ *      exists to prevent, arriving through the one door it was not watching.
+ *
+ * So the cart is now asked the same question the device is: not "does this id
+ * match a row" but "is this a list this counter may sell from today". The
+ * predicate is not rewritten here — `readPriceListCandidates` above already
+ * carries it, and a second copy of a rule about effective windows is a second
+ * thing to get wrong.
+ *
+ * TWO THINGS A LATER READER WILL WANT TO "FIX" BACK. Neither is a mistake:
+ *
+ *   · THIS IS STRICTER THAN THE SERVER, deliberately. `sales.createSale`
+ *     matches a list on code and effective window only — it has no location
+ *     predicate — so a list scoped to another outlet would be ACCEPTED there
+ *     and is refused here. That is the counter's policy, the same one the
+ *     device gate applies: a list the tenant scoped to another outlet is not
+ *     one this counter should be charging from. Dropping the location clause
+ *     to reach parity would also mean not reusing `readPriceListCandidates`,
+ *     and then there would be two copies of the effective-window rule.
+ *   · THE VERDICT IS DATE-DERIVED, and midnight is not a row change, so a
+ *     cart left untouched across a day boundary is not re-judged on its own.
+ *     It does not need to be: every line added, removed or re-quantified
+ *     re-derives it, so the counter can never show an enabled "Take payment"
+ *     on a cart that was unsellable as of the last thing anyone did to it —
+ *     and the remaining sliver (midnight falling between the last tap and the
+ *     tender tap) is caught inside checkout's own transaction, which is why
+ *     that check stays even though the UI now blocks first. A ticker here
+ *     would burn a wake-up every second on a device that trades on battery.
+ *
+ * LOCAL-ONLY MODE MUST NOT REGRESS, and the test for it is the row itself.
+ * `readPriceListCandidates` only considers rows with a `tenant_id`, which the
+ * dev seed's placeholder deliberately lacks — that absence is what makes it
+ * local-only (see the header). Judging a placeholder against tenant
+ * configuration it was never part of would make the offline rehearsal
+ * permanently unsellable. So a pinned row WITHOUT a tenant_id is left exactly
+ * as it was: it resolves, it sells, nothing else is asked of it. No bearer
+ * token is consulted, because the question is about the row, not the session.
+ */
+export type CartPriceListStatus =
+  /** The list is this counter's to sell from, today. */
+  | 'sellable'
+  /** The pinned id names no row on this device — or a row with no code. */
+  | 'unrecognised'
+  /** A real row, but not one this counter is offered on this trading day. */
+  | 'not-offered';
+
+export interface CartPriceListState {
+  readonly status: CartPriceListStatus;
+  /** The tenant's own code for the list — what goes on the wire. */
+  readonly code: string | null;
+  /** One sentence a counter can act on, or `null` when nothing is wrong. */
+  readonly message: string | null;
+}
+
+/**
+ * Both refusals name the FIX, not just the fault. The message they replaced —
+ * "The price list for this sale is not recognised on this device." — was true
+ * and left the person holding the cash with nowhere to go.
+ */
+const CART_UNRECOGNISED_MESSAGE =
+  'This cart cannot be sold: the price list it was rung against is not one this device has. ' +
+  'Start a fresh cart and ring the items again.';
+
+const CART_NOT_OFFERED_MESSAGE =
+  'This cart cannot be sold: it was rung against a price list this counter does not sell from ' +
+  'today. Start a fresh cart and ring the items again.';
+
+export async function resolveCartPriceList(
+  db: DbExecutor,
+  priceListId: string | null,
+  nowIso: string = new Date().toISOString(),
+  businessDateOverride?: string,
+): Promise<CartPriceListState> {
+  if (priceListId === null || priceListId.length === 0) {
+    return { status: 'unrecognised', code: null, message: CART_UNRECOGNISED_MESSAGE };
+  }
+
+  const rows = await db.getAll('SELECT code, tenant_id FROM price_list WHERE id = ? LIMIT 1', [
+    priceListId,
+  ]);
+  const row = rows[0];
+  const code = row === undefined ? null : row['code'];
+  if (typeof code !== 'string' || code.length === 0) {
+    return { status: 'unrecognised', code: null, message: CART_UNRECOGNISED_MESSAGE };
+  }
+
+  // A row this device made up rather than received. See the header: this is
+  // local-only mode's list, and it is judged by nothing but its own existence.
+  if (row?.['tenant_id'] === null || row?.['tenant_id'] === undefined) {
+    return { status: 'sellable', code, message: null };
+  }
+
+  const location = await readDeviceLocation(db);
+  if (location === null) {
+    // "Which list applies HERE" has no answer without a here. The location
+    // gate owns that failure and checkout refuses on it first, so raising a
+    // second, competing refusal would only bury the one that can be acted on.
+    return { status: 'sellable', code, message: null };
+  }
+
+  const businessDate = businessDateOverride ?? businessDateFor(nowIso, location.timeZone);
+  const candidates = await readPriceListCandidates(db, location.id, businessDate);
+  const held = candidates.find((c) => c.id === priceListId);
+  if (held === undefined) {
+    return { status: 'not-offered', code: null, message: CART_NOT_OFFERED_MESSAGE };
+  }
+  // Offered, genuinely configured, and still not rungable. `is_tax_inclusive`
+  // is a synced column and can change under a cart that is already open — the
+  // gate refuses to BIND such a list and the API refuses to PRICE one, and a
+  // pinned cart was the one path between them that checked neither.
+  if (held.isTaxInclusive) {
+    return { status: 'not-offered', code: null, message: UNSUPPORTED_MESSAGE };
+  }
+  return { status: 'sellable', code, message: null };
+}
+
+/** Does this state stop the cart being sold? */
+export function blocksSale(state: CartPriceListState): boolean {
+  return state.code === null;
+}
+
 /**
  * The selection path for the ambiguous case: bind the device to one of the
  * lists the tenant's configuration already offers at this counter, then

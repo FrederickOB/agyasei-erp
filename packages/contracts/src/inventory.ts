@@ -21,6 +21,7 @@ import {
   mutationEnvelope,
   zBusinessDate,
   zScaledInt,
+  zScaledIntNonNeg,
   zScaledIntPos,
   zUuid,
 } from './wire.js';
@@ -65,3 +66,54 @@ export const recordMovementInput = z
 
 export type RecordMovementInput = z.input<typeof recordMovementInput>;
 export type RecordMovementParsed = z.output<typeof recordMovementInput>;
+
+/**
+ * The reorder-point wire contract — `inventory.setReorderPoint`.
+ *
+ * ---------------------------------------------------------------------------
+ * THE QUANTITY IS IN THE PRODUCT'S STOCKING UNIT. THERE IS NO `uomCode` HERE.
+ * ---------------------------------------------------------------------------
+ * That omission is the contract's whole point. 12 m rebar is STOCKED as
+ * countable bars and SOLD either by the bar or by the tonne, at exactly
+ * 13500/d² bars per tonne (04 §4.4.1) — so "reorder at 10" means one thing in
+ * bars and something ninety-three times larger in tonnes. A caller that could
+ * name a unit could name the one the last customer happened to buy in, and
+ * the alert would compare a tonne against a bar forever after.
+ *
+ * The movement ledger is denominated in the stocking unit (04 §4.4.3), the
+ * threshold is denominated in the stocking unit, and the comparison is
+ * therefore a bare integer comparison with no conversion and no rounding at
+ * read time. The server resolves the unit from the product and snapshots it;
+ * migration 0007's constraint trigger refuses any row that drifts from it.
+ *
+ * Quantities cross as decimal STRINGS and become `bigint` (ADR-0004): a
+ * 400-tonne threshold at scale 3 is 400_000_000 scaled units, and a JSON
+ * number is a float64 in every consumer.
+ */
+export const setReorderPointInput = z
+  .object({
+    ...mutationEnvelope,
+    locationId: zUuid,
+    productId: zUuid,
+    /**
+     * At or below this, the product is low. Scaled integer in the product's
+     * STOCKING unit. Zero is meaningful and allowed: "tell me only when it is
+     * actually gone".
+     */
+    reorderPointQty: zScaledIntNonNeg,
+    /**
+     * PHASE 2 SEAM: the level an order brings stock back up to. Unread by the
+     * Phase 1 alert, read by reorder management, stored on the same row so a
+     * tenant enters its numbers once. Must not be below reorderPointQty.
+     */
+    reorderUpToQty: zScaledIntNonNeg.optional(),
+    /** PHASE 2 SEAM: supplier lead time in calendar days. */
+    leadTimeDays: z.number().int().min(0).max(3650).optional(),
+    /** Set false to retire a threshold without losing the numbers on it. */
+    isActive: z.boolean().optional(),
+    notes: z.string().max(1000).optional(),
+  })
+  .strict();
+
+export type SetReorderPointInput = z.input<typeof setReorderPointInput>;
+export type SetReorderPointParsed = z.output<typeof setReorderPointInput>;

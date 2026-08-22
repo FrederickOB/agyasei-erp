@@ -24,6 +24,7 @@ import {
   type DevicePriceListState,
   type PriceListChoice,
 } from '../../data/session/device-price-list';
+import { Icon } from '../../ui/Icon';
 
 function labelFor(choice: PriceListChoice): { primary: string; secondary: string | null } {
   if (choice.name !== null) {
@@ -69,6 +70,12 @@ export function DevicePriceListGate({
 
   return (
     <main className="device-gate">
+      {/* Waiting is not a fault, and it should not wear a fault's face: the
+          rows are on their way and this screen dismisses itself when they
+          land. Anything else here is a configuration gap someone must fix. */}
+      <span className={`gate-crest${waiting ? ' waiting' : ''}`}>
+        <Icon name={waiting ? 'sync' : 'tag'} size={28} />
+      </span>
       <h1>{waiting ? 'Getting this till ready' : 'This till is not set up yet'}</h1>
       <p className="device-gate-message">{state.message}</p>
       {state.status === 'ambiguous' ? (
@@ -81,7 +88,7 @@ export function DevicePriceListGate({
                 <li key={choice.id}>
                   <button
                     type="button"
-                    className="device-gate-choice"
+                    className="device-gate-choice pressable"
                     disabled={busy !== null}
                     onClick={() => onChoose(choice.id)}
                   >
@@ -102,6 +109,7 @@ export function DevicePriceListGate({
       ) : null}
       {error !== null ? (
         <p className="device-gate-error" role="alert">
+          <Icon name="alert" size={20} />
           {error}
         </p>
       ) : null}

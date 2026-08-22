@@ -233,6 +233,41 @@ export const movementReason = tenantTable('movement_reason', {
   originRef: text('origin_ref'),
 });
 
+/**
+ * The low-stock threshold, per (location, product). Migration 0007.
+ *
+ * Every quantity here is a scaled integer in the product's STOCKING unit —
+ * `uomId`/`qtyScale` snapshot which unit that is, and a constraint trigger
+ * refuses a row denominated in anything else. That is what makes "on hand <=
+ * reorder point" a bare integer comparison for a SKU that sells by the bar
+ * OR by the tonne (04 §4.4.1).
+ *
+ * `reorderUpToQty` and `leadTimeDays` are the Phase 2 seam: unread by the
+ * Phase 1 alert, read by reorder management, on the same rows.
+ */
+export const reorderPoint = tenantTable(
+  'reorder_point',
+  {
+    locationId: uuid('location_id').notNull(),
+    productId: uuid('product_id').notNull(),
+    /** Snapshot of the product's stocking unit — never a selling unit. */
+    uomId: uuid('uom_id').notNull(),
+    qtyScale: smallint('qty_scale').notNull(),
+    /** At or below this, the product is low. bigint, never number (ADR-0004). */
+    reorderPointQty: bigint('reorder_point_qty', { mode: 'bigint' }).notNull(),
+    reorderUpToQty: bigint('reorder_up_to_qty', { mode: 'bigint' }),
+    leadTimeDays: smallint('lead_time_days'),
+    isActive: boolean('is_active').notNull(),
+    notes: text('notes'),
+    originTemplateId: text('origin_template_id'),
+    originRef: text('origin_ref'),
+  },
+  (t) => [
+    uniqueIndex('reorder_point_uq').on(t.tenantId, t.locationId, t.productId),
+    index('reorder_point_location_ix').on(t.tenantId, t.locationId, t.productId),
+  ],
+);
+
 export const stockMovement = tenantTable(
   'stock_movement',
   {

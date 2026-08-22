@@ -11,10 +11,13 @@ export {
 } from './principals.js';
 export {
   applyTemplate,
+  applyReorderPoints,
   applySequenceCounters,
   applyTenant1Locations,
+  REORDER_FRACTION_BP,
   TEMPLATE_ID,
   TEMPLATE_VERSION,
   TEMPLATE_JURISDICTION,
+  type ApplyReorderPointsResult,
   type ApplyTemplateResult,
 } from './template.js';

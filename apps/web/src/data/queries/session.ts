@@ -195,21 +195,12 @@ export async function writeReceiptFormat(
 }
 
 /**
- * The API is the pricing authority and identifies a price list by its CODE,
- * not by the id the device happens to hold — the id is a row key in one
- * database, the code is the tenant's own name for the list. The cart carries
- * the id; this resolves it against the synced `price_list` row.
+ * DELIBERATELY NOT HERE: resolving a cart's price-list id to the CODE the API
+ * prices by. That lived here as `resolvePriceListCode` and asked one question
+ * — "does a row with this id exist" — which a list that lapsed overnight
+ * answers yes to, right up until the server refuses the sale hours later.
  *
- * `null` means the device cannot name the list it priced against, which is a
- * refusal to record, not a default: guessing here would have the server
- * reprice the sale from the wrong list.
+ * It is now `resolveCartPriceList` in `data/session/device-price-list.ts`,
+ * beside the rules about scope and effective windows it has to agree with. A
+ * second copy of those rules living over here is how the two drift apart.
  */
-export async function resolvePriceListCode(
-  db: DbExecutor,
-  priceListId: string | null,
-): Promise<string | null> {
-  if (priceListId === null || priceListId.length === 0) return null;
-  const rows = await db.getAll('SELECT code FROM price_list WHERE id = ? LIMIT 1', [priceListId]);
-  const code = rows[0]?.['code'];
-  return typeof code === 'string' && code.length > 0 ? code : null;
-}

@@ -11,12 +11,25 @@
  */
 import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
-import { recordMovementInput, type DirectMovementKind } from '@erp/contracts';
+import {
+  lowStockInput,
+  recordMovementInput,
+  setReorderPointInput,
+  type DirectMovementKind,
+} from '@erp/contracts';
 import { deterministicUuid, type PermissionCode } from '@erp/db';
+import { applyReorderPoints } from '@erp/db/seed';
 import type { Queryable } from '../db.js';
 import { runIdempotent } from '../pipeline.js';
-import { assertLocationInScope, requiresPermission, router, tenantProcedure } from '../trpc.js';
+import {
+  assertLocationInScope,
+  permissionProcedure,
+  requiresPermission,
+  router,
+  tenantProcedure,
+} from '../trpc.js';
 import { wire, zUuid } from '../wire.js';
+import { resolveLocationScope } from './scope.js';
 
 /**
  * The INPUT SHAPE is not defined here. `recordMovementInput` lives in
@@ -226,5 +239,335 @@ export const inventoryRouter = router({
           uomCode: product.uomCode,
         };
       });
+    }),
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // LOW-STOCK ALERTS (CLAUDE.md §3, Phase 1) — and the Phase 2 seam
+  // ═══════════════════════════════════════════════════════════════════════
+  //
+  // "Reorder points tied to Phase 1 alerts" is Phase 2's line in CLAUDE.md
+  // §3, and the way to make that true is for both to be the SAME ROWS.
+  // `app.reorder_point` (migration 0007) carries the Phase 1 threshold and,
+  // unread until Phase 2, the order-up-to level and the supplier lead time.
+  // There is no second notion of "how low is low" for procurement to invent.
+  //
+  // THE UNIT RULE, once, because it is the whole difficulty here: a threshold
+  // is denominated in the product's STOCKING unit, which is the unit the
+  // movement ledger is in (04 §4.4.3). 12 m rebar is stocked as countable
+  // bars and sold either by the bar OR by the tonne at exactly 13500/d² bars
+  // per tonne, so a threshold that followed "whichever unit was last sold"
+  // would compare quantities ninety-three times apart. The wire contract
+  // carries no unit, the server resolves it from the product, and 0007's
+  // constraint trigger refuses a row that drifts from it. The comparison at
+  // read time is therefore a bare integer comparison — no conversion, and so
+  // no rounding, where an alert is decided.
+
+  /**
+   * Set (or replace) the reorder point for one product at one location.
+   *
+   * `stock.reorder.manage` AT THE LOCATION: the person who lives with the
+   * stock-out tunes the alert. It is a capability of its own rather than a
+   * reuse of `stock.adjust`, because saying what IS on the shelf and saying
+   * when to shout about it are different jobs in plenty of org charts
+   * (02 §2.4 granularity rule).
+   *
+   * Goes through the idempotent pipeline like every other write, so a
+   * device that retries gets the stored response and not a second effect.
+   */
+  setReorderPoint: tenantProcedure
+    .input(setReorderPointInput)
+    .use(requiresPermission({ code: 'stock.reorder.manage', at: 'input' }))
+    .mutation(async ({ ctx, input }) => {
+      assertLocationInScope(ctx.identity, input.locationId);
+      if (input.reorderUpToQty !== undefined && input.reorderUpToQty < input.reorderPointQty) {
+        throw new TRPCError({
+          code: 'BAD_REQUEST',
+          message: 'reorderUpToQty must not be below reorderPointQty — Phase 2 would order a negative quantity',
+        });
+      }
+      const result = await runIdempotent(
+        { runner: ctx.deps.runner, clock: ctx.deps.clock },
+        ctx.identity,
+        {
+          op: 'stock.set_reorder_point',
+          idempotencyKey: input.idempotencyKey,
+          claimedHlc: input.claimedHlc,
+          clientWallAt: input.clientWallAt,
+          locationId: input.locationId,
+        },
+        input,
+        async (tx) => {
+          // The unit is the SERVER'S answer, resolved from the product. The
+          // client never names one, so it can never name the wrong one.
+          const product = await loadProductStockInfo(tx, input.productId);
+          if (product.stockTracking !== 'STOCKED') {
+            throw new TRPCError({
+              code: 'PRECONDITION_FAILED',
+              message: 'a non-stocked product has no stock to run low',
+            });
+          }
+          const loc = await tx.query<{ id: string; kind: string }>(
+            `select id, kind from app.location where id = $1 and deleted_at is null`,
+            [input.locationId],
+          );
+          const location = loc.rows[0];
+          if (!location) throw new TRPCError({ code: 'NOT_FOUND', message: 'location not found' });
+          if (location.kind !== 'OUTLET' && location.kind !== 'WAREHOUSE') {
+            throw new TRPCError({
+              code: 'PRECONDITION_FAILED',
+              message: 'reorder points belong to locations that hold stock',
+            });
+          }
+
+          const existing = await tx.query<{ id: string }>(
+            `select id from app.reorder_point
+              where location_id = $1 and product_id = $2 and deleted_at is null`,
+            [input.locationId, input.productId],
+          );
+          const created = existing.rows.length === 0;
+          const rowId = existing.rows[0]?.id ?? deterministicUuid(input.idempotencyKey, 'reorder_point');
+          const isActive = input.isActive ?? true;
+
+          const response = {
+            reorderPointId: rowId,
+            created,
+            locationId: input.locationId,
+            productId: input.productId,
+            reorderPointQty: wire(input.reorderPointQty),
+            reorderUpToQty: input.reorderUpToQty === undefined ? null : wire(input.reorderUpToQty),
+            leadTimeDays: input.leadTimeDays ?? null,
+            isActive,
+            /** The server's unit, echoed so a client can label the number. */
+            qtyScale: product.qtyScale,
+            uomCode: product.uomCode,
+          };
+          return {
+            response,
+            apply: async (atx) => {
+              await atx.query(
+                `insert into app.reorder_point
+                   (tenant_id, id, write_id, hlc, location_id, product_id, uom_id, qty_scale,
+                    reorder_point_qty, reorder_up_to_qty, lead_time_days, is_active, notes)
+                 values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+                 on conflict (tenant_id, location_id, product_id) where deleted_at is null
+                 do update set reorder_point_qty = excluded.reorder_point_qty,
+                               reorder_up_to_qty = excluded.reorder_up_to_qty,
+                               lead_time_days    = excluded.lead_time_days,
+                               is_active         = excluded.is_active,
+                               notes             = excluded.notes,
+                               write_id          = excluded.write_id,
+                               hlc               = excluded.hlc,
+                               updated_at        = transaction_timestamp()`,
+                [
+                  ctx.identity.tenantId,
+                  rowId,
+                  input.idempotencyKey,
+                  ctx.deps.clock.next(),
+                  input.locationId,
+                  input.productId,
+                  product.stockingUomId,
+                  product.qtyScale,
+                  wire(input.reorderPointQty),
+                  input.reorderUpToQty === undefined ? null : wire(input.reorderUpToQty),
+                  input.leadTimeDays ?? null,
+                  isActive,
+                  input.notes ?? null,
+                ],
+              );
+            },
+          };
+        },
+      );
+      return result.response;
+    }),
+
+  /**
+   * Seed thresholds for the SKUs a location DEMONSTRABLY CARRIES, from its
+   * own ledger (see `applyReorderPoints` in `@erp/db/seed` for why this is
+   * not a row per location × catalogue, and for the honest provenance of the
+   * level it seeds). Additive and idempotent: a threshold somebody has since
+   * tuned is never overwritten, and a SKU that arrives later gets its row on
+   * the next run.
+   */
+  ensureReorderPoints: tenantProcedure
+    .input(z.object({ locationId: zUuid }).strict())
+    .use(requiresPermission({ code: 'stock.reorder.manage', at: 'input' }))
+    .mutation(async ({ ctx, input }) => {
+      assertLocationInScope(ctx.identity, input.locationId);
+      return ctx.deps.runner.withTenant(ctx.identity.tenantId, (tx) =>
+        applyReorderPoints(tx, ctx.identity.tenantId, { locationId: input.locationId }),
+      );
+    }),
+
+  /** The thresholds configured at one location — the management list. */
+  reorderPoints: tenantProcedure
+    .input(z.object({ locationId: zUuid }).strict())
+    .use(requiresPermission({ code: 'stock.view', at: 'input' }))
+    .query(async ({ ctx, input }) => {
+      return ctx.deps.runner.withTenant(ctx.identity.tenantId, async (tx) => {
+        const res = await tx.query<{
+          reorder_point_id: string;
+          product_id: string;
+          sku_code: string;
+          product_name: string;
+          reorder_point_qty: string;
+          reorder_up_to_qty: string | null;
+          lead_time_days: number | null;
+          qty_scale: number;
+          uom_code: string;
+          qty_on_hand: string;
+          is_low: boolean;
+          is_active: boolean;
+        }>(
+          `select rs.reorder_point_id, rs.product_id, p.sku_code, p.name as product_name,
+                  rs.reorder_point_qty::text, rs.reorder_up_to_qty::text, rs.lead_time_days,
+                  rs.qty_scale, u.code as uom_code, rs.qty_on_hand::text, rs.is_low,
+                  rs.is_active
+             from app.reorder_status rs
+             join app.product p on p.tenant_id = rs.tenant_id and p.id = rs.product_id
+             join app.unit_of_measure u on u.tenant_id = rs.tenant_id and u.id = rs.uom_id
+            where rs.location_id = $1
+            order by p.sku_code`,
+          [input.locationId],
+        );
+        return {
+          locationId: input.locationId,
+          points: res.rows.map((r) => ({
+            reorderPointId: r.reorder_point_id,
+            productId: r.product_id,
+            skuCode: r.sku_code,
+            productName: r.product_name,
+            /** Every quantity below is in the STOCKING unit at qtyScale. */
+            reorderPointQty: r.reorder_point_qty,
+            reorderUpToQty: r.reorder_up_to_qty,
+            leadTimeDays: r.lead_time_days,
+            qtyOnHand: r.qty_on_hand,
+            isLow: r.is_low,
+            /**
+             * A switched-off threshold raises no alert but STAYS ON THIS
+             * LIST. Filtering it here would make it unfindable and therefore
+             * impossible to switch back on.
+             */
+            isActive: r.is_active,
+            qtyScale: r.qty_scale,
+            uomCode: r.uom_code,
+          })),
+        };
+      });
+    }),
+
+  /**
+   * THE LOW-STOCK ALERT: what is at or below its reorder point, per location,
+   * most urgent first.
+   *
+   * Guarded by `stock.view`, not by a reporting capability, and scoped the
+   * same way every other cross-location read is — resolved per request from
+   * `app.effective_permission`. Counter staff hold `stock.view` at their own
+   * outlet and therefore see their own outlet's alerts, which is the point:
+   * the person who has to tell a customer "we're out of cement" should see it
+   * coming. A grant at a region node expands down the closure, so a regional
+   * manager gets every outlet under them and a head of operations gets the
+   * network — with no code anywhere asking how deep a region is.
+   *
+   * URGENCY is `coverageBp` — on-hand as basis points of the threshold — and
+   * NOT the raw shortfall, because shortfalls in different units are not
+   * comparable: 40 bars short and 40 tonnes short are not the same emergency.
+   * A ratio is dimensionless, so it orders correctly across the whole
+   * catalogue. It is an integer ratio computed by truncating division; it is
+   * an ORDERING KEY and nothing is ever costed or ordered from it.
+   *
+   * `coverageBp` is null when the threshold is zero ("tell me only when it is
+   * actually gone"), and null sorts FIRST because that product is gone.
+   */
+  lowStock: permissionProcedure({ code: 'stock.view', at: 'any' })
+    .input(lowStockInput)
+    .query(async ({ ctx, input }) => {
+      const scope = await resolveLocationScope(ctx, {
+        code: 'stock.view',
+        requested: input.locationIds,
+        kinds: ['OUTLET', 'WAREHOUSE'],
+      });
+
+      const rows = await ctx.deps.runner.withTenant(ctx.identity.tenantId, async (tx) => {
+        const res = await tx.query<{
+          location_id: string;
+          reorder_point_id: string;
+          product_id: string;
+          sku_code: string;
+          product_name: string;
+          qty_on_hand: string;
+          reorder_point_qty: string;
+          reorder_up_to_qty: string | null;
+          shortfall_qty: string;
+          lead_time_days: number | null;
+          qty_scale: number;
+          uom_code: string;
+          coverage_bp: string | null;
+        }>(
+          `select rs.location_id, rs.reorder_point_id, rs.product_id,
+                  p.sku_code, p.name as product_name,
+                  rs.qty_on_hand::text, rs.reorder_point_qty::text,
+                  rs.reorder_up_to_qty::text, rs.shortfall_qty::text,
+                  rs.lead_time_days, rs.qty_scale, u.code as uom_code,
+                  case when rs.reorder_point_qty > 0
+                       then ((rs.qty_on_hand * 10000) / rs.reorder_point_qty)::text
+                       else null end as coverage_bp
+             from app.reorder_status rs
+             join app.product p on p.tenant_id = rs.tenant_id and p.id = rs.product_id
+             join app.unit_of_measure u on u.tenant_id = rs.tenant_id and u.id = rs.uom_id
+            where rs.location_id = any($1::uuid[])
+              and rs.is_active
+              and rs.is_low
+              and ($2::uuid[] is null or rs.product_id = any($2::uuid[]))
+              and p.deleted_at is null
+            order by (case when rs.reorder_point_qty > 0
+                           then (rs.qty_on_hand * 10000) / rs.reorder_point_qty
+                           else null end) asc nulls first,
+                     p.sku_code
+            limit $3`,
+          [
+            [...scope.locationIds],
+            input.productIds ? [...input.productIds] : null,
+            input.limit ?? 200,
+          ],
+        );
+        return res.rows;
+      });
+
+      const byLocation = new Map<string, typeof rows>();
+      for (const r of rows) {
+        const list = byLocation.get(r.location_id) ?? [];
+        list.push(r);
+        byLocation.set(r.location_id, list);
+      }
+
+      return {
+        scope: { locationCount: scope.locations.length },
+        alertCount: rows.length,
+        /** Flat, already in urgency order — the list a manager reads top-down. */
+        alerts: rows.map((r) => ({
+          locationId: r.location_id,
+          reorderPointId: r.reorder_point_id,
+          productId: r.product_id,
+          skuCode: r.sku_code,
+          productName: r.product_name,
+          /** All quantities in the STOCKING unit at qtyScale (decimal strings). */
+          qtyOnHand: r.qty_on_hand,
+          reorderPointQty: r.reorder_point_qty,
+          reorderUpToQty: r.reorder_up_to_qty,
+          shortfallQty: r.shortfall_qty,
+          leadTimeDays: r.lead_time_days,
+          qtyScale: r.qty_scale,
+          uomCode: r.uom_code,
+          /** On-hand as basis points of the threshold. Ordering key only. */
+          coverageBp: r.coverage_bp,
+        })),
+        locations: scope.locations.map((l) => ({
+          locationId: l.id,
+          locationCode: l.code,
+          locationName: l.name,
+          alertCount: (byLocation.get(l.id) ?? []).length,
+        })),
+      };
     }),
 });
