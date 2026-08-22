@@ -37,7 +37,9 @@
  * arithmetic on any figure in this file.
  */
 import { useMemo, useState, type ReactNode } from 'react';
+import { divRound } from '@erp/money';
 import type { ApiCallOptions } from '../../data/api/client';
+import { fetchHaulageSpend } from '../../data/api/logistics';
 import type { LocalDb } from '../../data/db';
 import {
   fetchCashPosition,
@@ -710,6 +712,164 @@ function DistributionPanel({ from, to, apiOptions }: RangeProps): ReactNode {
 }
 
 // ---------------------------------------------------------------------------
+// Haulage per carrier — the negotiating view, behind report.view.margin
+// ---------------------------------------------------------------------------
+
+/**
+ * ═══════════════════════════════════════════════════════════════════════════
+ * THE RATIO IS THE OUTCOME. THIS IS THE LEVER.
+ * ═══════════════════════════════════════════════════════════════════════════
+ * The panel above says what proportion of revenue went on moving goods.
+ * ADR-0001 gave up the owned fleet on the argument that third-party rates
+ * could be driven DOWN as volume grew — and a rate is driven down in one
+ * conversation, with one haulier, holding what that haulier has actually been
+ * agreed over a period and how many loads it was for. Without this split the
+ * founder can watch the ratio move and has nothing to act on.
+ *
+ * It is also ordinary accounts-payable-by-supplier, which is exactly why a
+ * carrier is a supplier here and never a truck (ADR-0001).
+ *
+ * ---------------------------------------------------------------------------
+ * A FLOOR IS NOT A TOTAL, AND THE ROW SAYS WHICH IT IS
+ * ---------------------------------------------------------------------------
+ * A load dispatched with no agreed freight contributes nothing to the sum. So
+ * a carrier's spend is a FLOOR whenever any of its loads went out with nothing
+ * agreed, and the row says "at least" — because walking into a rate
+ * negotiation with a figure that is quietly missing four loads is worse than
+ * walking in with no figure at all.
+ *
+ * The share of spend is computed in integer arithmetic from the two `bigint`
+ * sums, rounded ONCE, and nothing downstream computes with the rounded value.
+ * It is not derived from anything already rendered.
+ */
+function carrierSharePctE4(spendMinor: bigint, totalMinor: bigint): bigint | null {
+  if (totalMinor <= 0n) return null;
+  return divRound(spendMinor * 1_000_000n, totalMinor, 'half-up');
+}
+
+function CarrierPanel({ from, to, apiOptions }: RangeProps): ReactNode {
+  const input = useMemo(() => ({ from, to }), [from, to]);
+  const { state, refresh } = useApiQuery(
+    () => fetchHaulageSpend(input, apiOptions),
+    [input, apiOptions],
+  );
+  return (
+    <Panel
+      title="What each haulier has been agreed"
+      what="Haulage spend by carrier"
+      state={state}
+      onRetry={refresh}
+    >
+      {state.status === 'ready' ? (
+        <>
+          <ScopeChip scope={state.data.scope} />
+
+          <p className="report-note">
+            <strong>
+              <Money amount={state.data.total.haulageSpendMinor} />
+            </strong>{' '}
+            agreed across {String(state.data.total.deliveryCount)} load
+            {state.data.total.deliveryCount === 1 ? '' : 's'}
+            {state.data.total.deliveriesWithNoAgreedFreight > 0 ? (
+              <>
+                {' '}
+                — <span className="figure-withheld">at least</span>, because{' '}
+                {String(state.data.total.deliveriesWithNoAgreedFreight)} of them went out with
+                nothing agreed
+              </>
+            ) : null}
+            .
+          </p>
+
+          {state.data.carriers.length === 0 ? (
+            <div className="empty-state">
+              <Icon name="download" size={40} />
+              <span className="empty-title">No load was handed to anybody in this period</span>
+              <p className="empty-body">
+                Nothing moved through a haulier between these dates, so there is no rate to
+                negotiate from yet.
+              </p>
+            </div>
+          ) : (
+            <div className="report-table-scroll">
+              <table className="report-table">
+                <caption>
+                  Every haulier that carried a load in this period, most agreed first
+                </caption>
+                <thead>
+                  <tr>
+                    <th scope="col">Haulier</th>
+                    <th scope="col" className="numeric">Agreed</th>
+                    <th scope="col" className="numeric">Share of the spend</th>
+                    <th scope="col" className="numeric">Loads</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {state.data.carriers.map((c) => {
+                    const share = carrierSharePctE4(
+                      c.haulageSpendMinor,
+                      state.data.total.haulageSpendMinor,
+                    );
+                    return (
+                      <tr key={c.carrierSupplierId}>
+                        <th scope="row">
+                          <span className="report-loc-name">{c.carrierName}</span>
+                        </th>
+                        <td className="numeric">
+                          <Money amount={c.haulageSpendMinor} />
+                          {c.deliveriesWithNoAgreedFreight > 0 ? (
+                            <span className="figure-withheld"> at least</span>
+                          ) : null}
+                        </td>
+                        <td className="numeric">
+                          {share === null ? (
+                            <span className="figure-withheld">nothing agreed yet</span>
+                          ) : (
+                            <span className="tabular">{formatPercentE4(share)}%</span>
+                          )}
+                        </td>
+                        <td className="numeric tabular">
+                          {String(c.deliveryCount)}
+                          {c.deliveriesWithNoAgreedFreight > 0 ? (
+                            <span className="figure-withheld">
+                              {' '}
+                              ({String(c.deliveriesWithNoAgreedFreight)} with no agreed freight)
+                            </span>
+                          ) : null}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+                <tfoot>
+                  <tr>
+                    <th scope="row">{totalLabel(state.data.scope)}</th>
+                    <td className="numeric">
+                      <Money amount={state.data.total.haulageSpendMinor} />
+                    </td>
+                    <td className="numeric" />
+                    <td className="numeric tabular">
+                      {String(state.data.total.deliveryCount)}
+                    </td>
+                  </tr>
+                </tfoot>
+              </table>
+            </div>
+          )}
+
+          {/* WHAT THE FIGURE IS, in the server's own words rather than a
+              paraphrase that could drift from it. An agreed rate is not an
+              invoice, and a rate conversation held against the wrong one is a
+              conversation about the wrong number. */}
+          <p className="report-note">{state.data.method}</p>
+          <p className="report-note">{state.data.periodBasis.note}</p>
+        </>
+      ) : null}
+    </Panel>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // The screen
 // ---------------------------------------------------------------------------
 
@@ -813,6 +973,16 @@ function ReportsFor({
             <DistributionPanel from={activeFrom} to={activeTo} apiOptions={options} />
           ) : (
             <NotYours title="Distribution cost" what="What it costs to move goods" />
+          )}
+          {/* The ratio above is the outcome; this is the lever ADR-0001 traded
+              the fleet for. Same capability, because it is the same money. */}
+          {canSeeMargin ? (
+            <CarrierPanel from={activeFrom} to={activeTo} apiOptions={options} />
+          ) : (
+            <NotYours
+              title="What each haulier has been agreed"
+              what="What each haulier is paid"
+            />
           )}
         </>
       )}

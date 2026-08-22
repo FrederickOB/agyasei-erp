@@ -48,6 +48,7 @@ import {
   apiMutate,
   apiQuery,
   asArray,
+  asBoolean,
   asCount,
   asOptionalScaled,
   asOptionalString,
@@ -207,3 +208,191 @@ export function planDelivery(
 
 export { DELIVERY_STATUSES };
 export type { DeliverySourceKind, DeliveryStatus };
+
+// ---------------------------------------------------------------------------
+// Haulage spend — the NEGOTIATING view
+// ---------------------------------------------------------------------------
+
+/**
+ * ═══════════════════════════════════════════════════════════════════════════
+ * WHY THE PER-CARRIER SPLIT IS NOT A NICETY
+ * ═══════════════════════════════════════════════════════════════════════════
+ * ADR-0001 gave up the owned fleet on the argument that third-party haulage
+ * rates could be driven down as volume grew. A rate is driven down in a
+ * conversation with ONE haulier, holding what that haulier has actually been
+ * paid over a period and how many loads it was for. The network ratio is the
+ * outcome; this is the lever, and nobody can pull a lever they cannot see.
+ *
+ * It is also ordinary AP-by-supplier, which is why the carrier is a supplier
+ * and not a truck.
+ *
+ * ---------------------------------------------------------------------------
+ * WHAT THIS FIGURE IS, AND WHAT IT IS NOT
+ * ---------------------------------------------------------------------------
+ *  · It is the AGREED freight, not a haulier's invoice. The invoice arrives
+ *    with AP in Phase 3; the server says so on every answer as `basis`, and
+ *    the screen renders that rather than paraphrasing it.
+ *  · A load dispatched with no agreed freight contributes NOTHING and is
+ *    counted separately, so a carrier's total is a FLOOR whenever
+ *    `deliveriesWithNoAgreedFreight` is above zero. A floor read as a total
+ *    understates exactly the carrier somebody is about to negotiate with.
+ *  · Cancelled loads are excluded by the server, which names the status it
+ *    dropped rather than leaving a reader to guess at the difference.
+ */
+export interface HaulageBucket {
+  readonly haulageSpendMinor: bigint;
+  readonly deliveryCount: number;
+  /** Above zero, the spend is a FLOOR and the screen has to say so. */
+  readonly deliveriesWithNoAgreedFreight: number;
+  readonly unavailable: string | null;
+}
+
+export interface CarrierSpend {
+  readonly carrierSupplierId: string;
+  readonly carrierName: string;
+  readonly haulageSpendMinor: bigint;
+  readonly deliveryCount: number;
+  readonly deliveriesWithNoAgreedFreight: number;
+}
+
+export interface HaulageLocationSpend extends HaulageBucket {
+  readonly locationId: string;
+  readonly locationCode: string;
+  readonly locationName: string;
+}
+
+export interface HaulageGroupSpend extends HaulageBucket {
+  readonly groupId: string;
+  readonly groupCode: string;
+  readonly groupName: string;
+  readonly locationCount: number;
+}
+
+/** How each delivery in the period got its trading day. */
+export interface HaulagePeriodBasis {
+  readonly datedByAssertion: number;
+  readonly datedByPlannedFor: number;
+  readonly datedByDispatchClock: number;
+  readonly datedByRowCreated: number;
+  readonly note: string;
+}
+
+export interface HaulageSpendReport {
+  readonly from: string | null;
+  readonly to: string | null;
+  readonly scope: { readonly network: boolean; readonly locationCount: number };
+  readonly currencyCode: string;
+  readonly moneyScale: bigint;
+  readonly locations: readonly HaulageLocationSpend[];
+  readonly groups: readonly HaulageGroupSpend[];
+  /** Groups NEST, so their subtotals deliberately do not sum to the total. */
+  readonly groupsNest: boolean;
+  /** THE NEGOTIATING VIEW: what each haulier has been agreed, and for how many loads. */
+  readonly carriers: readonly CarrierSpend[];
+  readonly total: HaulageBucket;
+  /** AGREED_NOT_INVOICED — rendered, never paraphrased. */
+  readonly basis: string;
+  /** The delivery status the server left out of the sum. */
+  readonly excludedStatus: string;
+  /** Always false: a capped aggregate is a wrong aggregate. */
+  readonly limitApplies: boolean;
+  readonly periodBasis: HaulagePeriodBasis;
+  readonly method: string;
+}
+
+function mapBucket(row: Record<string, unknown>, what: string): HaulageBucket {
+  return {
+    haulageSpendMinor: asScaled(row['haulageSpendMinor'], `${what}.haulageSpendMinor`),
+    deliveryCount: asCount(row['deliveryCount'], `${what}.deliveryCount`),
+    deliveriesWithNoAgreedFreight: asCount(
+      row['deliveriesWithNoAgreedFreight'],
+      `${what}.deliveriesWithNoAgreedFreight`,
+    ),
+    unavailable: asOptionalString(row['unavailable'], `${what}.unavailable`),
+  };
+}
+
+function mapHaulageSpend(json: unknown): HaulageSpendReport {
+  const root = asRecord(json, 'logistics.haulageSpend');
+  const scope = asRecord(root['scope'], 'scope');
+  const basis = asRecord(root['periodBasis'], 'periodBasis');
+  return {
+    from: asOptionalString(root['from'], 'from'),
+    to: asOptionalString(root['to'], 'to'),
+    scope: {
+      network: asBoolean(scope['network'], 'scope.network'),
+      locationCount: asCount(scope['locationCount'], 'scope.locationCount'),
+    },
+    currencyCode: asString(root['currencyCode'], 'currencyCode'),
+    moneyScale: asScaled(root['moneyScale'], 'moneyScale'),
+    locations: asArray(root['locations'], 'locations').map((entry, i) => {
+      const what = `locations[${String(i)}]`;
+      const row = asRecord(entry, what);
+      return {
+        locationId: asString(row['locationId'], `${what}.locationId`),
+        locationCode: asString(row['locationCode'], `${what}.locationCode`),
+        locationName: asString(row['locationName'], `${what}.locationName`),
+        ...mapBucket(row, what),
+      };
+    }),
+    groups: asArray(root['groups'], 'groups').map((entry, i) => {
+      const what = `groups[${String(i)}]`;
+      const row = asRecord(entry, what);
+      return {
+        groupId: asString(row['groupId'], `${what}.groupId`),
+        groupCode: asString(row['groupCode'], `${what}.groupCode`),
+        groupName: asString(row['groupName'], `${what}.groupName`),
+        locationCount: asCount(row['locationCount'], `${what}.locationCount`),
+        ...mapBucket(row, what),
+      };
+    }),
+    groupsNest: asBoolean(root['groupsNest'], 'groupsNest'),
+    carriers: asArray(root['carriers'], 'carriers').map((entry, i) => {
+      const what = `carriers[${String(i)}]`;
+      const row = asRecord(entry, what);
+      return {
+        carrierSupplierId: asString(row['carrierSupplierId'], `${what}.carrierSupplierId`),
+        carrierName: asString(row['carrierName'], `${what}.carrierName`),
+        haulageSpendMinor: asScaled(row['haulageSpendMinor'], `${what}.haulageSpendMinor`),
+        deliveryCount: asCount(row['deliveryCount'], `${what}.deliveryCount`),
+        deliveriesWithNoAgreedFreight: asCount(
+          row['deliveriesWithNoAgreedFreight'],
+          `${what}.deliveriesWithNoAgreedFreight`,
+        ),
+      };
+    }),
+    total: mapBucket(asRecord(root['total'], 'total'), 'total'),
+    basis: asString(root['basis'], 'basis'),
+    excludedStatus: asString(root['excludedStatus'], 'excludedStatus'),
+    limitApplies: asBoolean(root['limitApplies'], 'limitApplies'),
+    periodBasis: {
+      datedByAssertion: asCount(basis['datedByAssertion'], 'periodBasis.datedByAssertion'),
+      datedByPlannedFor: asCount(basis['datedByPlannedFor'], 'periodBasis.datedByPlannedFor'),
+      datedByDispatchClock: asCount(
+        basis['datedByDispatchClock'],
+        'periodBasis.datedByDispatchClock',
+      ),
+      datedByRowCreated: asCount(basis['datedByRowCreated'], 'periodBasis.datedByRowCreated'),
+      note: asString(basis['note'], 'periodBasis.note'),
+    },
+    method: asString(root['method'], 'method'),
+  };
+}
+
+/**
+ * Haulage spend over a period, per location, per grouping node and PER
+ * CARRIER. Guarded `report.view.margin` by the server, at any location, and
+ * widened to the tenant only by `report.view.tenant`.
+ *
+ * It takes the SAME input the delivery list does — narrowing by carrier or by
+ * source is the same narrowing here as there — and `limit` is refused as
+ * meaningless on a sum by the server rather than silently capping it.
+ */
+export function fetchHaulageSpend(
+  input: ListDeliveriesInput,
+  options: ApiCallOptions = {},
+): Promise<ApiResult<HaulageSpendReport>> {
+  const bad = guard(listDeliveriesInput, 'logistics.haulageSpend', input);
+  if (bad !== null) return Promise.resolve(bad);
+  return apiQuery('logistics.haulageSpend', input, mapHaulageSpend, options);
+}

@@ -949,8 +949,17 @@ export const receivingRouter = router({
           received_by_user_id: string | null;
           notes: string | null;
         }>(
+          // `received_at` is cast HERE, in SQL, and not left to the driver.
+          // `pg` hands back a JS `Date` for a bare `timestamptz`, superjson
+          // then annotates it in a `meta` block, and the client REFUSES any
+          // envelope carrying `meta` — so an uncast timestamp makes the whole
+          // response unreadable by the PWA while the server still answers 200.
+          // The row type above said `string` and so tsc never noticed.
+          // docs/phase1-status.md §0 row 16.
           `select gr.id, gr.purchase_order_id, gr.supplier_id, s.name as supplier_name,
-                  gr.location_id, gr.business_date::text, gr.received_at,
+                  gr.location_id, gr.business_date::text,
+                  to_char(gr.received_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')
+                    as received_at,
                   gr.supplier_delivery_note_ref, gr.supplier_invoice_ref,
                   gr.received_by_user_id, gr.notes
              from app.goods_receipt gr

@@ -2120,6 +2120,30 @@ button {
 .order-line-net {
   font-weight: 750;
 }
+/* A DRAFT line being corrected. Stacked rather than the three-column summary
+   row above: this one holds two text boxes and a note, and a grid that fits a
+   figure does not fit an editor on a 5-inch phone. */
+.order-line-edit {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+  padding: var(--s-3) var(--s-4);
+  border: 1px solid var(--border);
+  border-radius: var(--r-3);
+  background: var(--surface);
+  box-shadow: var(--shadow-1);
+}
+/* Struck from the order but still on the screen, because "it is gone" and
+   "you took it off and can put it back" are different states. */
+.order-line-removed {
+  background: var(--surface-2);
+  box-shadow: none;
+}
+/* A heading INSIDE a panel — one step below the panel's own. */
+.report-subhead {
+  margin: var(--s-4) 0 var(--s-2);
+  font-size: var(--t-lg);
+}
 /* An over-delivery is a fact somebody will be invoiced for, so it is never
    clamped to zero and never hidden. */
 .over-delivered {

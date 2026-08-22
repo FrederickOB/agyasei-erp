@@ -81,6 +81,7 @@ import {
 import { readDeviceLocation } from '../../data/queries/session';
 import { useLiveQuery } from '../../data/use-live-query';
 import { recordBadgeLabel } from '../../lib/badges';
+import { businessDateFor } from '../../lib/business-date';
 import { createClaimedHlcClock, type ClaimedHlcClock } from '../../lib/hlc';
 import { uuidv7 } from '../../lib/uuidv7';
 import { useCurrencySpec } from '../../money/CurrencyContext';
@@ -327,12 +328,15 @@ function DeliveryRow({
 function DispatchForm({
   carriers,
   orders,
+  timeZone,
   apiOptions,
   onPlanned,
   onCancel,
 }: {
   readonly carriers: readonly Supplier[];
   readonly orders: readonly PurchaseOrderHeader[];
+  /** The LOCATION's zone — never the tablet's, which may have wandered. */
+  readonly timeZone: string | null;
   readonly apiOptions: ApiCallOptions;
   readonly onPlanned: () => void;
   readonly onCancel: () => void;
@@ -347,6 +351,32 @@ function DispatchForm({
   const [saving, setSaving] = useState(false);
   // Minted when the form opens (§8.2), so a double-tap books one load.
   const keyRef = useRef<string>(uuidv7());
+
+  /**
+   * ═══════════════════════════════════════════════════════════════════════════
+   * THE TRADING DAY THIS LOAD'S FREIGHT COUNTS AGAINST
+   * ═══════════════════════════════════════════════════════════════════════════
+   * It is the period key `reports.distributionCostRatio` divides revenue by
+   * and `logistics.haulageSpend` sums over. Until now no screen sent it, so
+   * the server fell back to `plannedFor` and then to its own transaction date
+   * — and a load recorded days late with no planned date booked silently to
+   * the day it was TYPED, in the period it was typed in, with no route to
+   * correct it afterwards (there is no `logistics.update`, and
+   * `updateDeliveryStatusInput` carries no business date). A month-end figure
+   * quietly gains freight that belongs to the month before.
+   *
+   * So it is asserted here, always, and a person can change it when they are
+   * recording something that already happened.
+   *
+   * The DEFAULT deliberately mirrors the server's own precedence rather than
+   * inventing a new one: a planned date, when there is one, is a human's
+   * statement about when this load moves; otherwise today AT THE LOCATION —
+   * the location's zone is synced tenant data, and a tablet that has wandered
+   * onto the wrong timezone must not move a trading day (03 §3.4.2).
+   */
+  const [assertedDate, setAssertedDate] = useState<string | null>(null);
+  const today = businessDateFor(new Date().toISOString(), timeZone);
+  const businessDate = assertedDate ?? (plannedFor.length > 0 ? plannedFor : today);
 
   const submit = useCallback(() => {
     if (carrierSupplierId === '' || sourceId === '') {
@@ -381,6 +411,9 @@ function DispatchForm({
           ? {}
           : { carrierReference: carrierReference.trim() }),
         ...(plannedFor.length === 0 ? {} : { plannedFor }),
+        // ALWAYS SENT, never left to a fallback. This is the period key the
+        // distribution-cost ratio divides by, and no route amends it later.
+        businessDate,
         // Omitted rather than zeroed when nobody has agreed a figure: a zero
         // reads as a free delivery.
         ...(freightMinor === null ? {} : { freightCostMinor: freightMinor.toString() }),
@@ -401,6 +434,7 @@ function DispatchForm({
     });
   }, [
     apiOptions,
+    businessDate,
     carrierReference,
     carrierSupplierId,
     freightText,
@@ -477,6 +511,23 @@ function DispatchForm({
           onChange={(e) => setPlannedFor(e.currentTarget.value)}
         />
       </label>
+
+      {/* THE PERIOD KEY. Asserted, not inferred — and correctable HERE,
+          because nothing corrects it afterwards. */}
+      <label className="threshold-form-field">
+        <span>Trading day this load counts against</span>
+        <input
+          type="date"
+          value={businessDate}
+          aria-label="Trading day this load counts against"
+          onChange={(e) => setAssertedDate(e.currentTarget.value)}
+        />
+      </label>
+      <p className="adjust-kind-note">
+        {businessDate === today
+          ? 'Today at this place. Change it if this load actually moved on another day — what it cost is counted against this day when the cost of moving goods is measured, and it cannot be changed once the load is booked.'
+          : `Not today at this place (${today}). This load's freight will be counted against ${businessDate} when the cost of moving goods is measured, and it cannot be changed once the load is booked.`}
+      </p>
 
       <label className="threshold-form-field">
         <span>Agreed freight (optional)</span>
@@ -556,6 +607,7 @@ export function Deliveries({ db, permissions, apiOptions }: DeliveriesProps): Re
       apiOptions={apiOptions ?? EMPTY_OPTIONS}
       locationId={location.id}
       locationCode={location.code}
+      timeZone={location.timeZone}
     />
   );
 }
@@ -625,12 +677,15 @@ function DeliveriesAt({
   apiOptions,
   locationId,
   locationCode,
+  timeZone,
 }: {
   readonly db: LocalDb;
   readonly permissions: PermissionsState;
   readonly apiOptions: ApiCallOptions;
   readonly locationId: string;
   readonly locationCode: string;
+  /** The LOCATION's zone, synced tenant data — the trading day is derived from it. */
+  readonly timeZone: string | null;
 }): ReactNode {
   const listInput = useMemo(() => ({ locationIds: [locationId] }), [locationId]);
   const { state, refresh } = useApiQuery(
@@ -751,6 +806,7 @@ function DeliveriesAt({
             <DispatchForm
               carriers={carriers.state.data.suppliers.filter((s) => s.isActive)}
               orders={orders.state.data.orders}
+              timeZone={timeZone}
               apiOptions={apiOptions}
               onPlanned={() => {
                 setDispatching(false);

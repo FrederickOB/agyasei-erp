@@ -76,6 +76,10 @@ import {
   fetchPurchaseOrders,
   fetchSuppliers,
 } from '../../data/api/procurement';
+import {
+  fetchGoodsReceipt,
+  fetchPurchaseOrderReceiptStatus,
+} from '../../data/api/receiving';
 import { CAPABILITY, holdsCapabilityAt, type PermissionsState } from '../../data/api/session';
 import { useApiQuery } from '../../data/api/use-api-query';
 import type { LocalDb } from '../../data/db';
@@ -110,6 +114,7 @@ import {
 import { useLiveQuery } from '../../data/use-live-query';
 import { recordBadgeLabel } from '../../lib/badges';
 import { createClaimedHlcClock, type ClaimedHlcClock } from '../../lib/hlc';
+import { formatBasisPointsAsPercent } from '../../lib/ratio';
 import { formatQtyScaled, oneWholeUnit, parseQtyScaled, QuantityInputError } from '../../lib/quantity';
 import { uuidv7 } from '../../lib/uuidv7';
 import { useCurrencySpec } from '../../money/CurrencyContext';
@@ -118,6 +123,8 @@ import { Icon } from '../../ui/Icon';
 import { FetchedAt, ServerPending, ServerUnavailable } from '../shell/ServerAnswer';
 
 const WHAT_EXPECTED = 'What is expected here';
+const WHAT_RECEIVED_SO_FAR = 'What has already been booked in against this order';
+const WHAT_ONE_RECEIPT = 'What was signed for on that receipt';
 
 /** Stable identity, so a screen with no test seam does not refetch on render. */
 const EMPTY_OPTIONS: ApiCallOptions = {};
@@ -785,6 +792,306 @@ function QueuedReceiptRow({
 }
 
 // ---------------------------------------------------------------------------
+// Has this already been booked in?
+// ---------------------------------------------------------------------------
+
+/**
+ * ═══════════════════════════════════════════════════════════════════════════
+ * THE DOUBLE-RECEIVE QUESTION, ANSWERED BEFORE ANYBODY SIGNS
+ * ═══════════════════════════════════════════════════════════════════════════
+ * The server is idempotent: a replayed receipt carrying the same key is one
+ * receipt, and the outbox guarantees the replay. What no server can prevent is
+ * a person signing for the same load TWICE with two different keys — the
+ * morning shift booked it in, the afternoon shift has the same delivery note
+ * in their hand and no way to tell. That is a human failure mode and it needs
+ * a human answer: what has already gone in against this order, what is still
+ * outstanding, and which receipts those figures came from.
+ *
+ * Ordered and received are both in the ORDER LINE's own unit at its own scale
+ * — the supplier's unit, the one on the delivery note in the yard hand's
+ * hand — and the stocking figures are shown beside them because the shelf is
+ * denominated in a different unit and the two must never be confused.
+ *
+ * `qtyOutstanding` is SIGNED and is NOT clamped: a negative is an
+ * over-delivery, and hiding it hides the quantity a supplier will invoice for.
+ *
+ * ---------------------------------------------------------------------------
+ * ONLINE ONLY, AND IT SAYS SO — THIS ONE IS NOT ALLOWED A CACHED ANSWER
+ * ---------------------------------------------------------------------------
+ * Receipts are in no sync bucket, so a partitioned device cannot know what
+ * another gate booked in an hour ago. The panel says the server cannot be
+ * reached and shows NOTHING ELSE — deliberately not the take-down's
+ * `qtyOutstandingAtTakeDown`, which is a document from earlier in the day.
+ * The one figure that must never be stale is the one somebody is about to
+ * decide "it has not gone in yet" from.
+ */
+function ReceiptDetailPanel({
+  goodsReceiptId,
+  apiOptions,
+  onBack,
+}: {
+  readonly goodsReceiptId: string;
+  readonly apiOptions: ApiCallOptions;
+  readonly onBack: () => void;
+}): ReactNode {
+  const { state, refresh } = useApiQuery(
+    () => fetchGoodsReceipt(goodsReceiptId, apiOptions),
+    [goodsReceiptId, apiOptions],
+  );
+  return (
+    <section className="report-panel">
+      <header className="report-panel-head">
+        <h3>What was signed for</h3>
+        {state.status === 'ready' ? <FetchedAt atMs={state.fetchedAtMs} /> : null}
+      </header>
+      <button type="button" className="secondary-action pressable" onClick={onBack}>
+        <Icon name="back" size={20} />
+        Back to what is outstanding
+      </button>
+
+      {state.status === 'loading' ? (
+        <ServerPending what={WHAT_ONE_RECEIPT} slow={state.slow} rows={3} />
+      ) : null}
+      {state.status === 'failed' ? (
+        <ServerUnavailable what={WHAT_ONE_RECEIPT} failure={state.failure} onRetry={refresh} />
+      ) : null}
+      {state.status === 'ready' ? (
+        <>
+          <dl className="stock-figures">
+            <div>
+              <dt>Brought by</dt>
+              <dd>{state.data.supplierName}</dd>
+            </div>
+            <div>
+              <dt>Trading day</dt>
+              <dd className="tabular">{state.data.businessDate}</dd>
+            </div>
+            <div>
+              <dt>Their delivery note</dt>
+              <dd className="tabular">
+                {state.data.supplierDeliveryNoteRef ?? (
+                  <span className="figure-withheld">None recorded</span>
+                )}
+              </dd>
+            </div>
+            <div>
+              <dt>Their invoice</dt>
+              <dd className="tabular">
+                {state.data.supplierInvoiceRef ?? (
+                  <span className="figure-withheld">None recorded</span>
+                )}
+              </dd>
+            </div>
+          </dl>
+          {state.data.notes === null ? null : (
+            <p className="report-note">Note on it: {state.data.notes}</p>
+          )}
+          <div className="report-table-scroll">
+            <table className="report-table">
+              <caption>What the supplier invoiced, and what was counted off the truck</caption>
+              <thead>
+                <tr>
+                  <th scope="col">Product</th>
+                  <th scope="col" className="numeric">Invoiced</th>
+                  <th scope="col" className="numeric">Counted onto the shelf</th>
+                  <th scope="col" className="numeric">Difference</th>
+                </tr>
+              </thead>
+              <tbody>
+                {state.data.lines.map((l) => (
+                  <tr key={l.goodsReceiptLineId}>
+                    <th scope="row">
+                      <span className="report-loc-name">{l.productName}</span>{' '}
+                      <span className="report-loc-code tabular">{l.skuCode}</span>
+                    </th>
+                    <td className="numeric tabular">
+                      {formatQtyScaled(l.qtyReceived, l.qtyReceivedScale)} {l.uomCode}
+                    </td>
+                    <td className="numeric tabular">
+                      {formatQtyScaled(l.qtyStock, l.qtyStockScale)} {l.stockingUomCode}
+                    </td>
+                    {/* Counted against what the conversion said. Zero means the
+                        two agreed and nobody had to assert anything. */}
+                    <td className="numeric tabular">
+                      {l.deviationBp === 0n ? (
+                        <span className="figure-withheld">none</span>
+                      ) : (
+                        <>
+                          {formatBasisPointsAsPercent(l.deviationBp)}% from{' '}
+                          {formatQtyScaled(l.qtyStockComputed, l.qtyStockScale)}{' '}
+                          {l.stockingUomCode}
+                          {l.conversionConfirmedBy === null ? null : ', signed for'}
+                        </>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      ) : null}
+    </section>
+  );
+}
+
+function ReceiptStatusPanel({
+  purchaseOrderId,
+  supplierName,
+  apiOptions,
+  onBack,
+}: {
+  readonly purchaseOrderId: string;
+  readonly supplierName: string;
+  readonly apiOptions: ApiCallOptions;
+  readonly onBack: () => void;
+}): ReactNode {
+  const { state, refresh } = useApiQuery(
+    () => fetchPurchaseOrderReceiptStatus(purchaseOrderId, apiOptions),
+    [purchaseOrderId, apiOptions],
+  );
+  const [openReceipt, setOpenReceipt] = useState<string | null>(null);
+
+  if (openReceipt !== null) {
+    return (
+      <ReceiptDetailPanel
+        goodsReceiptId={openReceipt}
+        apiOptions={apiOptions}
+        onBack={() => setOpenReceipt(null)}
+      />
+    );
+  }
+
+  return (
+    <section className="report-panel">
+      <header className="report-panel-head">
+        <h3>Already booked in · {supplierName}</h3>
+        {state.status === 'ready' ? <FetchedAt atMs={state.fetchedAtMs} /> : null}
+      </header>
+      <button type="button" className="secondary-action pressable" onClick={onBack}>
+        <Icon name="back" size={20} />
+        Back to what is expected
+      </button>
+
+      {state.status === 'loading' ? (
+        <ServerPending what={WHAT_RECEIVED_SO_FAR} slow={state.slow} rows={3} />
+      ) : null}
+
+      {/* NOTHING ELSE IS SHOWN. The take-down's figure is a document from
+          earlier in the day and this is the question nobody may answer from a
+          stale number. */}
+      {state.status === 'failed' ? (
+        <>
+          <ServerUnavailable
+            what={WHAT_RECEIVED_SO_FAR}
+            failure={state.failure}
+            onRetry={refresh}
+          />
+          <p className="adjust-kind-note">
+            What has already gone in is kept on the server, and another yard may have booked
+            something in against this order since this device last spoke to it. The copy taken at
+            the gate cannot answer this — it says what the order looked like when it was taken, not
+            what has arrived since. Sign for what is physically here; the server matches it up and
+            will not double-count a receipt that has already landed.
+          </p>
+        </>
+      ) : null}
+
+      {state.status === 'ready' ? (
+        <>
+          <p className="report-note">
+            {state.data.isFullyReceived
+              ? 'Everything on this order has been booked in. Anything more against it is an over-delivery.'
+              : 'Some of this order is still outstanding. What is below is what the office holds right now.'}
+          </p>
+
+          <div className="report-table-scroll">
+            <table className="report-table">
+              <caption>Ordered against received, in the unit it was ordered in</caption>
+              <thead>
+                <tr>
+                  <th scope="col">Product</th>
+                  <th scope="col" className="numeric">Ordered</th>
+                  <th scope="col" className="numeric">Already in</th>
+                  <th scope="col" className="numeric">Outstanding</th>
+                  <th scope="col" className="numeric">On the shelf so far</th>
+                </tr>
+              </thead>
+              <tbody>
+                {state.data.lines.map((l) => (
+                  <tr key={l.purchaseOrderLineId}>
+                    <th scope="row">
+                      <span className="report-loc-name">{l.productName}</span>{' '}
+                      <span className="report-loc-code tabular">{l.skuCode}</span>
+                    </th>
+                    <td className="numeric tabular">
+                      {formatQtyScaled(l.qtyOrdered, l.qtyScale)} {l.uomCode}
+                    </td>
+                    <td className="numeric tabular">
+                      {formatQtyScaled(l.qtyReceived, l.qtyScale)} {l.uomCode}
+                      {l.receiptLineCount === 0n ? null : (
+                        <span className="figure-withheld">
+                          {' '}
+                          on {l.receiptLineCount.toString()} receipt
+                          {l.receiptLineCount === 1n ? '' : 's'}
+                        </span>
+                      )}
+                    </td>
+                    {/* SIGNED. A negative is an over-delivery and is said to be
+                        one, because the supplier will invoice for it. */}
+                    <td className="numeric tabular">
+                      {l.qtyOutstanding < 0n ? (
+                        <span className="over-delivered">
+                          {formatQtyScaled(-l.qtyOutstanding, l.qtyScale)} {l.uomCode} over
+                        </span>
+                      ) : l.qtyOutstanding === 0n ? (
+                        <span className="figure-withheld">all in</span>
+                      ) : (
+                        `${formatQtyScaled(l.qtyOutstanding, l.qtyScale)} ${l.uomCode} short`
+                      )}
+                    </td>
+                    <td className="numeric tabular">
+                      {formatQtyScaled(l.qtyStockReceived, l.qtyStockScale)}{' '}
+                      {l.stockingUomCode} of{' '}
+                      {formatQtyScaled(l.qtyOrderedStock, l.qtyStockScale)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          <h4 className="report-subhead">Receipts posted against it</h4>
+          {state.data.receipts.length === 0 ? (
+            <p className="adjust-kind-note">
+              Nothing has been signed for against this order yet. If a load is at the gate it has
+              not been booked in by anybody.
+            </p>
+          ) : (
+            <ul className="order-list" aria-label="Receipts posted against this order">
+              {state.data.receipts.map((r) => (
+                <li key={r.goodsReceiptId} className="order-row">
+                  <button
+                    type="button"
+                    className="order-row-open pressable"
+                    onClick={() => setOpenReceipt(r.goodsReceiptId)}
+                  >
+                    <span className="stock-row-head">
+                      <span className="report-loc-name">Signed for on {r.businessDate}</span>
+                    </span>
+                    <span className="order-row-status">Open it</span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </>
+      ) : null}
+    </section>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // The screen
 // ---------------------------------------------------------------------------
 
@@ -846,6 +1153,11 @@ function ReceivingAt({
   const [hlc, setHlc] = useState<ClaimedHlcClock | null>(null);
   const [target, setTarget] = useState<ReceiptTarget | null>(null);
   const [signed, setSigned] = useState<{ lines: number; confirmed: number } | null>(null);
+  /** Which order the yard is asking "has this already gone in?" about. */
+  const [checking, setChecking] = useState<{
+    readonly purchaseOrderId: string;
+    readonly supplierName: string;
+  } | null>(null);
   const [takingDown, setTakingDown] = useState(false);
   const [takeDownProblem, setTakeDownProblem] = useState<string | null>(null);
 
@@ -964,6 +1276,22 @@ function ReceivingAt({
             </p>
           </div>
         </section>
+      </div>
+    );
+  }
+
+  if (checking !== null) {
+    return (
+      <div className="receiving-screen">
+        <header className="report-panel-head">
+          <h2>Already booked in · {locationCode}</h2>
+        </header>
+        <ReceiptStatusPanel
+          purchaseOrderId={checking.purchaseOrderId}
+          supplierName={checking.supplierName}
+          apiOptions={apiOptions}
+          onBack={() => setChecking(null)}
+        />
       </div>
     );
   }
@@ -1159,6 +1487,24 @@ function ReceivingAt({
                 <span className="order-row-status">
                   {row.fromCopy ? 'From the copy taken at the gate' : 'Waiting to arrive'}
                 </span>
+              </button>
+              {/* THE DOUBLE-RECEIVE ANSWER, one tap from the row a yard hand is
+                  already looking at. Offered on the copy's rows too: the read
+                  needs a connection and says so when it has none, which is a
+                  better answer than a control that is not there at all. */}
+              <button
+                type="button"
+                className="secondary-action pressable"
+                aria-label={`What has already come in against the order of ${row.orderDate}`}
+                onClick={() =>
+                  setChecking({
+                    purchaseOrderId: row.purchaseOrderId,
+                    supplierName: row.supplierName,
+                  })
+                }
+              >
+                <Icon name="receipt" size={18} />
+                Has this already come in?
               </button>
             </li>
           ))}

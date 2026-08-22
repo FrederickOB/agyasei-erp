@@ -417,3 +417,291 @@ describe('a delivery with no order', () => {
     expect(form.textContent).toContain('No order — recorded as it stands');
   });
 });
+
+// ---------------------------------------------------------------------------
+// "Has this already been booked in?" — receiving.get and the receipt status
+// ---------------------------------------------------------------------------
+
+/**
+ * ═══════════════════════════════════════════════════════════════════════════
+ * THE DOUBLE-RECEIVE RISK IS A HUMAN ONE, AND THE SERVER CANNOT CLOSE IT
+ * ═══════════════════════════════════════════════════════════════════════════
+ * A replayed receipt carrying the same key is one receipt. Two people signing
+ * for the same load with two different keys is TWO receipts, both of them
+ * legitimate as far as the server can tell, and the only thing that stops it
+ * is a screen that answers "has this already gone in?" before anybody signs.
+ *
+ * These tests would all fail if the wiring were removed: each one asserts a
+ * real request went out on the wire and that the figures on the screen came
+ * back from it.
+ */
+interface Sent {
+  readonly path: string;
+  readonly input: string;
+}
+
+type Answer = { ok: true; json: unknown } | 'reject';
+
+function router(answers: Readonly<Record<string, Answer>>, sent: Sent[] = []): ApiFetch {
+  return (url, init) => {
+    const parsed = new URL(url);
+    const path = parsed.pathname.replace('/trpc/', '');
+    sent.push({ path, input: init.body ?? parsed.searchParams.get('input') ?? '' });
+    const answer = answers[path];
+    if (answer === undefined || answer === 'reject') return Promise.reject(new Error('no radio'));
+    return Promise.resolve({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({ result: { data: { json: answer.json } } }),
+    });
+  };
+}
+
+const RECEIPT = '018f3a1e-0000-7000-8000-0000000000f1';
+
+const ORDER_HEADER = {
+  purchaseOrderId: ORDER,
+  supplierId: SUPPLIER,
+  supplierCode: 'SUP-1',
+  supplierName: 'Northern Supply',
+  deliverToLocationId: LOC,
+  locationCode: 'OUT-01',
+  locationName: 'Main yard',
+  orderNo: null,
+  status: 'PARTIALLY_RECEIVED',
+  orderDate: '2026-08-20',
+  expectedAt: '2026-08-22',
+  currencyCode: 'XTS',
+  moneyScale: '100',
+  submittedAt: null,
+  approvedAt: '2026-08-20T12:00:00.000Z',
+  closedAt: null,
+  cancelledAt: null,
+  cancelReason: null,
+  notes: null,
+  lineCount: 1,
+  totalMinor: '450000',
+};
+
+const EXPECTED_LIST = {
+  scope: { locationCount: 1, network: false },
+  orderCount: 1,
+  totalMinor: '450000',
+  orders: [ORDER_HEADER],
+  locations: [{ locationId: LOC, locationCode: 'OUT-01', locationName: 'Main yard' }],
+};
+
+/** Five tonnes ordered, two already in, three still to come. */
+const RECEIPT_STATUS = {
+  purchaseOrderId: ORDER,
+  status: 'PARTIALLY_RECEIVED',
+  supplierId: SUPPLIER,
+  deliverToLocationId: LOC,
+  isFullyReceived: false,
+  lines: [
+    {
+      purchaseOrderLineId: ORDER_LINE,
+      lineNo: 1,
+      productId: PRODUCT,
+      skuCode: 'SKU-1',
+      productName: 'Binder 50kg',
+      uomCode: 'TONNE',
+      qtyScale: 3,
+      qtyOrdered: '5000',
+      qtyReceived: '2000',
+      qtyOutstanding: '3000',
+      stockingUomCode: 'SACK',
+      qtyStockScale: 0,
+      qtyOrderedStock: '100',
+      qtyStockReceived: '40',
+      isFullyReceived: false,
+      receiptLineCount: '1',
+    },
+  ],
+  receipts: [{ goodsReceiptId: RECEIPT, businessDate: '2026-08-21' }],
+};
+
+const ONE_RECEIPT = {
+  goodsReceiptId: RECEIPT,
+  purchaseOrderId: ORDER,
+  supplierId: SUPPLIER,
+  supplierName: 'Northern Supply',
+  locationId: LOC,
+  businessDate: '2026-08-21',
+  receivedAt: '2026-08-21T09:15:00.000Z',
+  supplierDeliveryNoteRef: 'DN-4471',
+  supplierInvoiceRef: null,
+  receivedByUserId: 'u1',
+  notes: null,
+  lines: [
+    {
+      goodsReceiptLineId: 'grl-1',
+      lineNo: 1,
+      purchaseOrderLineId: ORDER_LINE,
+      productId: PRODUCT,
+      skuCode: 'SKU-1',
+      productName: 'Binder 50kg',
+      uomCode: 'TONNE',
+      qtyReceived: '2000',
+      qtyReceivedScale: 3,
+      stockingUomCode: 'SACK',
+      qtyStock: '38',
+      qtyStockComputed: '40',
+      qtyStockScale: 0,
+      factorNum: '20',
+      factorDen: '1',
+      conversionConfirmedBy: 'u1',
+      deviationBp: '500',
+      unitCostE4: '900000000',
+      stockUnitCostE4: '45000000',
+      lineNetMinor: '180000',
+    },
+  ],
+};
+
+const YARD_ONLINE: Readonly<Record<string, Answer>> = {
+  'procurement.listPurchaseOrders': { ok: true, json: EXPECTED_LIST },
+  'receiving.purchaseOrderReceiptStatus': { ok: true, json: RECEIPT_STATUS },
+  'receiving.get': { ok: true, json: ONE_RECEIPT },
+};
+
+describe('has this already been booked in?', () => {
+  it('asks the server for what is outstanding against THIS order and shows it', async () => {
+    const db = await yard();
+    const sent: Sent[] = [];
+    renderScreen(db, holding([CAPABILITY.goodsReceive, CAPABILITY.purchaseOrderView]), {
+      endpoint: ENDPOINT,
+      fetchFn: router(YARD_ONLINE, sent),
+    });
+
+    fireEvent.click(
+      await screen.findByRole('button', {
+        name: 'What has already come in against the order of 2026-08-20',
+      }),
+    );
+
+    // The request actually went out, carrying THIS order's id. Remove the
+    // wiring and there is nothing on the wire to find.
+    await waitFor(() =>
+      expect(sent.some((s) => s.path === 'receiving.purchaseOrderReceiptStatus')).toBe(true),
+    );
+    const asked = sent.find((s) => s.path === 'receiving.purchaseOrderReceiptStatus');
+    expect(asked?.input).toContain(ORDER);
+
+    // Ordered, already in, and what remains — in the unit it was ordered in,
+    // which is the unit on the delivery note in the yard hand's hand.
+    expect(await screen.findByText(/3 TONNE short/)).toBeDefined();
+    expect(screen.getByText(/Some of this order is still outstanding/)).toBeDefined();
+    expect(screen.getByText(/Signed for on 2026-08-21/)).toBeDefined();
+  });
+
+  it('opens a posted receipt and shows invoiced against counted, with the difference', async () => {
+    const db = await yard();
+    const sent: Sent[] = [];
+    renderScreen(db, holding([CAPABILITY.goodsReceive, CAPABILITY.purchaseOrderView]), {
+      endpoint: ENDPOINT,
+      fetchFn: router(YARD_ONLINE, sent),
+    });
+
+    fireEvent.click(
+      await screen.findByRole('button', {
+        name: 'What has already come in against the order of 2026-08-20',
+      }),
+    );
+    fireEvent.click(await screen.findByRole('button', { name: /Signed for on 2026-08-21/ }));
+
+    await waitFor(() => expect(sent.some((s) => s.path === 'receiving.get')).toBe(true));
+    expect(sent.find((s) => s.path === 'receiving.get')?.input).toContain(RECEIPT);
+
+    // 2 tonnes invoiced, 38 sacks counted where the conversion said 40 — the
+    // deviation is shown as a fact, not as an error.
+    expect(await screen.findByText(/DN-4471/)).toBeDefined();
+    expect(screen.getByText(/38 SACK/)).toBeDefined();
+    expect(screen.getByText(/5% from 40 SACK, signed for/)).toBeDefined();
+  });
+
+  it('OFFLINE, says it cannot answer — and never falls back to the copy taken at the gate', async () => {
+    // The one figure that must never be stale. Somebody is about to decide
+    // "it has not gone in yet" from it, and the take-down is a document from
+    // earlier in the day that another yard's receipt would not be in.
+    const db = await yard();
+    await writeTakeDown(db, COPY);
+    renderScreen(db, holding([CAPABILITY.goodsReceive, CAPABILITY.purchaseOrderView]), {
+      endpoint: ENDPOINT,
+      fetchFn: DEAD_FETCH,
+    });
+
+    fireEvent.click(
+      await screen.findByRole('button', {
+        name: 'What has already come in against the order of 2026-08-20',
+      }),
+    );
+
+    expect(
+      await screen.findByText(/What has already been booked in against this order/),
+    ).toBeDefined();
+    expect(screen.getByText(/The copy taken at the gate cannot answer this/)).toBeDefined();
+    // No table of figures at all, and specifically not the copy's own
+    // outstanding quantity dressed up as the current one.
+    expect(screen.queryByRole('table')).toBeNull();
+    expect(screen.queryByText(/3 TONNE short/)).toBeNull();
+  });
+
+  it('says plainly when NOTHING has been signed for against the order yet', async () => {
+    const db = await yard();
+    renderScreen(db, holding([CAPABILITY.goodsReceive, CAPABILITY.purchaseOrderView]), {
+      endpoint: ENDPOINT,
+      fetchFn: router({
+        ...YARD_ONLINE,
+        'receiving.purchaseOrderReceiptStatus': {
+          ok: true,
+          json: { ...RECEIPT_STATUS, receipts: [] },
+        },
+      }),
+    });
+
+    fireEvent.click(
+      await screen.findByRole('button', {
+        name: 'What has already come in against the order of 2026-08-20',
+      }),
+    );
+    // An empty list would read as "I could not tell". This says which.
+    expect(
+      await screen.findByText(/Nothing has been signed for against this order yet/),
+    ).toBeDefined();
+  });
+
+  it('an OVER-delivery is said to be one, never clamped to nothing outstanding', async () => {
+    const db = await yard();
+    renderScreen(db, holding([CAPABILITY.goodsReceive, CAPABILITY.purchaseOrderView]), {
+      endpoint: ENDPOINT,
+      fetchFn: router({
+        ...YARD_ONLINE,
+        'receiving.purchaseOrderReceiptStatus': {
+          ok: true,
+          json: {
+            ...RECEIPT_STATUS,
+            isFullyReceived: true,
+            lines: [
+              {
+                ...RECEIPT_STATUS.lines[0],
+                qtyReceived: '6000',
+                qtyOutstanding: '-1000',
+                isFullyReceived: true,
+              },
+            ],
+          },
+        },
+      }),
+    });
+
+    fireEvent.click(
+      await screen.findByRole('button', {
+        name: 'What has already come in against the order of 2026-08-20',
+      }),
+    );
+    // A supplier will invoice for the extra tonne. Hiding it hides the bill.
+    expect(await screen.findByText(/1 TONNE over/)).toBeDefined();
+    expect(screen.getByText(/Anything more against it is an over-delivery/)).toBeDefined();
+  });
+});

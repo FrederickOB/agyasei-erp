@@ -58,6 +58,11 @@ import { buildServer } from '../../../apps/api/src/server.js';
 import { createApiHarness, JWT_SECRET, type ApiHarness } from '../../../apps/api/test/util.js';
 
 // ---- the client, from apps/web's own sources -------------------------------
+import type { ApiCallOptions, ApiFetch } from '../../../apps/web/src/data/api/client';
+import {
+  fetchGoodsReceipt,
+  fetchPurchaseOrderReceiptStatus,
+} from '../../../apps/web/src/data/api/receiving';
 import {
   RECEIPT_OUTBOX_KIND,
   recordGoodsReceipt,
@@ -131,6 +136,31 @@ const browserFetch: FetchLike = async (url, init) => {
   };
   return response;
 };
+
+/**
+ * The same socket, shaped for the READ client. `data/api/client.ts` and the
+ * upload transport take different fetch types on purpose — one is a query
+ * layer, the other a batch uploader — so the shim is stated twice rather than
+ * cast once.
+ */
+const browserApiFetch: ApiFetch = async (url, init) => {
+  const parsed = new URL(url, 'http://api.local');
+  const res = await app.inject({
+    method: init.method as 'GET' | 'POST',
+    url: `${parsed.pathname}${parsed.search}`,
+    headers: { ...init.headers, origin: PWA_ORIGIN },
+    ...(init.body === undefined ? {} : { payload: init.body }),
+  });
+  return {
+    ok: res.statusCode >= 200 && res.statusCode < 300,
+    status: res.statusCode,
+    json: () => Promise.resolve(res.json<unknown>()),
+  };
+};
+
+function readOptions(): ApiCallOptions {
+  return { endpoint: { url: 'http://api.local', bearer }, fetchFn: browserApiFetch };
+}
 
 /** The real transport, connected. */
 function online() {
@@ -714,5 +744,173 @@ describe('short deliveries and signed-for counts are ordinary trade', () => {
     expect(BigInt(lines[0]!.qty_stock_computed)).toBe(computed);
     // The server stamped WHO signed for the difference (04 §4.4.4).
     expect(lines[0]!.conversion_confirmed_by).not.toBeNull();
+  });
+
+  /**
+   * ═════════════════════════════════════════════════════════════════════════
+   * READ IT BACK THROUGH THE CLIENT — §0 row 16
+   * ═════════════════════════════════════════════════════════════════════════
+   * `receiving.get` was wired to a screen with the router covered by 33 API
+   * tests and the client's mappers covered by their own suite, and it was
+   * STILL unreadable by the PWA: the router selected `gr.received_at`
+   * uncast, `pg` returned a JS `Date`, superjson annotated it in a `meta`
+   * block, and `data/api/client.ts` REFUSES any envelope carrying `meta`. The
+   * server answered 200 and the screen said it could not read the reply.
+   *
+   * Neither suite could see it. The API tests call the router in process, so
+   * nothing is ever serialised; the client tests hand the mappers plain JSON
+   * somebody typed, so no `meta` can appear. Only a test that crosses the
+   * REAL serializer with the REAL mapper can — which is this package's whole
+   * reason to exist, and it simply had no case for these two routes.
+   */
+  describe('the receipt reads back through the CLIENT, across the real serializer', () => {
+    it('opens a posted receipt — the response is decodable, and a Date on the wire is not', async () => {
+      const { orderId, lineId } = await approvedOrder(approverUserId);
+      const db = await provisionedDevice();
+      const tonne = (await loadPurchaseUnits(db, productId)).find(
+        (u) => u.uomId === purchaseUomId,
+      )!;
+      const receiptId = uuidv7();
+      await recordGoodsReceipt(db, {
+        goodsReceiptId: receiptId,
+        supplierId,
+        purchaseOrderId: orderId,
+        lines: [
+          {
+            purchaseOrderLineId: lineId,
+            productId,
+            unit: tonne,
+            qtyReceived: 10_000n,
+            qtyStock: toStockQty(10_000n, tonne),
+            unitCostE4: 45_000_000n,
+          },
+        ],
+        hlc: fixedHlc(CLOCK_BASE_MS, NODE_YARD),
+        nowIso: tillClock(5),
+      });
+      expect((await drainOutbox(db, online())).completed).toBe(1);
+
+      const status = await fetchPurchaseOrderReceiptStatus(orderId, readOptions());
+      expect(status.ok).toBe(true);
+      if (!status.ok) throw new Error(JSON.stringify(status.failure));
+      const posted = status.data.receipts[0];
+      expect(posted).toBeDefined();
+
+      // THE ASSERTION THAT WAS MISSING. `malformed` here is the live failure
+      // this file exists to stop reaching a screen.
+      const opened = await fetchGoodsReceipt(posted!.goodsReceiptId, readOptions());
+      expect(opened.ok).toBe(true);
+      if (!opened.ok) throw new Error(JSON.stringify(opened.failure));
+
+      // A timestamp crosses as an ISO STRING. A `Date` would have been
+      // annotated by superjson and refused by the client before this line.
+      expect(typeof opened.data.receivedAt).toBe('string');
+      expect(() => new Date(opened.data.receivedAt).toISOString()).not.toThrow();
+      expect(opened.data.purchaseOrderId).toBe(orderId);
+      expect(opened.data.lines[0]!.purchaseOrderLineId).toBe(lineId);
+    });
+
+    it('carries NO superjson meta annotation on either receiving read', async () => {
+      const { orderId, lineId } = await approvedOrder(approverUserId);
+      const db = await provisionedDevice();
+      const tonne = (await loadPurchaseUnits(db, productId)).find(
+        (u) => u.uomId === purchaseUomId,
+      )!;
+      const receiptId = uuidv7();
+      await recordGoodsReceipt(db, {
+        goodsReceiptId: receiptId,
+        supplierId,
+        purchaseOrderId: orderId,
+        lines: [
+          {
+            purchaseOrderLineId: lineId,
+            productId,
+            unit: tonne,
+            qtyReceived: 5_000n,
+            qtyStock: toStockQty(5_000n, tonne),
+            unitCostE4: 45_000_000n,
+          },
+        ],
+        hlc: fixedHlc(CLOCK_BASE_MS, NODE_YARD),
+        nowIso: tillClock(6),
+      });
+      expect((await drainOutbox(db, online())).completed).toBe(1);
+
+      const grRows = await h.db.withTenant(tenantId, async (tx) =>
+        (
+          await tx.query<{ id: string }>(
+            `select id::text from app.goods_receipt where write_id = $1`,
+            [receiptId],
+          )
+        ).rows,
+      );
+      const grId = grRows[0]?.id;
+      expect(grId).toBeDefined();
+
+      // Straight at the route, so the envelope itself is inspected rather than
+      // the mapper's opinion of it.
+      for (const [route, input] of [
+        ['receiving.get', { goodsReceiptId: grId }],
+        ['receiving.purchaseOrderReceiptStatus', { purchaseOrderId: orderId }],
+      ] as const) {
+        const res = await app.inject({
+          method: 'GET',
+          url: `/trpc/${route}?input=${encodeURIComponent(JSON.stringify({ json: input }))}`,
+          headers: { authorization: `Bearer ${bearer}`, origin: PWA_ORIGIN },
+        });
+        expect(res.statusCode).toBe(200);
+        const body = res.json<{ result: { data: Record<string, unknown> } }>();
+        // `meta` means a type plain JSON cannot carry got onto the wire.
+        expect(Object.keys(body.result.data)).not.toContain('meta');
+      }
+    });
+
+    it('reports outstanding as ordered MINUS received, and says so before anything arrives', async () => {
+      const { orderId, lineId } = await approvedOrder(approverUserId);
+
+      const before = await fetchPurchaseOrderReceiptStatus(orderId, readOptions());
+      expect(before.ok).toBe(true);
+      if (!before.ok) throw new Error(JSON.stringify(before.failure));
+      // NOT an empty list that reads as "nothing to do": the line is there,
+      // outstanding in full, and the order is not fully received.
+      expect(before.data.lines).toHaveLength(1);
+      expect(before.data.receipts).toHaveLength(0);
+      expect(before.data.isFullyReceived).toBe(false);
+      const ordered = before.data.lines[0]!.qtyOrdered;
+      expect(before.data.lines[0]!.qtyOutstanding).toBe(ordered);
+
+      const db = await provisionedDevice();
+      const tonne = (await loadPurchaseUnits(db, productId)).find(
+        (u) => u.uomId === purchaseUomId,
+      )!;
+      const part = ordered / 4n;
+      await recordGoodsReceipt(db, {
+        goodsReceiptId: uuidv7(),
+        supplierId,
+        purchaseOrderId: orderId,
+        lines: [
+          {
+            purchaseOrderLineId: lineId,
+            productId,
+            unit: tonne,
+            qtyReceived: part,
+            qtyStock: toStockQty(part, tonne),
+            unitCostE4: 45_000_000n,
+          },
+        ],
+        hlc: fixedHlc(CLOCK_BASE_MS, NODE_YARD),
+        nowIso: tillClock(7),
+      });
+      expect((await drainOutbox(db, online())).completed).toBe(1);
+
+      const after = await fetchPurchaseOrderReceiptStatus(orderId, readOptions());
+      expect(after.ok).toBe(true);
+      if (!after.ok) throw new Error(JSON.stringify(after.failure));
+      expect(after.data.lines[0]!.qtyReceived).toBe(part);
+      expect(after.data.lines[0]!.qtyOutstanding).toBe(ordered - part);
+      expect(after.data.lines[0]!.isFullyReceived).toBe(false);
+      expect(after.data.isFullyReceived).toBe(false);
+      expect(after.data.receipts).toHaveLength(1);
+    });
   });
 });

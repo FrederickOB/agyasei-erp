@@ -326,10 +326,13 @@ describe('cost and margin are a narrower audience', () => {
     renderReports(db, holding([CAPABILITY.reportLocation]), opts);
 
     await screen.findAllByText(/Total of your locations only/);
-    expect(await screen.findAllByText(/Not part of what you can see/)).toHaveLength(2);
+    // Three margin-gated panels now: stock cover, the distribution ratio, and
+    // the per-carrier split the ratio is negotiated down through.
+    expect(await screen.findAllByText(/Not part of what you can see/)).toHaveLength(3);
     await waitFor(() => expect(asked.length).toBeGreaterThan(0));
     expect(asked).not.toContain('reports.inventoryDays');
     expect(asked).not.toContain('reports.distributionCostRatio');
+    expect(asked).not.toContain('logistics.haulageSpend');
     // The absence is words, never a figure somebody could act on.
     expect(screen.queryByText('0.00')).toBeNull();
   });
@@ -412,7 +415,7 @@ describe('offline', () => {
     renderReports(db, holding([CAPABILITY.reportLocation, CAPABILITY.reportMargin]), opts);
 
     const notices = await screen.findAllByText(/Not available offline\./);
-    expect(notices.length).toBe(5);
+    expect(notices.length).toBe(6);
     expect(screen.queryByRole('table')).toBeNull();
     // The words that matter: not an old figure, not an empty list.
     expect(
@@ -644,5 +647,169 @@ describe('distribution cost as a percentage of revenue', () => {
     expect(screen.queryByText('5%')).toBeNull();
     // What IS shown about the limits of the figure is the SERVER's own words.
     expect(screen.getByText(/AGREED freight on third-party deliveries/)).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Haulage per carrier — logistics.haulageSpend's `carriers`
+// ---------------------------------------------------------------------------
+
+/**
+ * ═══════════════════════════════════════════════════════════════════════════
+ * THE RATIO IS THE OUTCOME. THE PER-CARRIER SPLIT IS THE LEVER.
+ * ═══════════════════════════════════════════════════════════════════════════
+ * ADR-0001 gave up the owned fleet on the argument that third-party rates
+ * could be driven DOWN. A rate is driven down in one conversation with one
+ * haulier, holding what that haulier has actually been agreed and over how
+ * many loads. Nobody can pull a lever they cannot see, so the split has to be
+ * on a screen — and it has to say when a carrier's figure is a FLOOR, because
+ * walking into a rate negotiation with a total that is quietly missing four
+ * loads is worse than walking in with no figure at all.
+ */
+function bucket(over: Readonly<Record<string, unknown>> = {}): Record<string, unknown> {
+  return {
+    haulageSpendMinor: '4500',
+    deliveryCount: 3,
+    deliveriesWithNoAgreedFreight: 0,
+    unavailable: null,
+    ...over,
+  };
+}
+
+function haulagePayload(over: Readonly<Record<string, unknown>> = {}): unknown {
+  return {
+    from: '2026-08-01',
+    to: '2026-08-07',
+    scope: { network: false, locationCount: 1 },
+    currencyCode: 'XTS',
+    moneyScale: '2',
+    locations: [
+      { locationId: LOC, locationCode: 'OUT-01', locationName: 'Main counter', ...bucket() },
+    ],
+    groups: [],
+    groupsNest: true,
+    carriers: [
+      {
+        carrierSupplierId: 's-1',
+        carrierName: 'Northern Haulage',
+        haulageSpendMinor: '3000',
+        deliveryCount: 2,
+        deliveriesWithNoAgreedFreight: 0,
+      },
+      {
+        carrierSupplierId: 's-2',
+        carrierName: 'Riverside Transport',
+        haulageSpendMinor: '1500',
+        deliveryCount: 1,
+        deliveriesWithNoAgreedFreight: 0,
+      },
+    ],
+    total: bucket(),
+    basis: 'AGREED_NOT_INVOICED',
+    excludedStatus: 'CANCELLED',
+    limitApplies: false,
+    periodBasis: {
+      datedByAssertion: 3,
+      datedByPlannedFor: 0,
+      datedByDispatchClock: 0,
+      datedByRowCreated: 0,
+      note: 'Every delivery in this period carries an asserted business date.',
+    },
+    method: 'Agreed freight per carrier, dated by business date.',
+    ...over,
+  };
+}
+
+const MARGIN_READY: Readonly<Record<string, unknown>> = {
+  'reports.salesByLocation': salesPayload(false),
+  'reports.cashPosition': cashPayload(false),
+  'reports.stockOnHand': stockPayload(false),
+  'reports.inventoryDays': inventoryDaysPayload(),
+  'reports.distributionCostRatio': distributionPayload(),
+  'logistics.haulageSpend': haulagePayload(),
+};
+
+describe('what each haulier has been agreed', () => {
+  it('asks the server for it and names every carrier, with its share of the spend', async () => {
+    const db = await till();
+    const asked: string[] = [];
+    renderReports(db, holding([CAPABILITY.reportLocation, CAPABILITY.reportMargin]), {
+      endpoint: ENDPOINT,
+      fetchFn: router(MARGIN_READY, asked),
+    });
+
+    // The request goes out. Remove the wiring and this line fails first.
+    expect(await screen.findByText('Northern Haulage')).toBeDefined();
+    expect(asked).toContain('logistics.haulageSpend');
+    expect(screen.getByText('Riverside Transport')).toBeDefined();
+    // 3000 of 4500 is 66.67%, rounded once in integer arithmetic and never
+    // recomputed from anything already on the screen.
+    expect(screen.getByText('66.67%')).toBeDefined();
+    expect(screen.getByText('33.33%')).toBeDefined();
+    // In the server's own words, so a paraphrase cannot drift from it.
+    expect(screen.getByText(/Agreed freight per carrier/)).toBeDefined();
+  });
+
+  it('says a carrier’s figure is a FLOOR when some of its loads had nothing agreed', async () => {
+    const db = await till();
+    renderReports(db, holding([CAPABILITY.reportLocation, CAPABILITY.reportMargin]), {
+      endpoint: ENDPOINT,
+      fetchFn: router({
+        ...MARGIN_READY,
+        'logistics.haulageSpend': haulagePayload({
+          carriers: [
+            {
+              carrierSupplierId: 's-1',
+              carrierName: 'Northern Haulage',
+              haulageSpendMinor: '3000',
+              deliveryCount: 5,
+              deliveriesWithNoAgreedFreight: 2,
+            },
+          ],
+          total: bucket({ deliveryCount: 5, deliveriesWithNoAgreedFreight: 2 }),
+        }),
+      }),
+    });
+
+    await screen.findByText('Northern Haulage');
+    // Never a bare total. "At least" is the difference between a figure to
+    // negotiate from and one to be embarrassed by.
+    expect(screen.getAllByText(/at least/).length).toBeGreaterThan(0);
+    expect(screen.getByText(/\(2 with no agreed freight\)/)).toBeDefined();
+  });
+
+  it('says nothing moved rather than showing an empty table', async () => {
+    const db = await till();
+    renderReports(db, holding([CAPABILITY.reportLocation, CAPABILITY.reportMargin]), {
+      endpoint: ENDPOINT,
+      fetchFn: router({
+        ...MARGIN_READY,
+        'logistics.haulageSpend': haulagePayload({
+          carriers: [],
+          total: bucket({ haulageSpendMinor: '0', deliveryCount: 0 }),
+        }),
+      }),
+    });
+
+    expect(
+      await screen.findByText(/No load was handed to anybody in this period/),
+    ).toBeDefined();
+  });
+
+  it('is refused honestly when the server refuses it, and takes no other panel down', async () => {
+    const db = await till();
+    const answers = { ...MARGIN_READY };
+    delete (answers as Record<string, unknown>)['logistics.haulageSpend'];
+    renderReports(db, holding([CAPABILITY.reportLocation, CAPABILITY.reportMargin]), {
+      endpoint: ENDPOINT,
+      fetchFn: router(answers),
+    });
+
+    // The refusal is shown in the server's words…
+    expect(
+      await screen.findByText(/PERMISSION_DENIED: logistics.haulageSpend/),
+    ).toBeDefined();
+    // …and the takings panel beside it still answered.
+    expect(screen.getAllByText(/Total of your locations only/).length).toBeGreaterThan(0);
   });
 });

@@ -44,6 +44,7 @@ import {
   listSuppliersInput,
   lowStockInput,
   suppliersForProductInput,
+  updatePurchaseOrderInput,
   upsertSupplierInput,
   upsertSupplierProductInput,
   type ChangePurchaseOrderStatusInput,
@@ -53,6 +54,7 @@ import {
   type LowStockInput,
   type PurchaseOrderStatus,
   type SupplierCapabilityKind,
+  type UpdatePurchaseOrderInput,
   type UpsertSupplierInput,
   type UpsertSupplierProductInput,
 } from '@erp/contracts';
@@ -919,4 +921,119 @@ export function upsertSupplierProduct(
     mapUpsertedSupplierProduct,
     options,
   );
+}
+
+// ---------------------------------------------------------------------------
+// Amending an order that has not left DRAFT
+// ---------------------------------------------------------------------------
+
+/**
+ * One line as the server re-planned it after an amendment. The conversion,
+ * the extended amount and the stocking-unit quantity are all recomputed there
+ * — this client states what is being bought and what was agreed for it, never
+ * a total (the same rule `createPurchaseOrder` follows).
+ */
+export interface AmendedPurchaseOrderLine {
+  readonly lineNo: number;
+  readonly productId: string;
+  readonly skuCode: string;
+  readonly uomId: string;
+  readonly uomCode: string;
+  readonly qtyScale: number;
+  readonly qtyOrdered: bigint;
+  readonly unitPriceE4: bigint;
+  readonly stockingUomId: string;
+  readonly stockingUomCode: string;
+  readonly qtyStockScale: number;
+  readonly qtyOrderedStock: bigint;
+  readonly factorNum: bigint;
+  readonly factorDen: bigint;
+  readonly lineNetMinor: bigint;
+  readonly notes: string | null;
+}
+
+export interface AmendedPurchaseOrder {
+  readonly purchaseOrderId: string;
+  readonly status: string;
+  readonly expectedAt: string | null;
+  readonly notes: string | null;
+  /** FALSE for a header-only amendment — the lines were left exactly as they were. */
+  readonly linesReplaced: boolean;
+  readonly lineCount: number;
+  /** Σ(lines) as the SERVER recomputed them. Never a figure this device sent. */
+  readonly totalMinor: bigint;
+  /** Null when the lines were not replaced. */
+  readonly lines: readonly AmendedPurchaseOrderLine[] | null;
+}
+
+function mapAmendedLine(entry: unknown, what: string): AmendedPurchaseOrderLine {
+  const row = asRecord(entry, what);
+  return {
+    lineNo: asCount(row['lineNo'], `${what}.lineNo`),
+    productId: asString(row['productId'], `${what}.productId`),
+    skuCode: asString(row['skuCode'], `${what}.skuCode`),
+    uomId: asString(row['uomId'], `${what}.uomId`),
+    uomCode: asString(row['uomCode'], `${what}.uomCode`),
+    qtyScale: asCount(row['qtyScale'], `${what}.qtyScale`),
+    qtyOrdered: asScaled(row['qtyOrdered'], `${what}.qtyOrdered`),
+    unitPriceE4: asScaled(row['unitPriceE4'], `${what}.unitPriceE4`),
+    stockingUomId: asString(row['stockingUomId'], `${what}.stockingUomId`),
+    stockingUomCode: asString(row['stockingUomCode'], `${what}.stockingUomCode`),
+    qtyStockScale: asCount(row['qtyStockScale'], `${what}.qtyStockScale`),
+    qtyOrderedStock: asScaled(row['qtyOrderedStock'], `${what}.qtyOrderedStock`),
+    factorNum: asScaled(row['factorNum'], `${what}.factorNum`),
+    factorDen: asScaled(row['factorDen'], `${what}.factorDen`),
+    lineNetMinor: asScaled(row['lineNetMinor'], `${what}.lineNetMinor`),
+    notes: asOptionalString(row['notes'], `${what}.notes`),
+  };
+}
+
+function mapAmended(json: unknown): AmendedPurchaseOrder {
+  const row = asRecord(json, 'procurement.updatePurchaseOrder');
+  const lines = row['lines'];
+  return {
+    purchaseOrderId: asString(row['purchaseOrderId'], 'purchaseOrderId'),
+    status: asString(row['status'], 'status'),
+    expectedAt: asOptionalString(row['expectedAt'], 'expectedAt'),
+    notes: asOptionalString(row['notes'], 'notes'),
+    linesReplaced: asBoolean(row['linesReplaced'], 'linesReplaced'),
+    lineCount: asCount(row['lineCount'], 'lineCount'),
+    totalMinor: asScaled(row['totalMinor'], 'totalMinor'),
+    lines:
+      lines === null || lines === undefined
+        ? null
+        : asArray(lines, 'lines').map((l, i) => mapAmendedLine(l, `lines[${String(i)}]`)),
+  };
+}
+
+/**
+ * ═══════════════════════════════════════════════════════════════════════════
+ * AMEND A DRAFT. ONLINE ONLY, AND THE SERVER REFUSES IT ONCE IT HAS MOVED ON
+ * ═══════════════════════════════════════════════════════════════════════════
+ * DRAFT is the ONLY status that legally takes an amendment, and that is an
+ * audit control rather than a convenience: if an approved order could take a
+ * silent line change, an approval would certify nothing — whatever turned up
+ * could be written back onto the order afterwards and the receipt would match
+ * perfectly. The server refuses every other status with PRECONDITION_FAILED
+ * and 0008's trigger refuses a line edit that never reaches the router at all.
+ *
+ * A caller that offers this control on a non-DRAFT order is offering something
+ * the server will refuse; `features/purchasing` therefore reads the status off
+ * the server's own answer and offers it on DRAFT alone. Hiding it is still a
+ * COURTESY — the boundary is the server's (CLAUDE.md §2.6).
+ *
+ * `lines` REPLACES every line when supplied and is omitted for a header-only
+ * amendment, so an unchanged line keeps the exact rate it was agreed at rather
+ * than a value that has been through a text box.
+ *
+ * `idempotencyKey` is the CALLER's, minted when the form opens and held across
+ * every retry: a double-tap is one amendment, not two.
+ */
+export function updatePurchaseOrder(
+  input: UpdatePurchaseOrderInput,
+  options: ApiCallOptions = {},
+): Promise<ApiResult<AmendedPurchaseOrder>> {
+  const bad = guard(updatePurchaseOrderInput, 'procurement.updatePurchaseOrder', input);
+  if (bad !== null) return Promise.resolve(bad);
+  return apiMutate('procurement.updatePurchaseOrder', input, mapAmended, options);
 }

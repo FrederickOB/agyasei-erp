@@ -543,3 +543,261 @@ describe('offline', () => {
     ).toBeDefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Correcting a draft — procurement.updatePurchaseOrder
+// ---------------------------------------------------------------------------
+
+/**
+ * ═══════════════════════════════════════════════════════════════════════════
+ * A MISTYPED QUANTITY MUST NOT COST AN ABANDONED DOCUMENT
+ * ═══════════════════════════════════════════════════════════════════════════
+ * Until the amendment route had a caller, correcting a draft meant cancelling
+ * it and raising another — an abandoned order in the audit trail for a typing
+ * slip.
+ *
+ * The window is DRAFT and ONLY DRAFT, and that is the SERVER's rule: the API
+ * refuses an amendment on SUBMITTED, APPROVED and CANCELLED with
+ * PRECONDITION_FAILED, and 0008's trigger refuses a line edit that never
+ * reaches the router at all (`apps/api/test/procurement.test.ts`). If an
+ * approved order could take a silent line change, an approval would certify
+ * nothing. So this screen offers the control on a draft and nowhere else,
+ * rather than offering it everywhere and letting somebody discover the refusal
+ * after typing.
+ *
+ * Every test below fails if the wiring is removed: each asserts the request
+ * reached the wire, or that the control is honestly absent.
+ */
+const PRODUCT_2 = '018f3a1e-0000-7000-8000-0000000000c2';
+const UOM_SHEET = '018f3a1e-0000-7000-8000-0000000000b3';
+
+/**
+ * The shared DETAIL fixture carries placeholder ids for its units. These do
+ * not, and that is load-bearing: the amendment is proved against the SHARED
+ * contract before it leaves the device, so a line whose `uomId` is not a uuid
+ * never reaches the wire at all — as this file discovered by writing one.
+ */
+const DRAFT_DETAIL = {
+  ...DETAIL,
+  status: 'DRAFT',
+  legalNextStatuses: ['SUBMITTED', 'CANCELLED'],
+  lines: [{ ...DETAIL.lines[0], uomId: UOM_TONNE }],
+};
+
+const DRAFT_TWO_LINES = {
+  ...DRAFT_DETAIL,
+  lineCount: 2,
+  totalMinor: '580000',
+  lines: [
+    { ...DETAIL.lines[0], uomId: UOM_TONNE },
+    {
+      ...DETAIL.lines[0],
+      purchaseOrderLineId: 'pol-2',
+      lineNo: 2,
+      productId: PRODUCT_2,
+      skuCode: 'SKU-2',
+      productName: 'Roofing sheet',
+      uomId: UOM_SHEET,
+      uomCode: 'SHEET',
+      qtyScale: 0,
+      qtyOrdered: '10',
+      qtyReceived: '0',
+      qtyOutstanding: '10',
+      unitPriceE4: '130000000',
+      lineNetMinor: '130000',
+    },
+  ],
+};
+
+const AMENDED = {
+  purchaseOrderId: ORDER,
+  status: 'DRAFT',
+  expectedAt: null,
+  notes: null,
+  linesReplaced: true,
+  lineCount: 1,
+  totalMinor: '360000',
+  lines: [
+    {
+      lineNo: 1,
+      productId: PRODUCT,
+      skuCode: 'SKU-1',
+      uomId: 'u-tonne',
+      uomCode: 'TONNE',
+      qtyScale: 3,
+      qtyOrdered: '4000',
+      unitPriceE4: '900000000',
+      stockingUomId: 'u-sack',
+      stockingUomCode: 'SACK',
+      qtyStockScale: 0,
+      qtyOrderedStock: '80',
+      factorNum: '20',
+      factorDen: '1',
+      lineNetMinor: '360000',
+      notes: null,
+    },
+  ],
+};
+
+function draftRouter(
+  detail: unknown,
+  sent: Sent[] = [],
+  amend: Answer = { ok: true, json: AMENDED },
+): ApiFetch {
+  return router(
+    {
+      'procurement.listPurchaseOrders': { ok: true, json: LIST },
+      'procurement.purchaseOrder': { ok: true, json: detail },
+      'procurement.reorderSuggestions': { ok: true, json: SUGGESTIONS_EMPTY },
+      'procurement.listSuppliers': { ok: true, json: SUPPLIERS },
+      'procurement.updatePurchaseOrder': amend,
+    },
+    sent,
+  );
+}
+
+/** Open the order, then the correction form. */
+async function openAmendForm(fetchFn: ApiFetch, db: LocalDb): Promise<void> {
+  renderScreen(db, holding([CAPABILITY.purchaseOrderView, CAPABILITY.purchaseOrderCreate]), {
+    endpoint: ENDPOINT,
+    fetchFn,
+  });
+  fireEvent.click(await screen.findByRole('button', { name: /Northern Supply/ }));
+  fireEvent.click(await screen.findByRole('button', { name: 'Correct this order' }));
+  await screen.findByRole('form', { name: 'Correct this order' });
+}
+
+describe('a draft can be corrected; anything further along cannot', () => {
+  it('offers the correction on a DRAFT to somebody who may raise orders', async () => {
+    const db = await device();
+    renderScreen(db, holding([CAPABILITY.purchaseOrderView, CAPABILITY.purchaseOrderCreate]), {
+      endpoint: ENDPOINT,
+      fetchFn: draftRouter(DRAFT_DETAIL),
+    });
+    fireEvent.click(await screen.findByRole('button', { name: /Northern Supply/ }));
+    expect(await screen.findByRole('button', { name: 'Correct this order' })).toBeDefined();
+  });
+
+  it('does NOT offer it once the order has been submitted, and says why', async () => {
+    const db = await device();
+    renderScreen(db, holding([CAPABILITY.purchaseOrderView, CAPABILITY.purchaseOrderCreate]), {
+      endpoint: ENDPOINT,
+      // The shared DETAIL fixture is SUBMITTED.
+      fetchFn: draftRouter(DETAIL),
+    });
+    fireEvent.click(await screen.findByRole('button', { name: /Northern Supply/ }));
+    await screen.findByRole('button', { name: 'Cancel this order' });
+
+    expect(screen.queryByRole('button', { name: 'Correct this order' })).toBeNull();
+    // A missing button and "this can no longer be changed" are different
+    // messages, and only the second stops somebody hunting for it.
+    expect(
+      screen.getByText(/has left draft, so its lines are frozen and cannot be corrected/),
+    ).toBeDefined();
+  });
+
+  it('does NOT offer it to somebody who may only approve, even on a draft', async () => {
+    const db = await device();
+    renderScreen(db, holding([CAPABILITY.purchaseOrderView, CAPABILITY.purchaseOrderApprove]), {
+      endpoint: ENDPOINT,
+      fetchFn: draftRouter(DRAFT_DETAIL),
+    });
+    fireEvent.click(await screen.findByRole('button', { name: /Northern Supply/ }));
+    await screen.findByText(/Being written/);
+    expect(screen.queryByRole('button', { name: 'Correct this order' })).toBeNull();
+  });
+});
+
+describe('what a correction actually sends', () => {
+  it('sends the amended quantity, and the UNTOUCHED rate exactly as it was agreed', async () => {
+    const db = await device();
+    const sent: Sent[] = [];
+    await openAmendForm(draftRouter(DRAFT_DETAIL, sent), db);
+
+    // Five tonnes was a typing slip; it should be four.
+    fireEvent.change(screen.getByLabelText('Quantity ordered for Binder 50kg'), {
+      target: { value: '4' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Save the correction' }));
+
+    await waitFor(() =>
+      expect(sent.some((s) => s.path === 'procurement.updatePurchaseOrder')).toBe(true),
+    );
+    const body = JSON.parse(
+      sent.find((s) => s.path === 'procurement.updatePurchaseOrder')?.input ?? '{}',
+    ) as { json: { purchaseOrderId: string; lines: { qtyOrdered: string; unitPriceE4: string }[] } };
+
+    expect(body.json.purchaseOrderId).toBe(ORDER);
+    expect(body.json.lines).toHaveLength(1);
+    // Four tonnes at the unit's own scale — a scaled integer, not a float.
+    expect(body.json.lines[0]?.qtyOrdered).toBe('4000');
+    // THE POINT OF THE WHOLE ROW: the rate nobody touched goes back at its
+    // own ×10⁴ precision, not re-parsed out of a box that shows it at the
+    // currency's two decimals. Rounding for display and storing the rounded
+    // figure is the one thing ADR-0004 forbids outright.
+    expect(body.json.lines[0]?.unitPriceE4).toBe('900000000');
+  });
+
+  it('renumbers the lines that survive when one is taken off', async () => {
+    const db = await device();
+    const sent: Sent[] = [];
+    await openAmendForm(draftRouter(DRAFT_TWO_LINES, sent), db);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Take Binder 50kg off this order' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save the correction' }));
+
+    await waitFor(() =>
+      expect(sent.some((s) => s.path === 'procurement.updatePurchaseOrder')).toBe(true),
+    );
+    const body = JSON.parse(
+      sent.find((s) => s.path === 'procurement.updatePurchaseOrder')?.input ?? '{}',
+    ) as { json: { lines: { lineNo: number; productId: string }[] } };
+
+    // Supplying the array REPLACES every line, so the survivor has to be
+    // restated — and renumbered from one, because the contract will not take
+    // a gap.
+    expect(body.json.lines).toHaveLength(1);
+    expect(body.json.lines[0]?.lineNo).toBe(1);
+    expect(body.json.lines[0]?.productId).toBe(PRODUCT_2);
+  });
+
+  it('refuses to empty an order rather than sending nothing to buy', async () => {
+    const db = await device();
+    const sent: Sent[] = [];
+    await openAmendForm(draftRouter(DRAFT_DETAIL, sent), db);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Take Binder 50kg off this order' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save the correction' }));
+
+    expect(await screen.findByText(/An order for nothing is not an order/)).toBeDefined();
+    expect(sent.some((s) => s.path === 'procurement.updatePurchaseOrder')).toBe(false);
+  });
+
+  it('says nothing has changed rather than sending an empty amendment', async () => {
+    const db = await device();
+    const sent: Sent[] = [];
+    await openAmendForm(draftRouter(DRAFT_DETAIL, sent), db);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save the correction' }));
+    expect(await screen.findByText(/Nothing has been changed/)).toBeDefined();
+    expect(sent.some((s) => s.path === 'procurement.updatePurchaseOrder')).toBe(false);
+  });
+
+  it('OFFLINE, says the order still says what it said and that nothing was queued', async () => {
+    // Amending is a change to a document that lives on the server. A queued
+    // correction would be one nobody could see, beside an order still showing
+    // the old figures — the worst of the three outcomes.
+    const db = await device();
+    const sent: Sent[] = [];
+    await openAmendForm(draftRouter(DRAFT_DETAIL, sent, 'reject'), db);
+
+    fireEvent.change(screen.getByLabelText('Quantity ordered for Binder 50kg'), {
+      target: { value: '4' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Save the correction' }));
+
+    expect(
+      await screen.findByText(/Nothing was queued and the order still says what it said/),
+    ).toBeDefined();
+  });
+});

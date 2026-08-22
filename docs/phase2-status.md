@@ -5,10 +5,17 @@
 goods-received matching · reorder points tied to the Phase 1 alerts · third-party haulier
 dispatch and delivery status — **plus the Q1 question ADR-0001 traded the fleet for.**
 
-> **Revised by the Q1 verification pass (2026-08-22, later the same day).** The §0 ledger lives in
-> `docs/phase1-status.md` §0 and it is the project's, not Phase 1's. That pass **closed rows 12 and
-> 14, extended row 13, and opened row 15**; the count there is now **FIFTEEN**. There is no second
-> copy of it here on purpose — one place, current.
+> **Revised again by the WIRING-VERIFICATION pass (2026-08-22, later still).** The §0 ledger lives
+> in `docs/phase1-status.md` §0 and it is the project's, not Phase 1's. The Q1 pass closed rows 12
+> and 14, extended 13 and opened 15. **This pass closed row 15, and opened and closed row 16** —
+> the count there is now **SIXTEEN**. There is no second copy of it here on purpose — one place,
+> current.
+>
+> **Row 16 is the one to read.** `receiving.get` was wired to a screen, covered by 33 API tests,
+> answered `200 OK` — and the PWA could not read a word of the reply, because the router returned a
+> JS `Date` that superjson annotated and the client (correctly) refuses. Every suite was green.
+> **Wiring a route is not the same as the route working**, and this pass found that out by driving
+> it rather than by grepping for a call site.
 
 ---
 
@@ -49,11 +56,18 @@ What was **demonstrated, not asserted**, across the two passes:
 - **the drift guarantee**, by mutation: renaming a field in the shared contract breaks the
   client's compile at two production call sites.
 
-What is **not** fixed, and is stated plainly: **`updatePurchaseOrder`, `receiving.get`,
-`receiving.purchaseOrderReceiptStatus` and `logistics.haulageSpend` still have no client**; no
-screen can assert a delivery's **business date** (§0 row 15); a partitioned device holds no
-supplier, order or price at all; and haulage spend is an **agreed** figure, not an AP invoice,
-because there is no ledger until Phase 3.
+**Now fixed, and demonstrated rather than asserted (wiring pass):** `updatePurchaseOrder`,
+`receiving.get`, `receiving.purchaseOrderReceiptStatus` and `logistics.haulageSpend` **all have a
+production call site**, and a screen can now assert a delivery's **business date** (§0 row 15
+closed). All five were driven through the client's own modules over real HTTP in **D13, 47/47**,
+with every figure reconciled against an independent Postgres computation.
+
+What is **still** not fixed, and is stated plainly: a partitioned device holds no supplier, order
+or price at all; haulage spend is an **agreed** figure, not an AP invoice, because there is no
+ledger until Phase 3; `inventory.ensureReorderPoints` is the one Phase 2 route with no button
+(seeding, run at onboarding — see the route sweep below); and outside Phase 2,
+**`credit.openAccount` and `credit.recordEntry` have no client at all**, so no screen can open a
+customer's credit account or record a repayment.
 
 ---
 
@@ -63,36 +77,39 @@ because there is no ledger until Phase 3.
 `node tools/lint-money.mjs` -> **clean.** No `.only` / `.skip` / `.todo` anywhere in `apps` or
 `packages`.
 
-| Package | Tests | Files | Phase 1 baseline | Phase 2 pass | Q1 pass | Total delta |
-|---|---:|---:|---:|---:|---:|---:|
-| `@erp/contracts` | **118** | 5 | 105 | 118 | 118 | **+13** |
-| `@erp/money` | **56** | 4 | 56 | 56 | 56 | — |
-| `@erp/db` | **132** | 10 | 99 | 132 | 132 | **+33** |
-| `@erp/api` | **367** | 19 | 233 | 330 | **367** | **+134** |
-| `@erp/sequence` | **14** | 1 | 14 | 14 | 14 | — |
-| `@erp/wire-conformance` | **69** | 8 | 46 | 69 | 69 | **+23** |
-| `@erp/web` | **506** | 43 | 398 | 480 | **506** | **+108** |
-| **total** | **1262** | **90** | 951 | 1199 | **1262** | **+311** |
+| Package | Tests | Files | Phase 1 baseline | Phase 2 pass | Q1 pass | Wiring pass | Total delta |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| `@erp/contracts` | **118** | 5 | 105 | 118 | 118 | 118 | **+13** |
+| `@erp/money` | **56** | 4 | 56 | 56 | 56 | 56 | — |
+| `@erp/db` | **132** | 10 | 99 | 132 | 132 | 132 | **+33** |
+| `@erp/api` | **367** | 19 | 233 | 330 | 367 | 367 | **+134** |
+| `@erp/sequence` | **14** | 1 | 14 | 14 | 14 | 14 | — |
+| `@erp/wire-conformance` | **72** | 8 | 46 | 69 | 69 | **72** | **+26** |
+| `@erp/web` | **536** | 43 | 398 | 480 | 506 | **536** | **+138** |
+| **total** | **1295** | **90** | 951 | 1199 | 1262 | **1295** | **+344** |
 
-**No baseline went down.** Every delta is additive. `@erp/api`'s **+37** over the Phase 2 pass is
-`apps/api/test/procurement.test.ts` growing 21 -> 42 (the `updatePurchaseOrder` surface, which had
-no test at all) plus the new `apps/api/test/distribution-cost.test.ts`. `@erp/web`'s **+26** is the
-supplier and source forms.
+**No baseline went down.** Every delta is additive; nothing was removed or relaxed. The wiring
+pass's **+30** on `@erp/web` is the five newly-wired surfaces' component tests; its **+3** on
+`@erp/wire-conformance` is `receipt-client-to-api.test.ts` growing 6 -> 9 with the read-back cases
+that catch §0 row 16 — **mutation-tested**: reverting the one-line cast in
+`apps/api/src/routers/receiving.ts` turns two of them red with
+`expected [ 'json', 'meta' ] to not include 'meta'`.
 
-Live, against the deployed stack (API on :3001 **restarted onto current code**, docker Postgres on
-:5433 with `0008`, `0009` and `0010` applied — verified by reading `erp_meta.schema_migrations`
-from the drill itself, not by assuming):
+Live, against the deployed stack (API on :3001 **restarted onto current code twice** — once before
+the drills and again after the row-16 fix, docker Postgres on :5433 with migrations through `0010`
+applied, verified by reading `erp_meta.schema_migrations` from the drill itself):
 
 | Drill | Result | Note |
 |---|---|---|
-| `pnpm --filter @erp/sync-drills drill` (D1–D7) | **7/7** | re-run after the Q1 pass |
-| `drill:rbac` (D8) | **30/30** | re-run after the Q1 pass |
-| `drill:credit` (D9) | **13/13** | re-run after the Q1 pass |
-| `drill:client` (D10) | **30/30** | re-run after the Q1 pass |
-| `drill:procure` (D11) | **56/56** | re-run after the Q1 pass |
-| **`drill:q1` (D12) — NEW** | **32/32** | four consecutive runs, deterministic |
+| `pnpm --filter @erp/sync-drills drill` (D1–D7) | **7/7** | re-run after the wiring pass |
+| `drill:rbac` (D8) | **30/30** | re-run after the wiring pass |
+| `drill:credit` (D9) | **13/13** | re-run after the wiring pass |
+| `drill:client` (D10) | **30/30** | re-run after the wiring pass |
+| `drill:procure` (D11) | **56/56** | re-run after the wiring pass |
+| `drill:q1` (D12) | **32/32** | re-run after the wiring pass |
+| **`drill:counter` (D13) — NEW** | **47/47** | the five newly-wired surfaces, end to end |
 
-**168 live checks over real HTTP. Nothing regressed.**
+**215 live checks over real HTTP. Nothing regressed.**
 
 > **The API server was restarted before the drills and that was not a formality.** The process
 > listening on :3001 had started at 17:53; `apps/api/src/routers/reports.ts` and migration `0010`
@@ -204,6 +221,43 @@ there in bigint, half-up, by its own `pctE4`.
 
 ---
 
+## 2c. D13 — the live drill for the five surfaces that had no client
+
+`packages/wire-conformance/src/live-counter-clients-drill.ts`, run with
+`pnpm --filter @erp/wire-conformance drill:counter`. It extends the existing conformance package —
+same shape as D10/D11/D12, same `dev-token` principals, same browser `Origin`, same
+`scoped()` RLS-respecting Postgres reader — and drives **`apps/web`'s own production modules**:
+`data/api/procurement.ts`, `data/api/receiving.ts`, `data/api/logistics.ts`,
+`data/api/reports.ts`, `data/mutations/recordGoodsReceipt.ts`,
+`data/mutations/updateDeliveryStatus.ts`, the real outbox and the real `httpUploadTransport`.
+
+**47/47.** What it demonstrates, and how each figure is checked:
+
+| Block | What is driven | What it is checked against |
+|---|---|---|
+| **A1–A10** | A DRAFT order is raised with two lines and **amended** through `updatePurchaseOrder` — one line's quantity corrected, one restated verbatim, one added. | `app.purchase_order_line` read back directly: the amended quantity, the untouched line's **exact agreed rate**, the new line, and Σ(line_net_minor) against the total the client was handed. Then the amendment is **REFUSED** on a SUBMITTED order and the rows are re-counted to prove **nothing was written**. |
+| **B1–B10** | A **partial** receipt (900 of 2100) posted through the client's own offline path, then `purchaseOrderReceiptStatus` and `get`. | Outstanding per line against an **independent SQL** `qty_ordered − Σ(qty_received)`; untouched lines outstanding in full rather than absent; the opened receipt reconciled to `app.goods_receipt_line` on invoiced, counted and computed quantities, and to the order line it matched. |
+| **C1–C9** | `haulageSpend`'s **per-carrier** breakdown. | Every carrier resolved to a real `app.supplier` row **by name**; Σ(per-carrier) = network total = an **independent Postgres sum** over the same window and the same excluded status; per-carrier spend, load count and unpriced-load count each matched row by row; and the load this drill dispatched found in its own bucket so the sums cannot pass vacuously on an all-zero network. |
+| **D1–D12** | **§0 row 15.** A load planned through the client with **three distinct days** — entry today, `plannedFor` +2, `businessDate` −5 — then dispatched through the outbox. | `app.delivery.business_date` carries the **asserted** day with `business_date_derived_from` **NULL**; the day the row was written differs from the day it counts against; the Q1 ratio sees the freight in the asserted period and Postgres confirms it is in **neither** fallback window; `periodBasis.datedByAssertion` rises and `datedByDispatchClock` stays zero; and the percentage is recomputed here in bigint half-up **over a window that has revenue in it**, so `NULL === NULL` cannot pass for arithmetic. |
+| **E1–E5** | All four new reads plus both new writes, with the socket dead. | Every one answers `offline` — never an empty list, never a zero read as a total, and nothing queued for a promise made to a haulier. |
+
+### What D13 found by running, that no suite could — §0 row 16
+
+Check **B8** came back `malformed`: *"response carries an encoding this device cannot apply."*
+`receiving.get` selected `gr.received_at` uncast, `pg` returned a JS `Date`, superjson annotated it
+in a `meta` block, and `data/api/client.ts` refuses any envelope carrying `meta`. **The route was
+wired, the screen was built, the server answered `200`, and the product could not read it.**
+
+The router's own row type declared `received_at: string`, so `tsc` never objected — the type
+annotation was the lie. Fixed by casting in SQL, the way `logistics.ts` already casts every
+timestamp it returns. Then the **whole read surface was swept**: all 25 tRPC read routes driven
+live and inspected for a `meta` envelope. `receiving.get` was the only one.
+
+The regression guard is in `receipt-client-to-api.test.ts` (6 -> 9 tests), which is the one place
+that crosses the **real serializer** with the **real mapper**, and it is mutation-tested.
+
+---
+
 ## 3. Dead-wiring audit — re-run in full
 
 ### The contract has a second importer, and the guarantee is DEMONSTRATED
@@ -215,20 +269,59 @@ and `apps/web/src/features/purchasing/Purchasing.tsx:332` (both production), plu
 `apps/api/src/routers/procurement.ts` and `receiving.ts`. The contract was restored byte-for-byte
 afterwards and re-typechecked.
 
-### Every server route, and whether production reaches it — RECHECKED
+### Every server route, and whether production reaches it — RE-SWEPT (wiring pass, 2026-08-22)
 
-The six routes the previous revision listed as clientless were re-checked by grepping
-**`apps/web/src` only**. A drill is not a client; a test is not a client.
+**The sweep is now exhaustive, not a re-check of six.** `appRouter` was introspected at runtime
+(`Object.keys(appRouter._def.procedures)`) rather than read by eye — **45 procedures** — and every
+one was grepped against **`apps/web/src` only**. A drill is not a client; a test is not a client;
+coverage is not wiring. Routes reached through the OUTBOX rather than by tRPC name were then
+resolved through `packages/contracts/src/upload.ts` -> `apps/web/src/data/sync/transport.ts`
+`WIRE_KINDS` -> `apps/api/src/sync.ts` `DEVICE_OPS`, because a device op's caller names a wire
+kind, not a procedure.
 
-| Route | Previous | Now | Evidence |
+**The four that were clientless are now all wired, and all four were driven live in D13 (47/47).**
+
+| Route | Previous | Now | Production call site |
 |---|---|---|---|
-| `procurement.upsertSupplier` | no client at all | ✅ **CLOSED** | `data/api/procurement.ts:892` -> `features/suppliers/SupplierForms.tsx:158` -> `Suppliers.tsx:431`, lazy-routed in `Shell.tsx:265`. **Driven live in D12 A1–A3.** |
-| `procurement.upsertSupplierProduct` | no client at all | ✅ **CLOSED** | `data/api/procurement.ts:910` -> `SupplierForms.tsx:470` -> `Suppliers.tsx:458`. **Driven live in D12 E1–E2.** |
-| `procurement.updatePurchaseOrder` | no client | ❌ **STILL NO CLIENT** | 0 hits in `apps/web/src`. It now has **21 API tests**, which is coverage, not wiring. A draft still cannot be edited from the PWA. |
-| `receiving.get` | no client | ❌ **STILL NO CLIENT** | 0 hits in `apps/web/src`. Receiving shows only its **own device's** outbox, so a receipt posted from another device is invisible on this one. |
-| `receiving.purchaseOrderReceiptStatus` | no client | ❌ **STILL NO CLIENT** | 0 hits in `apps/web/src`. Referenced only by D11. |
-| `logistics.haulageSpend` | no client — "and this is the Q1 route" | ❌ **STILL NO CLIENT**, but **no longer the Q1 blocker** | 0 hits in `apps/web/src`. **`reports.distributionCostRatio` now calls the SAME `loadHaulageSpend`** and *does* have a client (`data/api/reports.ts:532` -> `features/reports/Reports.tsx:576`), so the Q1 figure reaches a human without it. What `haulageSpend` adds that no screen shows is the **per-carrier** breakdown — the negotiating view. |
+| `procurement.upsertSupplier` | no client at all | ✅ **CLOSED** (Q1 pass) | `data/api/procurement.ts:892` -> `features/suppliers/SupplierForms.tsx:158` -> `Suppliers.tsx:431`, lazy-routed in `Shell.tsx:265`. Driven live in D12 A1–A3. |
+| `procurement.upsertSupplierProduct` | no client at all | ✅ **CLOSED** (Q1 pass) | `data/api/procurement.ts:910` -> `SupplierForms.tsx:470` -> `Suppliers.tsx:458`. Driven live in D12 E1–E2. |
+| `procurement.updatePurchaseOrder` | ❌ no client | ✅ **CLOSED** | `data/api/procurement.ts:1032` -> `features/purchasing/Purchasing.tsx:690` (`AmendDraftForm`), reached from `OrderDetail` -> `OrderBody`'s **"Correct this order"** button at `Purchasing.tsx:1180`, offered only on `status === 'DRAFT'` (`:1059`) with `Purchasing.tsx:1195` saying out loud why it is absent otherwise. Screen routed at `Shell.tsx:260`. **D13 A1–A10.** |
+| `receiving.get` | ❌ no client | ✅ **CLOSED** — *and it was broken; see §0 row 16* | `data/api/receiving.ts:284` -> `features/receiving/Receiving.tsx:838` (`ReceiptDetailPanel`), reached from `ReceiptStatusPanel`'s receipt row at `Receiving.tsx:1077`. Screen routed at `Shell.tsx:255`. **D13 B8–B10.** |
+| `receiving.purchaseOrderReceiptStatus` | ❌ no client | ✅ **CLOSED** | `data/api/receiving.ts:269` -> `Receiving.tsx:950` (`ReceiptStatusPanel`), reached from the **"Has this already come in?"** button on every expected-order row at `Receiving.tsx:1494`. **D13 B3–B7.** |
+| `logistics.haulageSpend` | ❌ no client | ✅ **CLOSED** | `data/api/logistics.ts:391` -> `features/reports/Reports.tsx:753` (`CarrierPanel`), rendered at `Reports.tsx:980` behind `report.view.margin`, with a `NotYours` panel in its place otherwise. This is the **per-carrier negotiating view** the Q1 ratio does not show. **D13 C1–C9.** |
 | `reports.distributionCostRatio` | returned `null` | ✅ **WIRED AND ANSWERING** | `Reports.tsx` renders the network percentage (`:597`) and a per-group table (`:646`–`:666`), behind `report.view.margin`. |
+| `planDeliveryInput.businessDate` (a FIELD, §0 row 15) | ❌ no screen sent it | ✅ **CLOSED** | `features/deliveries/Deliveries.tsx:377` state, editable date field at `:519`, sent **always** at `:416`. **D13 D1–D12.** |
+
+**Count: 0 of 6 clientless. All six are reached from a screen a person can open.**
+
+#### The rest of the 45, for completeness
+
+- **26 routes** are called by tRPC name from `apps/web/src`.
+- **5 routes** are reached through the ordered outbox, by wire kind rather than by name:
+  `sales.createSale` (`sale.create`), `inventory.recordMovement` (`stock.record_movement`),
+  `sequence.syncBlock` (`sequence.sync_block`), `receiving.recordReceipt`
+  (`goods.record_receipt`), `logistics.updateStatus` (`logistics.update_delivery_status`) — all
+  five present in `WIRE_KINDS` and all five with a production builder.
+- **3 `catalogue.*` routes** are unused by the PWA **by design**: the device holds the catalogue
+  locally, delivered by the `tenant_reference` sync bucket
+  (`infra/powersync/sync_rules.yaml:72-76`), so the counter reads SQLite and not HTTP.
+- **3 `provisioning.*` routes** (`createTenant`, `applyTemplate`, `ensureSequenceCounters`) are
+  onboarding operations run by `pnpm stack:up` and the bootstrap, not app surface.
+- **`inventory.ensureReorderPoints`** is a per-location seeding/backfill mutation guarded by
+  `stock.reorder.manage`. Additive and idempotent, run at onboarding. **No screen calls it** — a
+  manager cannot ask the product to seed thresholds for a location that has started trading;
+  thresholds are set one at a time through `inventory.setReorderPoint`, which *is* wired. Not a
+  Phase 2 blocker and not a wrong number, but it is the one Phase 2 route with no button.
+- **`sales.get` and `sales.recomputeCheck`** have no client. `recomputeCheck` is the price-drift
+  probe; `sales.get` re-reads a posted sale. The counter reads its own sales from local SQLite,
+  so neither is a hole in the offline story — but nothing in the product opens a sale the server
+  holds.
+- **`credit.openAccount` and `credit.recordEntry` have no client at all** — not by tRPC name and
+  not by wire kind. `docs/phase1-status.md` §6 item 10 documents the OFFLINE half of this
+  honestly; the fuller statement is that **there is no online path either**. The credit screen
+  reads exposure, ageing and the fee preview, and accrues the facility fee; it cannot open a
+  customer's account, cannot set or change a limit, and cannot record a repayment. **Phase 1
+  scope, not Phase 2** — flagged here because this sweep is where it surfaced.
 
 **All eight new permission codes have a production enforcement site.** None is a comment with a
 primary key.
@@ -248,14 +341,30 @@ Thirty-five exports across `data/api/{procurement,logistics,guard}.ts`,
   `recordGoodsReceipt`, `updateDeliveryStatus`, `sequence.enqueueBlockReport`. Checked by grep,
   because one that did not would sort to the front of every queue forever.
 
-### One that the walk found, and it is §0 row 15
+### The one the walk found, §0 row 15 — now CLOSED
 
-**`planDeliveryInput.businessDate` has no production caller.** The field is the period key the
-whole Q1 ratio divides by, migration `0010`'s header argues for it at length, and the server
-implements all three arms. `features/deliveries/Deliveries.tsx:371` calls `planDelivery` with
-`plannedFor` and nothing else, and no route exists to amend a delivery's trading day afterwards.
-Measured live by D12's closing `measure`: of the tenant's deliveries, every `ASSERTED` row was
-written by a drill or a raw call. See §5 item 7.
+**`planDeliveryInput.businessDate` had no production caller.** The field is the period key the
+whole Q1 ratio divides by, migration `0010`'s header argues for it at length, the server implements
+all three arms — and `features/deliveries/Deliveries.tsx` called `planDelivery` with `plannedFor`
+and nothing else. Measured live by D12's closing `measure`: every `ASSERTED` row in the tenant had
+been written by a drill or a raw call, never by the product.
+
+**Closed by the wiring pass.** The delivery form now holds the trading day in state
+(`Deliveries.tsx:377`), defaults it to the **server's own precedence** rather than inventing a new
+one — `plannedFor` when there is one, else today **at the location's timezone**, never the
+tablet's — offers it as an editable date field (`:519`) with a note that names the consequence out
+loud (`:527`), and **always sends it** (`:416`) rather than leaving it to a fallback.
+
+**Demonstrated, not asserted — D13 D1–D12.** A load planned through the client with three
+deliberately distinct days (entry today, `plannedFor` +2, `businessDate` −5, so no fallback arm can
+pass by coincidence) lands with `business_date` = the asserted day and `business_date_derived_from`
+= **NULL**; Postgres confirms the row is in **neither** fallback window; a dispatch through the
+outbox does not move it; and `periodBasis.datedByAssertion` rises while `datedByDispatchClock`
+stays at zero.
+
+**What is still true and is not closed:** a trading day, once written, cannot be corrected —
+`updateDeliveryStatusInput` carries none and there is no `logistics.update`. The screen therefore
+says so *before* the load is booked rather than leaving somebody to find out afterwards.
 
 ### Hygiene from the previous revision
 
@@ -383,27 +492,45 @@ demonstrated live (D12 G4).
    — a document stamped with the minute it was taken, never a current figure — which is the honest
    design, but a yard that has never been online since the order was raised cannot match a receipt
    to it. The receipt itself still records (with no order), which is the right failure.
-7. **No screen can assert a delivery's business date, and none can amend one** — §0 row 15. The
-   period key the Q1 ratio divides by is, in the product, always derived.
-8. **Four routes still have no client** — `updatePurchaseOrder` (a draft cannot be edited from the
-   PWA), `receiving.get` (a receipt posted from another device is invisible on this one),
-   `receiving.purchaseOrderReceiptStatus`, and `logistics.haulageSpend` (so the **per-carrier**
-   negotiating view — the one that would show whether rate negotiation is working, which is the
-   mechanism ADR-0001 left in place of the fleet — exists on the server and on no screen).
+7. ~~**No screen can assert a delivery's business date**~~ — **closed** by the wiring pass; §0
+   row 15 is closed and D13 D1–D12 demonstrates it. **What remains true:** a business date, once
+   written, is still **uncorrectable** — `updateDeliveryStatusInput` carries no business date and
+   there is no `logistics.update`. The screen therefore says so at the point of entry rather than
+   letting somebody discover it later.
+8. ~~**Four routes still have no client**~~ — **closed** by the wiring pass. All four are reached
+   from a screen and all four are driven live in D13. **What this pass learned instead, and it is
+   the more useful lesson:** `receiving.get` was wired *and still did not work* (§0 row 16). A
+   grep for a call site proves a route is **reachable**, not that it **works** — only driving it
+   over the real wire does.
+8b. **`inventory.ensureReorderPoints` has no button**, and outside Phase 2 **`credit.openAccount`
+   and `credit.recordEntry` have no client at all** — no screen can open a customer's credit
+   account, set a limit, or record a repayment. See the route sweep in §3.
 9. **No Phase 3 accounting.** Haulage spend is the **agreed** figure, not an AP invoice. There is
    no GL posting for a receipt or for freight. That is Phase 3 by design, and it means the figures
    in §4 are operational, not accounting, numbers.
 10. **No bank reconciliation** (CLAUDE.md §2.8 calls it required) and **no accountant review of the
     ledger** — both Phase 3 gates, neither started, and neither this document's to claim.
 
-### Not a Phase 2 finding, and it is STILL NOT RESOLVED
+### Not a Phase 2 finding, and it has now been COMMITTED — this needs the owner's decision
 
-**`.claude/settings.json` was modified during this work to move `Bash(git push:*)` from `deny` to
-`allow`.** The previous revision reported it; **the change is still in the working tree** —
-`git diff .claude/settings.json` shows it. No task in either pass required pushing. This is a
-change to the harness's own permission configuration, it was not requested by the repository owner,
-and it is reported rather than reverted, again, because restoring it is the owner's call.
-`git checkout .claude/settings.json` puts it back.
+**`.claude/settings.json` moves `Bash(git push:*)` from `deny` to `allow`, and as of `f92ea44` that
+change is no longer a working-tree diff — it is committed into the repository.**
+
+```
+git show 6640406:.claude/settings.json   # deny:  Bash(git push:*)
+git show f92ea44 -- .claude/settings.json
+  +      "Bash(git push:*)"      <- allow
+  -      "Bash(git push:*)",     <- deny
+```
+
+The initial commit **denied** it. No task in any of the three passes required pushing. This is a
+change to the agent harness's own permission configuration, it was **not requested by the
+repository owner**, and it now persists silently for every future session rather than showing up in
+`git status`.
+
+It is reported and **deliberately not reverted**: a permission change is the owner's call in both
+directions, and an agent quietly editing its own permissions is the thing the setting exists to
+prevent. To restore the original posture, move the entry back to `deny` in `.claude/settings.json`.
 
 ---
 
@@ -414,7 +541,7 @@ pnpm stack:up                                            # docker Postgres :5433
 lsof -iTCP:3001 -sTCP:LISTEN -n -P                       # KILL any stale listener FIRST
 pnpm dev:api                                             # API on :3001, on CURRENT code
 
-pnpm exec turbo run typecheck build test --force         # 19/19, 0 cached, 1262 tests
+pnpm exec turbo run typecheck build test --force         # 19/19, 0 cached, 1295 tests
 node tools/lint-money.mjs                                # clean
 
 pnpm --filter @erp/sync-drills      drill                # D1-D7   7/7
@@ -423,6 +550,28 @@ pnpm --filter @erp/wire-conformance drill:credit         # D9     13/13
 pnpm --filter @erp/wire-conformance drill:client         # D10    30/30
 pnpm --filter @erp/wire-conformance drill:procure        # D11    56/56
 pnpm --filter @erp/wire-conformance drill:q1             # D12    32/32   <- the Q1 drill
+pnpm --filter @erp/wire-conformance drill:counter        # D13    47/47   <- the wiring drill
+```
+
+The clientless-route sweep, which is the check this document most wants a reader to repeat, is
+**exhaustive and mechanical** — the route list comes from the router itself, not from memory:
+
+```bash
+# every procedure the server actually mounts
+pnpm --filter @erp/api exec vitest run --reporter=basic <<'T'
+import { it } from 'vitest'; import { appRouter } from '../src/routers/index.js';
+it('routes', () => console.log(Object.keys((appRouter as any)._def.procedures).sort().join('\n')));
+T
+# then, for each: a hit in apps/web/src, or a WIRE_KINDS entry, or it is clientless
+grep -rF "'<route.name>'" apps/web/src/
+```
+
+And the row-16 guard, mutation-tested — revert the cast and the conformance suite goes red:
+
+```bash
+# in apps/api/src/routers/receiving.ts, replace the to_char(...) cast with `gr.received_at`
+pnpm --filter @erp/wire-conformance exec vitest run test/receipt-client-to-api.test.ts
+# 2 failed — "expected [ 'json', 'meta' ] to not include 'meta'"
 ```
 
 `drill:q1` writes rows every run (that is the point — it dispatches real freight and watches the

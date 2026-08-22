@@ -56,7 +56,7 @@
  * refuses anything a float would have accepted.
  */
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { MoneyError, lineNetMinor, parse } from '@erp/money';
+import { MoneyError, format, lineNetMinor, parse } from '@erp/money';
 import type { PurchaseOrderLineInput } from '@erp/contracts';
 import type { ApiCallOptions } from '../../data/api/client';
 import {
@@ -66,9 +66,11 @@ import {
   fetchPurchaseOrders,
   fetchReorderSuggestions,
   fetchSuppliers,
+  updatePurchaseOrder,
   type ComparedSource,
   type PurchaseOrderDetail,
   type PurchaseOrderHeader,
+  type PurchaseOrderLine,
   type PurchaseOrderStatus,
   type ReorderSuggestion,
   type Supplier,
@@ -525,6 +527,379 @@ function DraftOrderForm({
 }
 
 // ---------------------------------------------------------------------------
+// Correcting an order that has not left DRAFT
+// ---------------------------------------------------------------------------
+
+/**
+ * ═══════════════════════════════════════════════════════════════════════════
+ * AMENDING IS OFFERED ON A DRAFT AND ON NOTHING ELSE
+ * ═══════════════════════════════════════════════════════════════════════════
+ * Until this form existed a mistyped quantity meant cancelling the order and
+ * raising another one, which puts an abandoned document in the audit trail for
+ * a typing slip.
+ *
+ * The window is DRAFT, and that is the server's rule, not a preference: once
+ * an order is submitted its lines are frozen, and once it is approved a silent
+ * line change would mean an approval certified nothing — whatever turned up
+ * could be written back onto the order afterwards and the receipt would match
+ * perfectly. The API refuses every non-DRAFT status with PRECONDITION_FAILED,
+ * and 0008's trigger refuses a line edit that never reaches the router at all.
+ * So this screen offers the control on DRAFT ALONE rather than offering it
+ * everywhere and letting a person discover the refusal after typing. Hiding it
+ * remains a courtesy; the boundary is the server's (CLAUDE.md §2.6).
+ *
+ * ---------------------------------------------------------------------------
+ * AN UNTOUCHED LINE IS SENT BACK EXACTLY AS IT WAS AGREED
+ * ---------------------------------------------------------------------------
+ * Supplying `lines` REPLACES all of them, so every line has to be restated —
+ * including the ones nobody edited. Those are sent back as the `bigint` the
+ * server itself last computed, NEVER as a value that has been through a text
+ * box: a rate is carried at ×10⁴ precision and the currency may not have four
+ * decimals, so re-typing an untouched rate is exactly the "round for display,
+ * then store the rounded figure" this codebase forbids (ADR-0004). A rate that
+ * cannot be typed at the currency's own precision is shown, locked, and said
+ * to be locked — it still goes back untouched.
+ */
+interface AmendRow {
+  readonly key: string;
+  readonly line: PurchaseOrderLine;
+  readonly qtyText: string;
+  readonly priceText: string;
+  readonly qtyEdited: boolean;
+  readonly priceEdited: boolean;
+  readonly removed: boolean;
+}
+
+/** The rate as a typable amount, or null when it carries sub-minor precision. */
+function typableUnitPrice(unitPriceE4: bigint): bigint | null {
+  return unitPriceE4 % 10_000n === 0n ? unitPriceE4 / 10_000n : null;
+}
+
+function AmendDraftForm({
+  order,
+  apiOptions,
+  onAmended,
+  onCancel,
+}: {
+  readonly order: PurchaseOrderDetail;
+  readonly apiOptions: ApiCallOptions;
+  readonly onAmended: () => void;
+  readonly onCancel: () => void;
+}): ReactNode {
+  const spec = useCurrencySpec();
+  const [expectedAt, setExpectedAt] = useState(order.expectedAt ?? '');
+  const [notes, setNotes] = useState(order.notes ?? '');
+  const [rows, setRows] = useState<readonly AmendRow[]>(() =>
+    order.lines.map((line) => {
+      const typable = typableUnitPrice(line.unitPriceE4);
+      return {
+        key: line.purchaseOrderLineId,
+        line,
+        qtyText: formatQtyScaled(line.qtyOrdered, line.qtyScale),
+        priceText: typable === null ? '' : format(typable, spec),
+        qtyEdited: false,
+        priceEdited: false,
+        removed: false,
+      };
+    }),
+  );
+  const [problem, setProblem] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  // Minted when the form opens (§8.2): a double-tap is one amendment.
+  const keyRef = useRef<string>(uuidv7());
+
+  const patch = useCallback((key: string, next: Partial<AmendRow>) => {
+    setRows((current) => current.map((r) => (r.key === key ? { ...r, ...next } : r)));
+  }, []);
+
+  const linesTouched = rows.some((r) => r.removed || r.qtyEdited || r.priceEdited);
+  const headerTouched = expectedAt !== (order.expectedAt ?? '') || notes !== (order.notes ?? '');
+
+  const submit = useCallback(() => {
+    if (!linesTouched && !headerTouched) {
+      setProblem('Nothing has been changed, so there is nothing to send.');
+      return;
+    }
+    let wireLines: PurchaseOrderLineInput[] | null = null;
+    if (linesTouched) {
+      const live = rows.filter((r) => !r.removed);
+      if (live.length === 0) {
+        setProblem('An order for nothing is not an order. Cancel it instead of emptying it.');
+        return;
+      }
+      const built: PurchaseOrderLineInput[] = [];
+      for (const [i, row] of live.entries()) {
+        let qty: bigint;
+        if (row.qtyEdited) {
+          try {
+            qty = parseQtyScaled(row.qtyText, row.line.qtyScale);
+          } catch (err) {
+            setProblem(
+              err instanceof QuantityInputError
+                ? `${row.line.productName}: ${err.message}`
+                : `${row.line.productName}: that is not a quantity this unit holds.`,
+            );
+            return;
+          }
+          if (qty <= 0n) {
+            setProblem(`${row.line.productName}: an order line has to be for something.`);
+            return;
+          }
+        } else {
+          // Untouched: the figure the server itself computed, verbatim.
+          qty = row.line.qtyOrdered;
+        }
+
+        let unitPriceE4: bigint;
+        if (row.priceEdited) {
+          let priceMinor: bigint;
+          try {
+            priceMinor = parse(row.priceText.trim(), spec);
+          } catch (err) {
+            setProblem(
+              err instanceof MoneyError
+                ? `${row.line.productName}: enter the agreed price using digits, and a dot for any decimals.`
+                : `${row.line.productName}: that is not a price.`,
+            );
+            return;
+          }
+          if (priceMinor < 0n) {
+            setProblem(`${row.line.productName}: a price cannot be negative.`);
+            return;
+          }
+          unitPriceE4 = priceMinor * 10_000n;
+        } else {
+          // Untouched: the agreed rate at its own ×10⁴ precision, verbatim.
+          unitPriceE4 = row.line.unitPriceE4;
+        }
+
+        built.push({
+          lineNo: i + 1,
+          productId: row.line.productId,
+          uomId: row.line.uomId,
+          qtyOrdered: qty.toString(),
+          unitPriceE4: unitPriceE4.toString(),
+          ...(row.line.notes === null ? {} : { notes: row.line.notes }),
+        });
+      }
+      wireLines = built;
+    }
+
+    setProblem(null);
+    setSaving(true);
+    void updatePurchaseOrder(
+      {
+        idempotencyKey: keyRef.current,
+        clientWallAt: new Date().toISOString(),
+        purchaseOrderId: order.purchaseOrderId,
+        ...(expectedAt.length === 0 ? {} : { expectedAt }),
+        ...(notes.trim().length === 0 ? {} : { notes: notes.trim() }),
+        ...(wireLines === null ? {} : { lines: wireLines }),
+      },
+      apiOptions,
+    ).then((result) => {
+      setSaving(false);
+      if (result.ok) {
+        keyRef.current = uuidv7();
+        onAmended();
+        return;
+      }
+      // NOTHING WAS QUEUED. An amendment is a change to a document that lives
+      // on the server, and a queued one would be a correction nobody could see
+      // until it drained — beside an order still showing the old figures.
+      setProblem(
+        result.failure.kind === 'offline'
+          ? 'Not changed. Orders are kept on the server and this device cannot reach it. Nothing was queued and the order still says what it said.'
+          : `Not changed. ${result.failure.detail ?? result.failure.message}`,
+      );
+    });
+  }, [
+    apiOptions,
+    expectedAt,
+    headerTouched,
+    linesTouched,
+    notes,
+    onAmended,
+    order.purchaseOrderId,
+    rows,
+    spec,
+  ]);
+
+  const liveRows = rows.filter((r) => !r.removed);
+  const runningTotal = liveRows.reduce((a, r) => {
+    if (!r.qtyEdited && !r.priceEdited) return a + r.line.lineNetMinor;
+    // Shown from what is currently typed, and only when it parses. An
+    // unreadable box contributes nothing rather than a guess.
+    let qty: bigint;
+    try {
+      qty = r.qtyEdited ? parseQtyScaled(r.qtyText, r.line.qtyScale) : r.line.qtyOrdered;
+    } catch {
+      return a;
+    }
+    let rate: bigint;
+    if (r.priceEdited) {
+      try {
+        rate = parse(r.priceText.trim(), spec) * 10_000n;
+      } catch {
+        return a;
+      }
+    } else {
+      rate = r.line.unitPriceE4;
+    }
+    return a + lineNetMinor(qty, r.line.qtyScale, rate, 'half-up');
+  }, 0n);
+
+  return (
+    <form
+      className="threshold-form"
+      aria-label="Correct this order"
+      onSubmit={(e) => {
+        e.preventDefault();
+        submit();
+      }}
+    >
+      <p className="adjust-kind-note">
+        This order has not been submitted, so its lines can still be corrected. Once it is sent for
+        approval the lines are frozen — the order that was approved and the order goods are signed
+        for against have to be the same document.
+      </p>
+      {/* Said rather than left to be discovered: quantities, prices and whole
+          lines can be changed here, and something FORGOTTEN needs a new order.
+          A form that silently cannot do a thing is a form somebody hunts
+          through twice. */}
+      <p className="adjust-kind-note">
+        What is on the order can be changed or taken off. Something that was left off it
+        altogether has to go on an order of its own.
+      </p>
+
+      <label className="threshold-form-field">
+        <span>Expected (optional)</span>
+        <input
+          type="date"
+          value={expectedAt}
+          aria-label="Expected delivery date"
+          onChange={(e) => setExpectedAt(e.currentTarget.value)}
+        />
+      </label>
+
+      <label className="threshold-form-field">
+        <span>Note on the order (optional)</span>
+        <input
+          type="text"
+          autoComplete="off"
+          value={notes}
+          aria-label="Note on the order"
+          onChange={(e) => setNotes(e.currentTarget.value)}
+        />
+      </label>
+
+      <ul className="order-line-list" aria-label="Lines on this order">
+        {rows.map((r) => (
+          <li
+            key={r.key}
+            className={r.removed ? 'order-line-edit order-line-removed' : 'order-line-edit'}
+          >
+            <span className="stock-row-head">
+              <span className="report-loc-name">{r.line.productName}</span>
+              <span className="report-loc-code tabular">{r.line.skuCode}</span>
+            </span>
+            {r.removed ? (
+              <>
+                <span className="figure-withheld">Will be taken off this order</span>
+                <button
+                  type="button"
+                  className="secondary-action pressable"
+                  onClick={() => patch(r.key, { removed: false })}
+                >
+                  {`Put ${r.line.productName} back`}
+                </button>
+              </>
+            ) : (
+              <>
+                <label className="threshold-form-field">
+                  <span>How many</span>
+                  <span className="threshold-form-input">
+                    <input
+                      type="text"
+                      inputMode="decimal"
+                      autoComplete="off"
+                      value={r.qtyText}
+                      aria-label={`Quantity ordered for ${r.line.productName}`}
+                      onChange={(e) =>
+                        patch(r.key, { qtyText: e.currentTarget.value, qtyEdited: true })
+                      }
+                    />
+                    <span className="threshold-form-uom">{r.line.uomCode}</span>
+                  </span>
+                </label>
+                <label className="threshold-form-field">
+                  <span>{`Agreed price for one ${r.line.uomCode}`}</span>
+                  <span className="threshold-form-input">
+                    <input
+                      type="text"
+                      inputMode="decimal"
+                      autoComplete="off"
+                      value={r.priceText}
+                      disabled={typableUnitPrice(r.line.unitPriceE4) === null}
+                      aria-label={`Agreed unit price for ${r.line.productName}`}
+                      onChange={(e) =>
+                        patch(r.key, { priceText: e.currentTarget.value, priceEdited: true })
+                      }
+                    />
+                  </span>
+                </label>
+                {typableUnitPrice(r.line.unitPriceE4) === null ? (
+                  <p className="adjust-kind-note">
+                    The agreed rate on this line carries more precision than an amount can be typed
+                    at, so it is locked here and goes back exactly as it was agreed rather than
+                    being rounded to fit a box.
+                  </p>
+                ) : null}
+                <button
+                  type="button"
+                  className="line-remove pressable"
+                  aria-label={`Take ${r.line.productName} off this order`}
+                  onClick={() => patch(r.key, { removed: true })}
+                >
+                  <Icon name="trash" size={20} />
+                </button>
+              </>
+            )}
+          </li>
+        ))}
+      </ul>
+
+      <p className="total-row">
+        <span className="total-label">Order total after this correction</span>
+        <span className="total-value">
+          <Money amount={runningTotal} />
+        </span>
+      </p>
+      <p className="adjust-kind-note">
+        A guide only. The server recomputes every line from the conversion it holds and answers
+        with its own total, which is the figure an approval is measured against.
+      </p>
+
+      {problem === null ? null : (
+        <p className="device-gate-error" role="alert">
+          <Icon name="alert" size={20} />
+          <span>{problem}</span>
+        </p>
+      )}
+
+      <div className="threshold-form-actions">
+        <button type="submit" className="primary-action pressable" disabled={saving}>
+          {saving ? 'Correcting…' : 'Save the correction'}
+        </button>
+        <button type="button" className="secondary-action pressable" onClick={onCancel}>
+          Leave it as it is
+        </button>
+      </div>
+    </form>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // One order, and the moves available on it
 // ---------------------------------------------------------------------------
 
@@ -547,6 +922,8 @@ function OrderDetail({
   );
   const [problem, setProblem] = useState<string | null>(null);
   const [moving, setMoving] = useState<string | null>(null);
+  const [amending, setAmending] = useState(false);
+  const [corrected, setCorrected] = useState(false);
   const keyRef = useRef<string>(uuidv7());
 
   const move = useCallback(
@@ -606,14 +983,43 @@ function OrderDetail({
       {state.status === 'failed' ? (
         <ServerUnavailable what={WHAT_ORDER} failure={state.failure} onRetry={refresh} />
       ) : null}
-      {state.status === 'ready' ? (
-        <OrderBody
+      {state.status === 'ready' && amending ? (
+        <AmendDraftForm
           order={state.data}
-          permissions={permissions}
-          moving={moving}
-          problem={problem}
-          onMove={(to, reason) => move(state.data, to, reason)}
+          apiOptions={apiOptions}
+          onAmended={() => {
+            setAmending(false);
+            setCorrected(true);
+            refresh();
+            onChanged();
+          }}
+          onCancel={() => setAmending(false)}
         />
+      ) : null}
+
+      {state.status === 'ready' && !amending ? (
+        <>
+          {corrected ? (
+            <p className="adjust-saved" role="status">
+              <Icon name="check" size={20} />
+              <span>
+                Corrected. What is below is what the server holds now, with its own recomputed
+                total.
+              </span>
+            </p>
+          ) : null}
+          <OrderBody
+            order={state.data}
+            permissions={permissions}
+            moving={moving}
+            problem={problem}
+            onMove={(to, reason) => move(state.data, to, reason)}
+            onAmend={() => {
+              setCorrected(false);
+              setAmending(true);
+            }}
+          />
+        </>
       ) : null}
     </section>
   );
@@ -625,12 +1031,14 @@ function OrderBody({
   moving,
   problem,
   onMove,
+  onAmend,
 }: {
   readonly order: PurchaseOrderDetail;
   readonly permissions: PermissionsState;
   readonly moving: string | null;
   readonly problem: string | null;
   readonly onMove: (to: PurchaseOrderStatus, reason: string) => void;
+  readonly onAmend: () => void;
 }): ReactNode {
   // A cancellation needs an explanation, so the field is on the page next to
   // the button rather than in a dialog that vanishes with what was typed in it.
@@ -641,6 +1049,16 @@ function OrderBody({
     holdsCapabilityAt(permissions, STATUS_CAPABILITY[to], order.deliverToLocationId);
   const offered = legal.filter(canReach);
   const withheld = legal.filter((to) => !canReach(to));
+  /**
+   * DRAFT AND ONLY DRAFT. `updatePurchaseOrder` is refused by the server on
+   * every other status and by 0008's trigger underneath it, so offering the
+   * control anywhere else would be offering a refusal. The capability is the
+   * same one that raised the order — amending a draft is part of raising it,
+   * never part of approving it.
+   */
+  const canAmend =
+    order.status === 'DRAFT' &&
+    holdsCapabilityAt(permissions, CAPABILITY.purchaseOrderCreate, order.deliverToLocationId);
 
   return (
     <>
@@ -756,6 +1174,33 @@ function OrderBody({
           <span>{problem}</span>
         </p>
       )}
+
+      {canAmend ? (
+        <>
+          <button type="button" className="secondary-action pressable" onClick={onAmend}>
+            <Icon name="edit" size={20} />
+            Correct this order
+          </button>
+          <p className="adjust-kind-note">
+            Quantities, prices and the lines themselves can still be changed while it is a draft.
+            After it goes for approval they cannot — correcting an issued order means cancelling
+            it and raising another, which is why this is here.
+          </p>
+        </>
+      ) : null}
+
+      {/* Said out loud on an order that has moved on, because "the button is
+          missing" and "this can no longer be changed" are not the same
+          message, and the second is the one that stops somebody hunting. */}
+      {!canAmend &&
+      order.status !== 'DRAFT' &&
+      holdsCapabilityAt(permissions, CAPABILITY.purchaseOrderCreate, order.deliverToLocationId) ? (
+        <p className="report-note">
+          This order has left draft, so its lines are frozen and cannot be corrected. The order
+          that was approved and the order goods are signed for against have to be the same
+          document. Cancel it and raise another if it is wrong.
+        </p>
+      ) : null}
 
       {offered.length === 0 && withheld.length === 0 ? (
         <p className="report-note">There is nothing further to do with this order.</p>

@@ -566,3 +566,150 @@ describe('checking one load with the office', () => {
     ).toBeNull();
   });
 });
+
+// ---------------------------------------------------------------------------
+// planDeliveryInput.businessDate — the period key the Q1 ratio divides by
+// ---------------------------------------------------------------------------
+
+/**
+ * ═══════════════════════════════════════════════════════════════════════════
+ * THE TRADING DAY IS ASSERTED, BECAUSE NOTHING CORRECTS IT AFTERWARDS
+ * ═══════════════════════════════════════════════════════════════════════════
+ * `business_date` is the period key `reports.distributionCostRatio` divides
+ * revenue by and `logistics.haulageSpend` sums over. The server implements
+ * three arms — the asserted date, then `plannedFor`, then its own transaction
+ * date — and records which it used. While no screen sent the field, the first
+ * arm was unreachable from the product, and a load recorded days late with no
+ * planned date booked silently to the day it was TYPED, in the period it was
+ * typed in, with **no route to amend it**: there is no `logistics.update` and
+ * `updateDeliveryStatusInput` carries no business date. A month-end figure
+ * quietly gains freight belonging to the month before.
+ *
+ * So: it is always sent, it defaults to today AT THE LOCATION — the location's
+ * zone is synced tenant data, and a tablet that has wandered onto another
+ * timezone must not move a trading day (03 §3.4.2) — and a person recording
+ * something that already happened can set it.
+ */
+
+/** An independent reading of "today there", not the one the client uses. */
+function ymdIn(zone: string): string {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: zone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(new Date());
+}
+
+/** A yard fourteen hours ahead of UTC, so "today" is a different question. */
+const FAR_EAST = 'Pacific/Kiritimati';
+
+async function deviceIn(zone: string): Promise<LocalDb> {
+  const db = openTestDb();
+  await provisionDevice(db, { locationId: LOC, locationCode: 'OUT-01', timeZone: zone });
+  return db;
+}
+
+const PLANNED_OK: Answer = {
+  ok: true,
+  json: {
+    deliveryId: DELIVERY,
+    sourceKind: 'PURCHASE_ORDER',
+    sourceId: ORDER,
+    carrierSupplierId: CARRIER,
+    costLocationId: LOC,
+    status: 'PLANNED',
+    plannedFor: null,
+    freightCostMinor: null,
+    currencyCode: 'XTS',
+  },
+};
+
+/** Open the dispatch form on a device bound to `zone`. */
+async function openDispatch(zone: string, sent: string[]): Promise<void> {
+  const db = await deviceIn(zone);
+  renderScreen(db, holding([CAPABILITY.deliveryView, CAPABILITY.dispatchManage]), {
+    endpoint: ENDPOINT,
+    fetchFn: router({ ...ready([]), 'logistics.planDelivery': PLANNED_OK }, sent),
+  });
+  fireEvent.click(await screen.findByRole('button', { name: /Hand a load to a haulier/ }));
+  await screen.findByRole('form', { name: 'Hand a load to a haulier' });
+  fireEvent.change(screen.getByLabelText('Order to move'), { target: { value: ORDER } });
+  fireEvent.change(screen.getByLabelText('Haulier'), { target: { value: CARRIER } });
+}
+
+function plannedPayload(sent: readonly string[]): Record<string, unknown> {
+  const line = sent.find((s) => s.startsWith('logistics.planDelivery:'));
+  const body = JSON.parse(line?.slice('logistics.planDelivery:'.length) ?? '{}') as {
+    json: Record<string, unknown>;
+  };
+  return body.json;
+}
+
+describe('the trading day a load’s freight counts against', () => {
+  it('is SENT, and defaults to today at the LOCATION rather than the tablet’s idea of it', async () => {
+    const sent: string[] = [];
+    await openDispatch(FAR_EAST, sent);
+    fireEvent.click(screen.getByRole('button', { name: 'Book it with them' }));
+
+    await waitFor(() =>
+      expect(sent.some((s) => s.startsWith('logistics.planDelivery:'))).toBe(true),
+    );
+    // Present at all — which it was not before this wiring existed — and equal
+    // to the calendar date AT THE YARD, read here by a different implementation
+    // from the one the client uses.
+    expect(plannedPayload(sent)['businessDate']).toBe(ymdIn(FAR_EAST));
+  });
+
+  it('follows a planned date the person typed, which is what the server fell back to anyway', async () => {
+    const sent: string[] = [];
+    await openDispatch('UTC', sent);
+    fireEvent.change(screen.getByLabelText('Planned date'), { target: { value: '2026-09-01' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Book it with them' }));
+
+    await waitFor(() =>
+      expect(sent.some((s) => s.startsWith('logistics.planDelivery:'))).toBe(true),
+    );
+    // The default deliberately mirrors the server's own precedence rather than
+    // inventing a second one: what changes is that it is now ASSERTED, and
+    // visible on the screen before anybody taps.
+    const body = plannedPayload(sent);
+    expect(body['plannedFor']).toBe('2026-09-01');
+    expect(body['businessDate']).toBe('2026-09-01');
+  });
+
+  it('can be set to the day a late-recorded load ACTUALLY moved', async () => {
+    // The exposure this closes: a load entered days late with no planned date
+    // used to book to the day it was typed, and no route amends it afterwards.
+    const sent: string[] = [];
+    await openDispatch('UTC', sent);
+    fireEvent.change(screen.getByLabelText('Trading day this load counts against'), {
+      target: { value: '2026-07-31' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Book it with them' }));
+
+    await waitFor(() =>
+      expect(sent.some((s) => s.startsWith('logistics.planDelivery:'))).toBe(true),
+    );
+    const body = plannedPayload(sent);
+    expect(body['businessDate']).toBe('2026-07-31');
+    // And it is a trading day, not a planned date — the two are different
+    // facts and the form does not conflate them.
+    expect(body['plannedFor']).toBeUndefined();
+  });
+
+  it('says what the day means and that it cannot be changed once the load is booked', async () => {
+    const sent: string[] = [];
+    await openDispatch('UTC', sent);
+    expect(
+      screen.getByText(/it cannot be changed once the load is booked/),
+    ).toBeDefined();
+
+    // Choosing another day says so out loud rather than letting it pass
+    // unnoticed beside a field that still reads like today.
+    fireEvent.change(screen.getByLabelText('Trading day this load counts against'), {
+      target: { value: '2026-07-31' },
+    });
+    expect(screen.getByText(/Not today at this place/)).toBeDefined();
+  });
+});

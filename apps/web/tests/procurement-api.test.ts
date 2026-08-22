@@ -27,8 +27,13 @@ import {
   fetchReorderSuggestions,
   fetchSourcesForProduct,
   fetchSuppliers,
+  updatePurchaseOrder,
 } from '../src/data/api/procurement';
-import { fetchDeliveries, planDelivery } from '../src/data/api/logistics';
+import {
+  fetchGoodsReceipt,
+  fetchPurchaseOrderReceiptStatus,
+} from '../src/data/api/receiving';
+import { fetchDeliveries, fetchHaulageSpend, planDelivery } from '../src/data/api/logistics';
 
 const ENDPOINT: ApiEndpoint = { url: 'http://api.test', bearer: 'dev' };
 const LOC = '018f3a1e-0000-7000-8000-00000000aaaa';
@@ -412,5 +417,263 @@ describe('the reorder suggestion says WHY its list is what it is', () => {
     expect(healthy.data.suggestions).toEqual([]);
     expect(none.data.state).toBe('NO_THRESHOLDS_CONFIGURED');
     expect(healthy.data.state).toBe('NOTHING_BELOW_REORDER_POINT');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The three reads and the one write this pass wired to a screen
+// ---------------------------------------------------------------------------
+
+/**
+ * ═══════════════════════════════════════════════════════════════════════════
+ * A MAPPER IS WHERE A WIRE SHAPE AND A SCREEN AGREE OR QUIETLY DIVERGE
+ * ═══════════════════════════════════════════════════════════════════════════
+ * Every fixture below is shaped exactly as its router answers — including the
+ * fields Postgres hands back as `::text` and the ones it hands back as
+ * integers, because that distinction is precisely what a hand-written fixture
+ * gets wrong. `receiptLineCount` is a `count(*)::text`, so it is a `bigint`
+ * here; `qtyScale` is an `int`, so it is a count. Getting that backwards is a
+ * loud failure and not a silent `NaN`, which is the whole point.
+ */
+
+const RECEIPT = '018f3a1e-0000-7000-8000-0000000000f2';
+
+const RECEIPT_STATUS_PAYLOAD = {
+  purchaseOrderId: ORDER,
+  status: 'PARTIALLY_RECEIVED',
+  supplierId: SUPPLIER,
+  deliverToLocationId: LOC,
+  isFullyReceived: false,
+  lines: [
+    {
+      purchaseOrderLineId: 'pol-1',
+      lineNo: 1,
+      productId: PRODUCT,
+      skuCode: 'SKU-1',
+      productName: 'Binder 50kg',
+      uomCode: 'TONNE',
+      qtyScale: 3,
+      qtyOrdered: '5000',
+      qtyReceived: '6000',
+      // SIGNED: an over-delivery, and the server does not clamp it.
+      qtyOutstanding: '-1000',
+      stockingUomCode: 'SACK',
+      qtyStockScale: 0,
+      qtyOrderedStock: '100',
+      qtyStockReceived: '120',
+      isFullyReceived: true,
+      receiptLineCount: '2',
+    },
+  ],
+  receipts: [{ goodsReceiptId: RECEIPT, businessDate: '2026-08-21' }],
+};
+
+const GOODS_RECEIPT_PAYLOAD = {
+  goodsReceiptId: RECEIPT,
+  purchaseOrderId: ORDER,
+  supplierId: SUPPLIER,
+  supplierName: 'Northern Supply',
+  locationId: LOC,
+  businessDate: '2026-08-21',
+  receivedAt: '2026-08-21T09:15:00.000Z',
+  supplierDeliveryNoteRef: 'DN-4471',
+  supplierInvoiceRef: null,
+  receivedByUserId: 'u1',
+  notes: null,
+  lines: [
+    {
+      goodsReceiptLineId: 'grl-1',
+      lineNo: 1,
+      purchaseOrderLineId: 'pol-1',
+      productId: PRODUCT,
+      skuCode: 'SKU-1',
+      productName: 'Binder 50kg',
+      uomCode: 'TONNE',
+      qtyReceived: '2000',
+      qtyReceivedScale: 3,
+      stockingUomCode: 'SACK',
+      qtyStock: '38',
+      qtyStockComputed: '40',
+      qtyStockScale: 0,
+      factorNum: '20',
+      factorDen: '1',
+      conversionConfirmedBy: 'u1',
+      deviationBp: '500',
+      unitCostE4: '900000000',
+      stockUnitCostE4: '45000000',
+      lineNetMinor: '180000',
+    },
+  ],
+};
+
+const HAULAGE_PAYLOAD = {
+  from: '2026-08-01',
+  to: '2026-08-07',
+  scope: { network: false, locationCount: 1 },
+  currencyCode: 'XTS',
+  moneyScale: '2',
+  locations: [
+    {
+      locationId: LOC,
+      locationCode: 'OUT-01',
+      locationName: 'Main yard',
+      haulageSpendMinor: '4500',
+      deliveryCount: 3,
+      deliveriesWithNoAgreedFreight: 1,
+      unavailable: 'INCOMPLETE_FREIGHT_BASIS',
+    },
+  ],
+  groups: [],
+  groupsNest: true,
+  carriers: [
+    {
+      carrierSupplierId: SUPPLIER,
+      carrierName: 'Road Partners',
+      haulageSpendMinor: '4500',
+      deliveryCount: 3,
+      deliveriesWithNoAgreedFreight: 1,
+    },
+  ],
+  total: {
+    haulageSpendMinor: '4500',
+    deliveryCount: 3,
+    deliveriesWithNoAgreedFreight: 1,
+    unavailable: 'INCOMPLETE_FREIGHT_BASIS',
+  },
+  basis: 'AGREED_NOT_INVOICED',
+  excludedStatus: 'CANCELLED',
+  limitApplies: false,
+  periodBasis: {
+    datedByAssertion: 3,
+    datedByPlannedFor: 0,
+    datedByDispatchClock: 0,
+    datedByRowCreated: 0,
+    note: 'Every delivery in this period carries an asserted business date.',
+  },
+  method: 'Agreed freight per carrier over the period.',
+};
+
+const AMENDED_PAYLOAD = {
+  purchaseOrderId: ORDER,
+  status: 'DRAFT',
+  expectedAt: '2026-09-01',
+  notes: 'corrected before submission',
+  linesReplaced: false,
+  lineCount: 1,
+  totalMinor: '450000',
+  lines: null,
+};
+
+function amendment(over: Record<string, unknown> = {}): Parameters<typeof updatePurchaseOrder>[0] {
+  return {
+    idempotencyKey: KEY,
+    purchaseOrderId: ORDER,
+    ...over,
+  } as Parameters<typeof updatePurchaseOrder>[0];
+}
+
+describe('amending a draft order', () => {
+  it('refuses a line the shared contract would reject, before anything leaves the device', async () => {
+    const asked: string[] = [];
+    const result = await updatePurchaseOrder(
+      amendment({
+        lines: [
+          { lineNo: 1, productId: 'not-a-uuid', uomId: UOM_BUY, qtyOrdered: '1', unitPriceE4: '1' },
+        ],
+      }),
+      opts(answering(AMENDED_PAYLOAD, asked)),
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.failure.kind).toBe('invalid-request');
+    // Nothing was sent. A BAD_REQUEST discovered in a district town, hours
+    // later, is the outcome this refusal exists to prevent.
+    expect(asked).toHaveLength(0);
+  });
+
+  it('maps a HEADER-ONLY amendment, where the lines were deliberately left alone', async () => {
+    const result = await updatePurchaseOrder(
+      amendment({ notes: 'corrected before submission', expectedAt: '2026-09-01' }),
+      opts(answering(AMENDED_PAYLOAD)),
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.linesReplaced).toBe(false);
+    // Null, not an empty array: "the lines were not replaced" and "the order
+    // now has no lines" are different facts.
+    expect(result.data.lines).toBeNull();
+    expect(result.data.totalMinor).toBe(450_000n);
+  });
+
+  it('is refused out loud offline, and nothing is queued', async () => {
+    const result = await updatePurchaseOrder(amendment({ notes: 'x' }), opts(DEAD));
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.failure.kind).toBe('offline');
+  });
+});
+
+describe('what has already been booked in', () => {
+  it('maps a SIGNED outstanding quantity without clamping the over-delivery away', async () => {
+    const result = await fetchPurchaseOrderReceiptStatus(ORDER, opts(answering(RECEIPT_STATUS_PAYLOAD)));
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const first = result.data.lines[0];
+    expect(first?.qtyOutstanding).toBe(-1000n);
+    expect(first?.qtyReceived).toBe(6000n);
+    // A count(*) crosses as a decimal string and stays a bigint here.
+    expect(first?.receiptLineCount).toBe(2n);
+    expect(result.data.receipts[0]?.businessDate).toBe('2026-08-21');
+  });
+
+  it('refuses a receipt id that is not a uuid before the wire', async () => {
+    const asked: string[] = [];
+    const result = await fetchGoodsReceipt('nope', opts(answering(GOODS_RECEIPT_PAYLOAD, asked)));
+    expect(result.ok).toBe(false);
+    expect(asked).toHaveLength(0);
+  });
+
+  it('maps invoiced against counted, and the deviation between them', async () => {
+    const result = await fetchGoodsReceipt(RECEIPT, opts(answering(GOODS_RECEIPT_PAYLOAD)));
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const line = result.data.lines[0];
+    expect(line?.qtyReceived).toBe(2000n);
+    // 38 counted where the conversion said 40: the two are BOTH stored and the
+    // deviation is derived from them, never re-derived from today's tolerance.
+    expect(line?.qtyStock).toBe(38n);
+    expect(line?.qtyStockComputed).toBe(40n);
+    expect(line?.deviationBp).toBe(500n);
+    expect(line?.conversionConfirmedBy).toBe('u1');
+  });
+
+  it('says offline rather than answering "nothing has been received"', async () => {
+    const result = await fetchPurchaseOrderReceiptStatus(ORDER, opts(DEAD));
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.failure.kind).toBe('offline');
+  });
+});
+
+describe('haulage spend per carrier', () => {
+  it('maps the carrier split as bigint, with the incomplete-basis flag intact', async () => {
+    const result = await fetchHaulageSpend({ from: '2026-08-01', to: '2026-08-07' }, opts(answering(HAULAGE_PAYLOAD)));
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.carriers).toHaveLength(1);
+    expect(result.data.carriers[0]?.haulageSpendMinor).toBe(4500n);
+    expect(result.data.carriers[0]?.deliveriesWithNoAgreedFreight).toBe(1);
+    // The flag that makes the figure a FLOOR rather than a total.
+    expect(result.data.total.unavailable).toBe('INCOMPLETE_FREIGHT_BASIS');
+    expect(result.data.basis).toBe('AGREED_NOT_INVOICED');
+    // A capped aggregate is a wrong aggregate, and the server says so.
+    expect(result.data.limitApplies).toBe(false);
+  });
+
+  it('refuses a reversed period on the device instead of summing the wrong one', async () => {
+    const asked: string[] = [];
+    const result = await fetchHaulageSpend(
+      { from: '2026-08-07', to: '2026-08-01' },
+      opts(answering(HAULAGE_PAYLOAD, asked)),
+    );
+    expect(result.ok).toBe(false);
+    expect(asked).toHaveLength(0);
   });
 });
