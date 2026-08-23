@@ -476,21 +476,36 @@ describe('inventory days and gross margin (brief §7)', () => {
 });
 
 describe('distribution cost as a percentage of revenue (brief §7)', () => {
-  it('returns an exact revenue denominator and a NULL cost — never zero', async () => {
+  /**
+   * A PERIOD WITH REVENUE AND NO HAULAGE IS ZERO, AND ZERO IS NOT "NO DATA".
+   *
+   * This fixture books no deliveries at all, so the numerator is genuinely
+   * nothing. The route used to answer `null` here because no table recorded
+   * haulage; now one does, and answering `null` would be the opposite lie —
+   * "we cannot tell you" about a month in which nothing moved. The two cases
+   * are separated by `deliveryCount`, not by a null: zero deliveries is a
+   * fact, and deliveries whose freight was never agreed is a gap that says
+   * INCOMPLETE_FREIGHT_BASIS out loud.
+   */
+  it('answers ZERO — not null — for a period with revenue and no deliveries', async () => {
     const accounts = await principalAt('accounts', root);
     const r = await accounts.reports.distributionCostRatio({ from: FROM, to: TO });
 
     expect(r.total.netRevenueMinor).toBe(String(4n * SALE_NET));
-    // The assertion this test exists for. `0` would render as 0.0% against a
-    // 5.0% target and read as the best logistics operation in West Africa.
-    expect(r.total.distributionCostMinor).toBeNull();
-    expect(r.total.distributionCostPctE4).toBeNull();
-    expect(r.total.unavailable).toBe('NO_DISTRIBUTION_COST_SOURCE');
+    expect(r.total.distributionCostMinor).toBe('0');
+    expect(r.total.distributionCostPctE4).toBe('0');
+    // Distinguishable from "no data": nothing was carried, and it says so.
+    expect(r.total.deliveryCount).toBe(0);
+    expect(r.total.deliveriesWithNoAgreedFreight).toBe(0);
+    expect(r.total.unavailable).toBeNull();
     for (const l of r.locations) {
-      expect(l.distributionCostMinor).toBeNull();
-      expect(l.distributionCostPctE4).toBeNull();
+      expect(l.distributionCostMinor).toBe('0');
+      expect(l.deliveryCount).toBe(0);
     }
-    expect(r.unavailableReason).toMatch(/no general ledger/i);
+    // The numerator is the AGREED freight, and the response says so rather
+    // than letting an operational figure be read as an accounting one.
+    expect(r.costBasis).toBe('AGREED_NOT_INVOICED');
+    expect(r.unavailableReason).toMatch(/agreed freight/i);
   });
 
   it('rolls revenue up to grouping nodes, and says that they nest', async () => {

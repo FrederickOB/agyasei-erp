@@ -6,9 +6,14 @@
  *
  * The rules, each load-bearing:
  *
- * - **Strictly in order.** The outbox is an ordered queue; ops are sent
- *   oldest-first (`created_at`, then id — both UUIDv7-time-ordered), exactly
- *   the order the server applies them in.
+ * - **Strictly in order.** The outbox is an ordered queue; ops are sent in
+ *   ENQUEUE order — `outbox.queue_seq`, a strictly increasing integer stamped
+ *   inside the same local transaction as the insert — exactly the order the
+ *   server applies them in. It used to be `(created_at, id)`, which is total
+ *   but is not the enqueue order: `created_at` is millisecond-resolution and a
+ *   `uuidv7` carries no intra-millisecond counter, so a tie was broken at
+ *   random. `data/sync/queue-seq.ts` has the full argument, including why a
+ *   monotonic uuidv7 would not have been enough.
  * - **Complete ONLY on a server ack.** An op is marked done (`server_ack_at`)
  *   only when the server answered `applied` or `duplicate` for ITS key. No
  *   ack — a network failure, a non-200, a missing ack entry — leaves the op
@@ -27,6 +32,7 @@
  */
 import { MAX_UPLOAD_BATCH, type UploadAck, type UploadAckStatus } from '@erp/contracts';
 import type { LocalDb } from '../db';
+import { OUTBOX_QUEUE_ORDER } from './queue-seq';
 
 /**
  * The ack shape and the batch cap are the SERVER'S declarations, imported —
@@ -128,7 +134,14 @@ export interface DrainReport {
   readonly transportOk: boolean;
 }
 
-/** Pending ops, strictly in queue order, capped at the server's batch limit. */
+/**
+ * Pending ops, strictly in queue order, capped at the server's batch limit.
+ *
+ * The order is TOTAL and DETERMINISTIC: `queue_seq` is unique, so no two rows
+ * can tie. Rows written before that column existed carry NULL and sort first —
+ * they were queued before every row that has one — with the old key breaking
+ * ties among themselves, so an in-flight queue is not reshuffled by an upgrade.
+ */
 export async function readPendingOps(
   db: LocalDb,
   limit: number = MAX_UPLOAD_BATCH,
@@ -137,7 +150,7 @@ export async function readPendingOps(
     `SELECT id, idempotency_key, claimed_hlc, kind, payload, created_at
        FROM outbox
       WHERE server_ack_at IS NULL AND rejected_at IS NULL
-      ORDER BY created_at ASC, id ASC
+      ORDER BY ${OUTBOX_QUEUE_ORDER}
       LIMIT ?`,
     [Math.min(limit, MAX_UPLOAD_BATCH)],
   );

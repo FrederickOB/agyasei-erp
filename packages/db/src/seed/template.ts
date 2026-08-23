@@ -25,6 +25,12 @@ import type { Queryable } from '../testing/harness.js';
 import { parseOutlets } from './outlets.js';
 import { TEMPLATE_ROLES } from './roles.js';
 import { parseSkus, TEMPLATE_UOMS, type CatalogueLine } from './skus.js';
+import {
+  TEMPLATE_CEMENT_SUB_CATEGORY,
+  TEMPLATE_PREFERRED_CEMENT_SUPPLIER_REF,
+  TEMPLATE_SUPPLIER_CAPABILITY_TYPES,
+  TEMPLATE_SUPPLIERS,
+} from './suppliers.js';
 
 export const TEMPLATE_ID = 'construction-materials-gh';
 export const TEMPLATE_VERSION = 1;
@@ -366,6 +372,109 @@ export async function applyTemplate(tx: Queryable, tenantId: string): Promise<Ap
         TEMPLATE_ID,
         `pricelist:${l.code}`,
       ]),
+    );
+  }
+
+  // --- module: suppliers ---------------------------------------------------
+  // Tenant #1's cement sources and a carrier, as ORDINARY EDITABLE ROWS.
+  //
+  // ADR-0001: a HAULIER IS A SUPPLIER holding a capability of kind HAULAGE.
+  // There is no carrier table and no vehicle anywhere in this system. The
+  // capability's `code`/`name` are the tenant's vocabulary; its `kind` is the
+  // platform structure the delivery guard reads (see src/seed/suppliers.ts).
+  //
+  // Payment terms are seeded as cash on delivery and lead times and prices
+  // are left NULL, because the plan states none of them — every row carries a
+  // [NEEDS-FOUNDER: …] note rather than a fabricated figure.
+  {
+    const writeId = await moduleWrite(tx, tenantId, 'suppliers');
+
+    await batchInsert(
+      tx,
+      'app.supplier_capability_type',
+      ['tenant_id', 'id', 'write_id', 'hlc', 'code', 'name', 'kind',
+       'origin_template_id', 'origin_ref'],
+      TEMPLATE_SUPPLIER_CAPABILITY_TYPES.map((c) => {
+        const ref = `supplier_capability_type:${c.ref}`;
+        return [tenantId, rowId(tenantId, ref), writeId, hlcClock.next(),
+          c.code, c.name, c.kind, TEMPLATE_ID, ref];
+      }),
+    );
+
+    await batchInsert(
+      tx,
+      'app.supplier',
+      ['tenant_id', 'id', 'write_id', 'hlc', 'code', 'name', 'payment_terms_days',
+       'currency_code', 'is_active', 'notes', 'origin_template_id', 'origin_ref'],
+      TEMPLATE_SUPPLIERS.map((s) => {
+        const ref = `supplier:${s.ref}`;
+        return [tenantId, rowId(tenantId, ref), writeId, hlcClock.next(),
+          s.code, s.name, s.paymentTermsDays, 'GHS', true, s.notes, TEMPLATE_ID, ref];
+      }),
+    );
+
+    const capabilityRows: unknown[][] = [];
+    for (const s of TEMPLATE_SUPPLIERS) {
+      for (const capRef of s.capabilityRefs) {
+        const ref = `supplier_capability:${s.ref}:${capRef}`;
+        capabilityRows.push([
+          tenantId,
+          rowId(tenantId, ref),
+          writeId,
+          hlcClock.next(),
+          rowId(tenantId, `supplier:${s.ref}`),
+          rowId(tenantId, `supplier_capability_type:${capRef}`),
+          TEMPLATE_ID,
+          ref,
+        ]);
+      }
+    }
+    await batchInsert(
+      tx,
+      'app.supplier_capability',
+      ['tenant_id', 'id', 'write_id', 'hlc', 'supplier_id', 'capability_type_id',
+       'origin_template_id', 'origin_ref'],
+      capabilityRows,
+    );
+
+    // MULTI-SOURCE, as data: every cement SKU gets a supply record from each
+    // of the three manufacturers, one of them preferred. `purchase_uom_id` is
+    // the product's STOCKING unit, whose product_uom row the catalogue module
+    // above already created with can_buy — the 0008 trigger refuses anything
+    // that is not a buyable unit of the product, which is the same machinery
+    // selling uses, in the opposite direction (§4.10).
+    //
+    // Buying cement by the TONNE (20 × 50 kg bags) is a further authoring
+    // step the founder confirms: it is one more product_uom row with can_buy
+    // and a 20/1 factor, and this seeder needs no change to use it.
+    const cementSkus = skus.filter((l) => l.subCategory === TEMPLATE_CEMENT_SUB_CATEGORY);
+    const goodsSuppliers = TEMPLATE_SUPPLIERS.filter((s) => s.capabilityRefs.includes('GOODS'));
+    const supplierProductRows: unknown[][] = [];
+    for (const line of cementSkus) {
+      for (const s of goodsSuppliers) {
+        const ref = `supplier_product:${s.ref}:${line.skuNo}`;
+        supplierProductRows.push([
+          tenantId,
+          rowId(tenantId, ref),
+          writeId,
+          hlcClock.next(),
+          rowId(tenantId, `supplier:${s.ref}`),
+          rowId(tenantId, `sku:${line.skuNo}`),
+          rowId(tenantId, `uom:${line.stockingUomCode}`),
+          s.ref === TEMPLATE_PREFERRED_CEMENT_SUPPLIER_REF,
+          true,
+          '[NEEDS-FOUNDER: no lead time and no price — the plan states neither. A guessed lead time drives the order-up-to arithmetic; a zero price reads as free.]',
+          TEMPLATE_ID,
+          ref,
+        ]);
+      }
+    }
+    await batchInsert(
+      tx,
+      'app.supplier_product',
+      ['tenant_id', 'id', 'write_id', 'hlc', 'supplier_id', 'product_id', 'purchase_uom_id',
+       'is_preferred', 'is_active', 'notes', 'origin_template_id', 'origin_ref'],
+      supplierProductRows,
     );
   }
 

@@ -63,6 +63,7 @@ import {
 } from '../lib/receipt-number';
 import { uuidv7 } from '../lib/uuidv7';
 import { readDeviceLocation, readReceiptFormat } from './queries/session';
+import { nextQueueSeq } from './sync/queue-seq';
 
 /** The receipt counter's key. Pack + tenant data (§3.7.5), not an enum. */
 export const SEQUENCE_KEY_RECEIPT = 'RECEIPT';
@@ -638,12 +639,27 @@ export async function enqueueBlockReport(
       sequenceKey,
       ...(input.observedPerDay === undefined ? {} : { observedPerDay: input.observedPerDay }),
     });
+    // The queue position (data/sync/queue-seq.ts). THE ORDERING THIS FUNCTION
+    // DOCUMENTS RESTS ON IT: the report must reach the server before the sales
+    // queued after it, and until this column existed that held only when the
+    // two did not share a millisecond — and, for a sale whose id was minted at
+    // cart-open, not even then.
+    const queueSeq = await nextQueueSeq(tx);
     await tx.execute(
       `INSERT INTO outbox
          (id, idempotency_key, claimed_hlc, kind, payload, total_minor, receipt_no,
-          tendered_minor, change_minor, created_at, server_ack_at, rejected_at, reject_reason)
-       VALUES (?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?, NULL, NULL, NULL)`,
-      [key, key, input.claimedHlc, SEQUENCE_REPORT_OP_KIND, JSON.stringify(payload), nowIso],
+          tendered_minor, change_minor, created_at, queue_seq,
+          server_ack_at, rejected_at, reject_reason)
+       VALUES (?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?, ?, NULL, NULL, NULL)`,
+      [
+        key,
+        key,
+        input.claimedHlc,
+        SEQUENCE_REPORT_OP_KIND,
+        JSON.stringify(payload),
+        nowIso,
+        queueSeq,
+      ],
     );
     // What we told the server, and when. The gap between this and
     // `consumed_upto` is the window a wipe would otherwise hide.

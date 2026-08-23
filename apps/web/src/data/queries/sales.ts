@@ -5,6 +5,7 @@
  */
 import { deriveRecordSyncState, type RecordSyncState } from '../../lib/badges';
 import type { DbRow, LocalDb } from '../db';
+import { OUTBOX_QUEUE_ORDER_DESC } from '../sync/queue-seq';
 
 export interface RecordedSale {
   readonly id: string;
@@ -45,7 +46,7 @@ export async function recentSales(db: LocalDb, limit = 20): Promise<RecordedSale
             CAST(change_minor AS TEXT) AS change_minor
        FROM outbox
       WHERE kind = 'sale'
-      ORDER BY created_at DESC, id DESC
+      ORDER BY ${OUTBOX_QUEUE_ORDER_DESC}
       LIMIT ?`,
     [limit],
   );

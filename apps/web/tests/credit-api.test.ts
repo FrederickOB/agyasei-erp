@@ -24,7 +24,7 @@ import {
   fetchAgeing,
   fetchCreditPosition,
   fetchExposure,
-  isAccountRef,
+  setCreditStatus,
   type CreditAgeing,
   type CreditExposure,
 } from '../src/data/api/credit';
@@ -69,6 +69,8 @@ function exposurePayload(over: Record<string, unknown> = {}): unknown {
     creditLimitMinor: '5000000',
     availableMinor: '4505600',
     status: 'ACTIVE',
+    termsDays: 30,
+    limitVersionId: '018f3a1e-0000-7000-8000-0000000000a9',
     ...over,
   };
 }
@@ -183,6 +185,8 @@ describe('the breakdown reconciles to the headline, in integers', () => {
       creditLimitMinor: 5_000_000n,
       availableMinor: 5_000_000n - minor,
       status: 'ACTIVE',
+      termsDays: 30,
+      limitVersionId: null,
     };
   }
   function ageingOf(
@@ -376,16 +380,6 @@ describe('the fee gate is not an error', () => {
   });
 });
 
-describe('what counts as an account reference has one definition', () => {
-  it('accepts the shape the shared contract accepts, and trims', () => {
-    expect(isAccountRef(` ${ACCOUNT} `)).toBe(true);
-  });
-  it('rejects anything else, without claiming the account exists', () => {
-    expect(isAccountRef('ACC-001')).toBe(false);
-    expect(isAccountRef('')).toBe(false);
-  });
-});
-
 describe('nothing is cached', () => {
   it('sends no tenant identity in any spelling', async () => {
     const seen: string[] = [];
@@ -410,5 +404,148 @@ describe('nothing is cached', () => {
     // Two reads, two requests. There is no place in this module for a balance
     // to be remembered, and that is the point.
     expect(asked.filter((p) => p === 'credit.exposure').length).toBe(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Cutting a customer off
+// ---------------------------------------------------------------------------
+
+/**
+ * `credit.setStatus` is the write side of a check `sales.createSale` has
+ * always made and nothing could satisfy: an account that is not ACTIVE is
+ * refused credit tender, and no route could move an account off ACTIVE.
+ *
+ * Two of its refusals are PLATFORM CODES rather than errors, and this client
+ * must keep them apart from each other and from a genuine failure — the screen
+ * says a different, useful thing for each, and none of the three is "try
+ * again".
+ */
+describe('changing an account status', () => {
+  const REASON = 'two invoices unpaid past 90 days';
+
+  function decision(over: Record<string, unknown> = {}): unknown {
+    return {
+      accountId: ACCOUNT,
+      changed: true,
+      fromStatus: 'ACTIVE',
+      status: 'SUSPENDED',
+      changeId: '018f3a1e-0000-7000-8000-0000000000d1',
+      exposureMinor: '494400',
+      ...over,
+    };
+  }
+
+  function body(over: Record<string, unknown> = {}) {
+    return {
+      idempotencyKey: '018f3a1e-0000-7000-8000-0000000000e1',
+      accountId: ACCOUNT,
+      status: 'SUSPENDED' as const,
+      expectedStatus: 'ACTIVE' as const,
+      reason: REASON,
+      ...over,
+    };
+  }
+
+  it('parses the decision, and the exposure it was taken against is a bigint', async () => {
+    const outcome = await setCreditStatus(body(), {
+      endpoint: ENDPOINT,
+      fetchFn: router({ 'credit.setStatus': { ok: true, json: decision() } }),
+    });
+    expect(outcome.kind).toBe('changed');
+    if (outcome.kind !== 'changed') return;
+    expect(outcome.result.fromStatus).toBe('ACTIVE');
+    expect(outcome.result.status).toBe('SUSPENDED');
+    expect(outcome.result.exposureMinor).toBe(494_400n);
+    expect(typeof outcome.result.exposureMinor).toBe('bigint');
+  });
+
+  it('a no-op comes back as a decision that changed nothing, not as an error', async () => {
+    const outcome = await setCreditStatus(body({ status: 'ACTIVE' }), {
+      endpoint: ENDPOINT,
+      fetchFn: router({
+        'credit.setStatus': {
+          ok: true,
+          json: decision({ changed: false, status: 'ACTIVE', changeId: null }),
+        },
+      }),
+    });
+    expect(outcome.kind).toBe('changed');
+    if (outcome.kind !== 'changed') return;
+    expect(outcome.result.changed).toBe(false);
+    expect(outcome.result.changeId).toBeNull();
+  });
+
+  it('CREDIT_STATUS_STALE is its own outcome — somebody else decided first', async () => {
+    const outcome = await setCreditStatus(body(), {
+      endpoint: ENDPOINT,
+      fetchFn: router({
+        'credit.setStatus': {
+          ok: false,
+          status: 409,
+          message:
+            'CREDIT_STATUS_STALE: you decided against an account you believed was ACTIVE, and ' +
+            'it is SUSPENDED. Nothing has been changed.',
+        },
+      }),
+    });
+    expect(outcome.kind).toBe('stale');
+  });
+
+  it('CREDIT_STATUS_CLOSE_BLOCKED is its own outcome — the account still owes', async () => {
+    const outcome = await setCreditStatus(body({ status: 'CLOSED' }), {
+      endpoint: ENDPOINT,
+      fetchFn: router({
+        'credit.setStatus': {
+          ok: false,
+          status: 412,
+          message: 'CREDIT_STATUS_CLOSE_BLOCKED: this account still stands at 494400 minor units.',
+        },
+      }),
+    });
+    expect(outcome.kind).toBe('still-owing');
+  });
+
+  it('any other refusal stays a refusal, and offline is offline', async () => {
+    const denied = await setCreditStatus(body(), {
+      endpoint: ENDPOINT,
+      fetchFn: router({
+        'credit.setStatus': { ok: false, status: 403, message: 'PERMISSION_DENIED' },
+      }),
+    });
+    expect(denied.kind).toBe('refused');
+
+    const offline = await setCreditStatus(body(), {
+      endpoint: ENDPOINT,
+      fetchFn: () => Promise.reject(new Error('down')),
+    });
+    expect(offline.kind).toBe('refused');
+    if (offline.kind !== 'refused') return;
+    expect(offline.failure.kind).toBe('offline');
+  });
+
+  it('a reasonless decision never leaves the device — the contract refuses it here', async () => {
+    const asked: string[] = [];
+    const outcome = await setCreditStatus(body({ reason: ' ' }), {
+      endpoint: ENDPOINT,
+      fetchFn: router({ 'credit.setStatus': { ok: true, json: decision() } }, asked),
+    });
+    expect(outcome.kind).toBe('refused');
+    if (outcome.kind !== 'refused') return;
+    expect(outcome.failure.kind).toBe('invalid-request');
+    expect(asked).toHaveLength(0);
+  });
+
+  it('a status the contract does not know never leaves the device either', async () => {
+    const asked: string[] = [];
+    const outcome = await setCreditStatus(
+      body({ status: 'ON_HOLD' } as unknown as Record<string, unknown>) as never,
+      {
+        endpoint: ENDPOINT,
+        fetchFn: router({ 'credit.setStatus': { ok: true, json: decision() } }, asked),
+      },
+    );
+    expect(outcome.kind).toBe('refused');
+    expect(asked).toHaveLength(0);
   });
 });

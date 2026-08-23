@@ -88,6 +88,22 @@ export const PERMISSION_CODES = [
   'admin.template.apply',
 
   'sync.conflict.review',
+
+  // Phase 2 — procurement and logistics (migration 0009). `goods.receive` is
+  // deliberately NOT `purchase.order.approve`: one person holding both can
+  // fabricate a receipt against an order they invented, and both the ledger
+  // and accounts payable would believe it.
+  'supplier.view',
+  'supplier.manage',
+
+  'purchase.order.view',
+  'purchase.order.create',
+  'purchase.order.approve',
+
+  'goods.receive',
+
+  'logistics.delivery.view',
+  'logistics.dispatch.manage',
 ] as const;
 
 export type PermissionCode = (typeof PERMISSION_CODES)[number];

@@ -74,8 +74,56 @@ export const CAPABILITY = {
   stockAdjust: 'stock.adjust',
   /** Look a customer's credit position up. Held at any location. */
   creditView: 'credit.view',
+  /**
+   * Open a customer's credit account, amend its terms, and MOVE IT BETWEEN
+   * ACTIVE, SUSPENDED AND CLOSED — the switch behind the check
+   * `sales.createSale` has always made and nothing could satisfy. TENANT-WIDE
+   * on the server (`at: 'tenant'` — held at every root of the tenant's
+   * location tree), which is stricter than anything this file can check:
+   * `holdsCapability`
+   * answers "somewhere". An outlet manager does not hold it and Accounts does,
+   * so the screen shows a manager the account and not the form. The server
+   * refuses either way; hiding the form spares somebody filling it in.
+   */
+  creditAccountManage: 'credit.account.manage',
+  /**
+   * SET OR CHANGE A CREDIT LIMIT — one of the constitution's two hard
+   * prohibitions (CLAUDE.md §2.6: outlet staff never). Required IN ADDITION to
+   * `credit.account.manage` on every limit decision, so there is no path to a
+   * limit that does not pass through it.
+   */
+  creditLimitChange: 'credit.limit.change',
+  /** Record a payment, adjustment or write-off against a credit account. */
+  creditEntryRecord: 'credit.entry.record',
   /** Post fee accruals. Tenant-wide, and gated again by the fee policy itself. */
   creditFeeAccrue: 'credit.fee.accrue',
+
+  // ── Phase 2: buying, receiving and moving goods ─────────────────────────
+  //
+  // RAISING AN ORDER AND APPROVING ONE ARE TWO CODES, and the pair is the
+  // whole control. One person who can do both can commit the business to a
+  // spend nobody else saw; one who can approve an order and also sign for its
+  // goods can fabricate a receipt against an order they invented. The screens
+  // read the two separately and never infer one from the other — and the
+  // server derives the required code from `toStatus` and re-checks it at
+  // ingest, so hiding a button remains a courtesy (CLAUDE.md §2.6).
+
+  /** See who supplies what, on what terms, at what price. */
+  supplierView: 'supplier.view',
+  /** Create or amend a supplier. Held at the ROOT — a supplier has no outlet. */
+  supplierManage: 'supplier.manage',
+  /** Read purchase orders for the locations you hold it at. */
+  purchaseOrderView: 'purchase.order.view',
+  /** Raise and amend a DRAFT order, and submit it. Never approves one. */
+  purchaseOrderCreate: 'purchase.order.create',
+  /** Authorise an order. A separate act by a separate person, and bounded. */
+  purchaseOrderApprove: 'purchase.order.approve',
+  /** Sign for goods at a yard. NOT `stock.receive`, and NOT the approval. */
+  goodsReceive: 'goods.receive',
+  /** "Where is my order?" — the wider grant; the counter holds it. */
+  deliveryView: 'logistics.delivery.view',
+  /** Hand a load to a haulier and move its status along. */
+  dispatchManage: 'logistics.dispatch.manage',
 } as const;
 
 export interface CapabilityGrant {
@@ -123,6 +171,39 @@ export function holdsCapability(state: PermissionsState, code: string): boolean 
     case 'resolving':
     case 'unknown':
       return true;
+    case 'remembered':
+    case 'live':
+      return state.snapshot.codes.includes(code);
+  }
+}
+
+/**
+ * Does this session hold `code` — for a write that will be QUEUED?
+ *
+ * The same question as `holdsCapability`, answered the OTHER way for
+ * `unknown`, and the asymmetry is deliberate rather than an inconsistency.
+ *
+ * `holdsCapability` over-approximates on purpose: hiding a READ from somebody
+ * who holds it costs them the feature, and offering one they do not hold costs
+ * them a refusal they can read. Neither outcome damages anything.
+ *
+ * An OUTBOX write is not symmetric like that. The upload queue is ORDERED and
+ * `classifyRejection` (data/sync/upload.ts) treats an unrecognised rejection as
+ * RETRYABLE, on purpose — wrongly dead-lettering a write is the loss path. So a
+ * queued write the server answers `FORBIDDEN: PERMISSION_DENIED` to sits at the
+ * head of the queue being retried for ever, and **every sale behind it stops
+ * draining**. The till just looks "stuck".
+ *
+ * So for a queued write the honest answer to "I could not ask" is NO. The cost
+ * of being wrong is one person walking to the desk; the cost of the other
+ * mistake is an outlet that silently stops uploading.
+ */
+export function holdsCapabilityForQueuedWrite(state: PermissionsState, code: string): boolean {
+  switch (state.status) {
+    case 'no-session':
+    case 'resolving':
+    case 'unknown':
+      return false;
     case 'remembered':
     case 'live':
       return state.snapshot.codes.includes(code);

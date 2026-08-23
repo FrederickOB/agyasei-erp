@@ -17,10 +17,11 @@ import { runD4 } from './drills/d4.js';
 import { runD5 } from './drills/d5.js';
 import { runD6 } from './drills/d6.js';
 import { runD7 } from './drills/d7.js';
+import { runD8 } from './drills/d8.js';
 import { API_URL, DATABASE_URL, POWERSYNC_URL } from './env.js';
 
 /** Every drill must run. A missing one is a failure, not a quiet 6/7. */
-const DRILL_COUNT = 7;
+const DRILL_COUNT = 8;
 
 function sh(cmd: string): string {
   try {
@@ -49,6 +50,7 @@ async function main(): Promise<void> {
       { id: 'D5', title: 'tenant isolation at the sync layer', fn: runD5 },
       { id: 'D6', title: "the PWA's own payload, end to end", fn: runD6 },
       { id: 'D7', title: 'receipt-number regression (wipe mid-block, reissue)', fn: runD7 },
+      { id: 'D8', title: 'credit at the sync layer — isolation, permission gate, location slice', fn: runD8 },
     ];
     for (const d of drills) {
       console.log(`\n--- ${d.id}: ${d.title} ---`);

@@ -34,6 +34,27 @@ or the margin bridge weakens and FY10 gross margin of 24.5% is optimistic. The G
 capex line also needs splitting — how much was ERP/POS and how much was trucks? Only the ERP
 portion survives this decision. **This is an accountant's call, not an engineer's.**
 
+**ENGINEERING'S HALF IS NOW DELIVERED (2026-08-22).** `ADR-0001` promised that in exchange for the
+fleet the ERP would *"measure distribution cost as % of revenue per outlet and per region so the
+real trajectory is visible."* It does. `reports.distributionCostRatio` answers a real percentage —
+numerator `app.delivery.freight_cost_minor`, denominator ex-tax after-discount revenue, both dated
+by the same human-asserted business date (migration `0010`), scaled as percent × 10⁴ so `50000` is
+5.0% and `25000` is 2.5% exactly — per location, and per grouping node rolled up over
+`app.location_closure`. It is on the Reports screen behind `report.view.margin`.
+
+Verified live against the deployed API and real Postgres, reconciled against an independent second
+computation: `docs/phase2-status.md` §2b and §4; drill `pnpm --filter @erp/wire-conformance
+drill:q1`.
+
+**Two caveats the accountant must carry into the judgement:** the figure is the **agreed** freight,
+not the haulier's AP invoice (there is no GL until Phase 3, so it is an operational number); and
+where freight was never agreed the row reports `INCOMPLETE_FREIGHT_BASIS` and its sum is a
+**floor**, not a total.
+
+**The financial half is unchanged and still `NEEDS-HUMAN`:** the 5.0% → 2.5% target was never
+restated after the fleet was removed. What has changed is that there is now a measured trajectory
+to compare it against.
+
 ---
 
 ## Q2 — Receivables days understated · `OPEN`

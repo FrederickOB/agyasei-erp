@@ -78,6 +78,10 @@ const COUNTER_STAFF: TemplateRole = {
     { code: 'stock.transfer.receive' },
     { code: 'catalogue.view' },
     { code: 'customer.view' },
+    // "Where is my cement?" is a counter question, so the counter can answer
+    // it. Reading a delivery's status exposes no commercial terms — unlike
+    // supplier.view, which carries payment terms and is deliberately absent.
+    { code: 'logistics.delivery.view' },
     // DELIBERATELY ABSENT: sale.override_price, credit.limit.change.
   ],
 };
@@ -112,7 +116,20 @@ const OUTLET_MANAGER: TemplateRole = {
     { code: 'credit.view' },
     { code: 'report.view.location' },
     { code: 'admin.device.enrol' },
-    // DELIBERATELY ABSENT: credit.limit.change (the brief), sale.override_price.
+    // Procurement, from the yard's side: raise the order for what their
+    // outlet is running out of, sign for what the truck brings, and book a
+    // haulier to take goods to a customer's site.
+    { code: 'supplier.view' },
+    { code: 'purchase.order.view' },
+    { code: 'purchase.order.create' },
+    { code: 'goods.receive' },
+    { code: 'logistics.delivery.view' },
+    { code: 'logistics.dispatch.manage' },
+    // DELIBERATELY ABSENT: credit.limit.change (the brief), sale.override_price,
+    // and — new with Phase 2 — purchase.order.approve. The person who raises
+    // an order and signs for its goods must not also be the person who
+    // authorises the spend; that separation is the standard control against a
+    // fabricated receipt, and it is the reason approval sits a level up.
   ],
 };
 
@@ -131,11 +148,24 @@ const REGIONAL_MANAGER: TemplateRole = {
     'Runs a group of locations: everything an outlet manager does, at every location under their node, plus margin visibility and sync conflict review.',
   isOwner: false,
   permissions: [
-    ...OUTLET_MANAGER.permissions.filter((p) => p.code !== 'sale.record.credit'),
+    // `goods.receive` is filtered OUT, and that is the whole segregation:
+    // this role APPROVES purchase orders, so it must not also be able to sign
+    // for the goods against one. Both halves in one pair of hands is how a
+    // receipt gets fabricated against an order that was invented — the stock
+    // ledger records inventory that never arrived and accounts payable pays
+    // for it. The outlet manager at the receiving yard signs; this role does
+    // not. A tenant whose org chart differs composes its own role; nothing on
+    // the platform reads either role's name.
+    ...OUTLET_MANAGER.permissions.filter(
+      (p) => p.code !== 'sale.record.credit' && p.code !== 'goods.receive',
+    ),
     { code: 'sale.record.credit', bound: { max_order_value_minor: '2000000' } }, // GH₵20,000
     { code: 'report.view.margin' },
     { code: 'sync.conflict.review' },
-    // DELIBERATELY ABSENT: credit.limit.change, sale.override_price.
+    // Bounded exactly like a credit sale is: approval is a commitment, and
+    // the ceiling is a decimal STRING in minor units (ADR-0004).
+    { code: 'purchase.order.approve', bound: { max_order_value_minor: '5000000' } }, // GH₵50,000
+    // DELIBERATELY ABSENT: credit.limit.change, sale.override_price, goods.receive.
   ],
 };
 
@@ -186,7 +216,18 @@ const ACCOUNTS: TemplateRole = {
     { code: 'payroll.register.export' },
     { code: 'payroll.register.import' },
     { code: 'sync.conflict.review' },
-    // DELIBERATELY ABSENT: sale.record, stock.adjust, sale.override_price.
+    // Accounts owns the supplier master file, because payment terms are an
+    // AP fact, and approves the spend — unbounded, unlike the regional
+    // manager's ceiling.
+    { code: 'supplier.view' },
+    { code: 'supplier.manage' },
+    { code: 'purchase.order.view' },
+    { code: 'purchase.order.approve' },
+    { code: 'logistics.delivery.view' },
+    // DELIBERATELY ABSENT: sale.record, stock.adjust, sale.override_price,
+    // and — the segregation again, from the other side — goods.receive and
+    // purchase.order.create. Accounts approves and pays; it does not raise
+    // the order and it does not sign for the goods.
   ],
 };
 

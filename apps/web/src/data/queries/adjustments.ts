@@ -21,6 +21,7 @@
 import { deriveRecordSyncState, type RecordSyncState } from '../../lib/badges';
 import { ADJUSTMENT_OUTBOX_KIND, isAdjustmentKind, type AdjustmentKind } from '../mutations/adjustStock';
 import type { DbRow, LocalDb } from '../db';
+import { OUTBOX_QUEUE_ORDER_DESC } from '../sync/queue-seq';
 
 export interface RecordedAdjustment {
   readonly id: string;
@@ -87,7 +88,7 @@ export async function recentAdjustments(db: LocalDb, limit = 20): Promise<Record
     `SELECT id, created_at, server_ack_at, rejected_at, reject_reason, payload
        FROM outbox
       WHERE kind = ?
-      ORDER BY created_at DESC, id DESC
+      ORDER BY ${OUTBOX_QUEUE_ORDER_DESC}
       LIMIT ?`,
     [ADJUSTMENT_OUTBOX_KIND, limit],
   );

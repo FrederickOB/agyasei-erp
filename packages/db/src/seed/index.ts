@@ -4,6 +4,14 @@ export { parseOutlets, OUTLETS_CSV_PATH, type OutletPlan, type OutletRow } from 
 export { seedGhanaJurisdiction, GHANA } from './ghana.js';
 export { TEMPLATE_ROLES, type TemplateRole, type TemplateRolePermission } from './roles.js';
 export {
+  TEMPLATE_CEMENT_SUB_CATEGORY,
+  TEMPLATE_PREFERRED_CEMENT_SUPPLIER_REF,
+  TEMPLATE_SUPPLIERS,
+  TEMPLATE_SUPPLIER_CAPABILITY_TYPES,
+  type TemplateSupplier,
+  type TemplateSupplierCapabilityType,
+} from './suppliers.js';
+export {
   provisionPrincipal,
   rootLocationId,
   type ProvisionPrincipalInput,

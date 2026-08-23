@@ -32,11 +32,23 @@
 #      token. It is a token claim, not a client parameter. No claim → NULL
 #      bucket key → zero rows. When user_location_scope lands, swap the
 #      parameter queries here for the table-driven ones in §3.2.3.
-#   b. The credit book (customer_account, credit_entry) and the
-#      credit_allowance projection are NOT SYNCED AT ALL: the permission
-#      tables that §3.2.2 gates them on do not exist, so the fail-closed
-#      choice is no bucket, not an ungated one. Credit reads stay online
-#      through the API until then.
+#   b. RESOLVED by migration 0013 — the credit buckets exist and are gated on
+#      the DATABASE, not on a claim. This note is kept because the shape of the
+#      fix is the record. It used to read: *"the credit book and the
+#      credit_allowance projection are NOT SYNCED AT ALL: the permission tables
+#      that §3.2.2 gates them on do not exist, so the fail-closed choice is no
+#      bucket, not an ungated one."* Those tables landed in 0005 — as VIEWS,
+#      and a view cannot be published to logical replication, so it cannot be
+#      a parameter query's source however much we would like it to be.
+#      0013 therefore adds two narrow, trigger-maintained PROJECTIONS of those
+#      views — app.credit_sync_book_scope (credit.view, per tenant) and
+#      app.credit_sync_location_scope (sale.record.credit ∩ location scope) —
+#      and the two buckets below read those. A grant that is revoked empties
+#      the device on the next sync, which is the property a token claim can
+#      never have and the reason note (a)'s mechanism was not reused here.
+#      The one residual: a grant whose effective_to is a FUTURE instant lapses
+#      with no DML to fire a trigger, so it is swept by
+#      app.refresh_credit_sync_scope_all() on the nightly job. Stated in 0013.
 #   c. sale_line / sale_tax_line do not yet carry the denormalised
 #      location_id that §3.11.10 requires precisely so they can join the
 #      location_ops bucket (a data query reads ONE table, no joins). Until
@@ -100,7 +112,9 @@ bucket_definitions:
 
   # ---- Customers: IDENTITY ONLY (§3.2.2 tenant_customers) ------------------
   # Explicit column list, never SELECT * — no balances, no limits, no ageing,
-  # no terms. The credit book itself is deliberately absent (interim note b).
+  # no terms. The credit book is NOT here and never is: it reaches only the
+  # `credit.view` audience, through `tenant_credit` below. Every POS user gets
+  # this bucket; almost none of them get that one.
   tenant_customers:
     parameters: SELECT request.jwt() ->> 'tid' AS tenant_id
     data:
@@ -123,6 +137,94 @@ bucket_definitions:
            AND location_id = bucket.location_id
            AND archived_at IS NULL
       - SELECT * FROM "app"."sale"
+         WHERE tenant_id = bucket.tenant_id
+           AND location_id = bucket.location_id
+
+  # ---- The credit BOOK, for accounts/HQ (§3.2.2 tenant_credit) -------------
+  # THE GATE IS THE PARAMETER QUERY. No `credit.view` grant → no row in
+  # app.credit_sync_book_scope → no bucket → zero rows. The projection is
+  # maintained by triggers on every table app.effective_permission reads, so a
+  # REVOKED grant empties the device on the next sync; a token claim could not
+  # do that, which is why note (a)'s interim mechanism is NOT reused here.
+  #
+  # The key is (tenant_id) and not (tenant_id, location_id) because
+  # app.customer_account HAS NO location_id and app.credit_entry has no
+  # location column to key by (06 §6.5) — a location-keyed credit book would be
+  # a fiction. §3.2.1 rule 3 is therefore answered here by BOUNDING rather than
+  # by narrowing: credit_entry is windowed per row on archived_at exactly as
+  # stock_movement is (§3.2.4), and customer_account carries the same per-row
+  # residency mark. Neither is ever a bucket parameter.
+  #
+  # WHAT A STOLEN ACCOUNTS TABLET HOLDS: this tenant's live credit book for the
+  # window. That is a real exposure and it is why `credit.view` must never sit
+  # in the counter-staff or outlet-manager template roles.
+  #
+  # Explicit column lists, never SELECT * — a column added to customer_account
+  # in a later migration must be a decision to ship it, not an accident.
+  tenant_credit:
+    parameters: |
+      SELECT tenant_id
+      FROM "app"."credit_sync_book_scope"
+      WHERE user_id   = request.user_id()
+        AND tenant_id = (request.jwt() ->> 'tid')
+    data:
+      - SELECT id, tenant_id, customer_id, credit_limit_minor, terms_days,
+               facility_fee_bp_per_month, status, hlc, created_at, updated_at
+          FROM "app"."customer_account"
+         WHERE tenant_id = bucket.tenant_id
+           AND deleted_at IS NULL
+           AND archived_at IS NULL
+      - SELECT id, tenant_id, credit_account_id, limit_minor, terms_days,
+               fee_rate_bp, reason_code, note, supersedes_id, state, decided_by,
+               decided_at_location, effective_from, hlc, created_at, updated_at
+          FROM "app"."credit_limit_version"
+         WHERE tenant_id = bucket.tenant_id
+      - SELECT id, tenant_id, account_id, kind, amount_minor, business_date,
+               due_date, source_kind, source_id, applies_to_id, hlc, created_at
+          FROM "app"."credit_entry"
+         WHERE tenant_id = bucket.tenant_id
+           AND archived_at IS NULL
+      # The server-derived position. THIS is the authority for a balance and an
+      # ageing bucket, and the reason the windowed log above is safe to hold:
+      # Σ(entries on the device) ≠ balance by construction once anything has
+      # archived out, so opening_before_window_minor carries the remainder and
+      # no device ever sums its own log (credit-offline-plan R2).
+      - SELECT id, tenant_id, account_id, customer_id, status, terms_days,
+               credit_limit_minor, limit_version_id, balance_minor,
+               trade_exposure_minor, available_minor, on_account_credit_minor,
+               fee_outstanding_minor, opening_before_window_minor, aged_by,
+               fee_confirmed_at, entry_window_days, as_of, as_of_hlc, computed_at
+          FROM "app"."credit_position_snapshot"
+         WHERE tenant_id = bucket.tenant_id
+      - SELECT id, tenant_id, account_id, seq, label, from_dpd, to_dpd,
+               amount_minor, as_of, as_of_hlc
+          FROM "app"."credit_position_bucket"
+         WHERE tenant_id = bucket.tenant_id
+
+  # ---- Per-location credit ALLOWANCE — not the account (§3.2.2, 06 §6.5) ---
+  # Gated on `sale.record.credit` AT THAT LOCATION, intersected with the user's
+  # location scope, both read from the database. A till learns what it may lend
+  # HERE TODAY; it never learns the limit, the balance, the ageing or the
+  # history, and it learns nothing at all about customers who trade elsewhere.
+  #
+  # Both bucket keys are repeated in the data query (rule 2), even though the
+  # unique index on credit_allowance already implies the tenant: a mis-assigned
+  # location row would otherwise ship another tenant's outlet to this device.
+  #
+  # app.credit_allowance is EMPTY until §6.7's cap leases exist. That is the
+  # fail-closed state, not an oversight — the channel and its gate ship and are
+  # tested now; rows flow when a lease says they may.
+  location_credit_allowance:
+    parameters: |
+      SELECT tenant_id, location_id
+      FROM "app"."credit_sync_location_scope"
+      WHERE user_id   = request.user_id()
+        AND tenant_id = (request.jwt() ->> 'tid')
+    data:
+      - SELECT id, tenant_id, location_id, customer_id, cap_minor,
+               headroom_minor, offline_ceiling_minor, credit_hold,
+               cap_valid_until, cap_version_id, snapshot_as_of, snapshot_as_of_hlc
+          FROM "app"."credit_allowance"
          WHERE tenant_id = bucket.tenant_id
            AND location_id = bucket.location_id
 

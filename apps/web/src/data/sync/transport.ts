@@ -31,6 +31,33 @@ export const WIRE_KINDS: Readonly<Record<string, DeviceOpKind>> = {
   // adjustment screen work with the radio off.
   stock_movement: 'stock.record_movement',
   sequence_block: 'sequence.sync_block',
+  // Phase 2. A yard receives goods while partitioned — the truck arrived and
+  // the bags are on the ground whether or not the tower is up — and a delivery
+  // status is recorded by whoever hears from the driver, wherever they are.
+  // Both are TRADE, both ride this ordered queue, and both complete only on
+  // their own per-key ack (data/mutations/recordGoodsReceipt.ts,
+  // data/mutations/updateDeliveryStatus.ts). PLANNING a delivery and raising or
+  // approving a purchase order are deliberately NOT here: those are
+  // commitments made against supplier terms and an approval bound a
+  // partitioned device may hold a stale copy of, so they go over tRPC and are
+  // refused out loud (packages/contracts/src/procurement.ts).
+  goods_receipt: 'goods.record_receipt',
+  delivery_status: 'logistics.update_delivery_status',
+  // A customer paying down their balance is TRADE, the same as a sale: the
+  // money is in the drawer whether or not the tower is up, and refusing it
+  // offline teaches a clerk to keep the receipt on paper. It is safe to queue
+  // where a limit edit is not, because `credit_entry` is an append-only log of
+  // SIGNED INTEGERS and exposure is Σ (06 §6.2) — two offline batches arriving
+  // in either order produce the same sum, so a repayment has no conflict case
+  // for a review queue to hold. The builder narrows it to PAYMENT
+  // (data/mutations/recordRepayment.ts).
+  //
+  // `credit.open_account` and a limit change are NOT here and must not be:
+  // both SET A CREDIT LIMIT, which is a risk judgement 06 §6.6.3(7) requires
+  // connectivity for, and a partitioned device cannot see the version it would
+  // be superseding. They go over tRPC and are refused out loud
+  // (data/api/credit.ts).
+  credit_payment: 'credit.record_entry',
 };
 
 export function wireKind(kind: string): string {

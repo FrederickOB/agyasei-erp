@@ -176,11 +176,42 @@ export interface InventoryDaysReport {
   readonly method: string;
 }
 
+/**
+ * One line of the ADR-0001 ratio.
+ *
+ * `deliveryCount` is what separates a ZERO from a GAP, and it is the reason
+ * the two counts are on the wire at all. A location with no deliveries in the
+ * period genuinely cost nothing to serve — 0.0% is a fact. A location whose
+ * deliveries went out with no agreed freight has a sum that is a FLOOR, and
+ * the server flags it `INCOMPLETE_FREIGHT_BASIS` so a partial basis can never
+ * be read as a complete one. Rendering the two the same way would hand the
+ * founder a percentage nobody could act on.
+ */
 export interface DistributionCostLine {
   readonly netRevenueMinor: bigint;
+  /** Σ agreed freight. A zero here is a real zero; see `deliveryCount`. */
   readonly distributionCostMinor: bigint | null;
+  /** Percent × 10⁴: 5.0% is 50000. Null when there is no revenue to divide by. */
   readonly distributionCostPctE4: bigint | null;
+  /** Deliveries in the period. 0 means nothing moved, not "no data". */
+  readonly deliveryCount: number;
+  /** Above zero, the cost is a floor and the ratio is understated. */
+  readonly deliveriesWithNoAgreedFreight: number;
   readonly unavailable: string | null;
+}
+
+/**
+ * How each delivery in the period was DATED. Published because three of the
+ * four bases are weaker than the first and a percentage computed across a
+ * period boundary inherits whichever it used: `asserted` is the human's own
+ * business date, and the rest are fallbacks ending in a device clock.
+ */
+export interface DistributionPeriodBasis {
+  readonly datedByAssertion: number;
+  readonly datedByPlannedFor: number;
+  readonly datedByDispatchClock: number;
+  readonly datedByRowCreated: number;
+  readonly note: string;
 }
 
 export interface DistributionCostReport {
@@ -197,7 +228,11 @@ export interface DistributionCostReport {
   /** Groups NEST, so their subtotals deliberately do not sum to the total. */
   readonly groupsNest: boolean;
   readonly total: DistributionCostLine;
+  /** What the numerator IS — the AGREED freight, not a haulier's AP invoice. */
+  readonly costBasis: string;
+  readonly periodBasis: DistributionPeriodBasis;
   readonly unavailableReason: string;
+  readonly method: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -366,7 +401,22 @@ function mapDistributionLine(row: Record<string, unknown>, what: string): Distri
       row['distributionCostPctE4'],
       `${what}.distributionCostPctE4`,
     ),
+    deliveryCount: asCount(row['deliveryCount'], `${what}.deliveryCount`),
+    deliveriesWithNoAgreedFreight: asCount(
+      row['deliveriesWithNoAgreedFreight'],
+      `${what}.deliveriesWithNoAgreedFreight`,
+    ),
     unavailable: asOptionalString(row['unavailable'], `${what}.unavailable`),
+  };
+}
+
+function mapPeriodBasis(row: Record<string, unknown>): DistributionPeriodBasis {
+  return {
+    datedByAssertion: asCount(row['datedByAssertion'], 'periodBasis.datedByAssertion'),
+    datedByPlannedFor: asCount(row['datedByPlannedFor'], 'periodBasis.datedByPlannedFor'),
+    datedByDispatchClock: asCount(row['datedByDispatchClock'], 'periodBasis.datedByDispatchClock'),
+    datedByRowCreated: asCount(row['datedByRowCreated'], 'periodBasis.datedByRowCreated'),
+    note: asString(row['note'], 'periodBasis.note'),
   };
 }
 
@@ -394,7 +444,10 @@ function mapDistributionCost(json: unknown): DistributionCostReport {
     }),
     groupsNest: asBoolean(root['groupsNest'], 'groupsNest'),
     total: mapDistributionLine(asRecord(root['total'], 'total'), 'total'),
+    costBasis: asString(root['costBasis'], 'costBasis'),
+    periodBasis: mapPeriodBasis(asRecord(root['periodBasis'], 'periodBasis')),
     unavailableReason: asString(root['unavailableReason'], 'unavailableReason'),
+    method: asString(root['method'], 'method'),
   };
 }
 

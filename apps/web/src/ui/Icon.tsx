@@ -5,8 +5,9 @@
  * days without a network (§8.1). Every kilobyte in the service worker's atomic
  * precache is a kilobyte a till in a weak-signal town has to fetch before it
  * can be installed at all, and an icon library ships thousands of glyphs to
- * use fourteen. These are the fourteen, drawn on one 24px grid with one stroke
- * weight, so nothing in the interface is stylistically out of family.
+ * use the handful this interface needs. These are that handful, drawn on one
+ * 24px grid with one stroke weight, so nothing in the interface is
+ * stylistically out of family.
  *
  * WHY NOT TEXT GLYPHS, which is what this replaced. The status bar drew its
  * connection state with typographic characters (a filled circle, a triangle).
@@ -39,7 +40,8 @@ export type IconName =
   | 'download'
   | 'pin'
   | 'tag'
-  | 'undo';
+  | 'undo'
+  | 'edit';
 
 /** Paths only — every icon shares the same 24px box, caps, joins and weight. */
 const PATHS: Record<IconName, ReactNode> = {
@@ -126,6 +128,12 @@ const PATHS: Record<IconName, ReactNode> = {
     <>
       <path d="M4 9h10.5a5 5 0 010 10H9" />
       <path d="M7.5 5L4 9l3.5 4" />
+    </>
+  ),
+  edit: (
+    <>
+      <path d="M4 20h4l10.5-10.5a2.6 2.6 0 00-3.7-3.7L4.3 16.3z" />
+      <path d="M14.5 6.5l3.7 3.7" />
     </>
   ),
 };

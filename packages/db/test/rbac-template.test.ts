@@ -290,3 +290,74 @@ describe('THE TWO HARD PROHIBITIONS, resolved from data', () => {
     }
   });
 });
+
+/**
+ * ═══════════════════════════════════════════════════════════════════════════
+ * WHICH SHIPPED ROLES PUT THE WHOLE CREDIT BOOK ON A TABLET
+ * ═══════════════════════════════════════════════════════════════════════════
+ * Migration 0013 gave `credit.view` a second meaning it did not have when the
+ * template was written. It used to authorise a READ the server answers one
+ * account at a time and can refuse the next second. It now also decides
+ * membership of `app.credit_sync_book_scope`, and therefore whether a device
+ * downloads ~400 days of every credit customer's balance, ageing and payment
+ * history and keeps it.
+ *
+ * `02-security-and-access-control` §2.5: THE RIGHT TO SEE SOMETHING IS NOT THE
+ * RIGHT TO HAVE IT ON YOUR DEVICE. `docs/credit-offline-plan.md` R1.b says so
+ * in as many words — "`credit.view` must never be in the counter-staff or
+ * outlet-manager template role" — and `infra/powersync/sync_rules.yaml` repeats
+ * it above the `tenant_credit` bucket.
+ *
+ * The shipped template grants it to **Outlet manager** and **Regional
+ * manager** as well as Accounts. These tests PIN that, they do not endorse it:
+ * the exposure is real, it is named in §6 of `docs/phase1-status.md`, and
+ * removing the grant is a product decision (it also removes the ONLINE credit
+ * reads those roles have today, and `app.credit_allowance` — the counter's
+ * intended replacement — is deliberately unpopulated until 06 §6.7's cap
+ * leases exist). When that decision is taken, these two tests go red and say
+ * exactly what to change.
+ *
+ * The mitigation that IS in force is the residency gate: only a grant at the
+ * tenant ROOT confers the book. An outlet manager assigned at their outlet, or
+ * a regional manager at their region, receives nothing — proven in
+ * `credit-position.test.ts`, "admits a ROOT-scoped credit.view holder and
+ * refuses an OUTLET-scoped one".
+ */
+describe('credit.view is now a device-residency decision, not only a read', () => {
+  it('PINNED: three template roles hold credit.view — R1.b says exactly one should', () => {
+    const holders = TEMPLATE_ROLES.filter((r) =>
+      r.permissions.some((p) => p.code === 'credit.view'),
+    )
+      .map((r) => r.ref)
+      .sort();
+    expect(holders).toEqual(['accounts', 'outlet_manager', 'regional_manager']);
+  });
+
+  it('a ROOT-scoped outlet manager is in the credit sync book scope; the same role at an OUTLET is not', async () => {
+    const atRoot = await db.withTenant(T1, (tx) => makeUser(tx, T1, 'tpl-om-root'));
+    const atOutlet = await db.withTenant(T1, (tx) => makeUser(tx, T1, 'tpl-om-outlet'));
+    const om = roleIdByRef.get('outlet_manager')!;
+    await db.withTenant(T1, (tx) =>
+      assignRole(tx, T1, { userId: atRoot, roleId: om, scopeLocationId: rootLoc }),
+    );
+    await db.withTenant(T1, (tx) =>
+      assignRole(tx, T1, { userId: atOutlet, roleId: om, scopeLocationId: flagship }),
+    );
+    const held = await db.withTenant(T1, (tx) =>
+      tx.query<{ user_id: string }>(
+        `select user_id from app.credit_sync_book_scope where user_id = any($1::uuid[])`,
+        [[atRoot, atOutlet]],
+      ),
+    );
+    // The positive control and the refusal come from ONE query in ONE run:
+    // this is the residency gate doing the narrowing the template does not.
+    expect(held.rows.map((r) => r.user_id)).toEqual([atRoot]);
+  });
+
+  it('counter staff hold sale.record.credit and NOT credit.view — the counter never gets the book', () => {
+    const counter = TEMPLATE_ROLES.find((r) => r.ref === 'counter_staff')!;
+    const codes = counter.permissions.map((p) => p.code);
+    expect(codes).toContain('sale.record.credit');
+    expect(codes).not.toContain('credit.view');
+  });
+});

@@ -57,13 +57,20 @@ import {
 } from './sequence.js';
 import { addCalendarDays, wire, zUuid } from '../wire.js';
 
-interface TenantJurisdiction {
+export interface TenantJurisdiction {
   jurisdictionCode: string;
   currencyCode: string;
   minorUnitsPerMajor: bigint;
 }
 
-async function loadJurisdiction(tx: Queryable): Promise<TenantJurisdiction> {
+/**
+ * The tenant's jurisdiction pack: currency and minor-unit scale, read from
+ * `platform.jurisdiction` and NEVER assumed (CLAUDE.md §2.5, §2.3).
+ *
+ * Exported because a purchase order snapshots exactly what a sale snapshots,
+ * and a second copy of this read is a second place for "100" to creep back in.
+ */
+export async function loadJurisdiction(tx: Queryable): Promise<TenantJurisdiction> {
   const res = await tx.query<{
     jurisdiction_code: string;
     currency_code: string;

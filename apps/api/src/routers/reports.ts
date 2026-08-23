@@ -64,10 +64,24 @@ import { divRound } from '@erp/money';
 import type { Queryable } from '../db.js';
 import { permissionProcedure, router } from '../trpc.js';
 import { wire } from '../wire.js';
+import {
+  HAULAGE_METHOD_NOTE,
+  HAULAGE_PERIOD_NOTE,
+  loadHaulageSpend,
+  type HaulageBucket,
+} from './logistics.js';
 import { resolveGroupRollup, resolveLocationScope, type ScopedLocation } from './scope.js';
 
 /** Locations that can ring a sale. GROUP nodes have no till (04 §4.3). */
 const SELLING_KINDS = ['OUTLET'] as const;
+/**
+ * Locations the DISTRIBUTION-COST ratio spans: the union of "can ring a sale"
+ * and "can bear a haulage cost". A warehouse has no till and still pays
+ * hauliers, so scoping this report to selling locations alone would drop
+ * inbound freight from the numerator while keeping every cedi in the
+ * denominator — a ratio that flatters the business it is supposed to measure.
+ */
+const DISTRIBUTION_KINDS = ['OUTLET', 'WAREHOUSE'] as const;
 /** Locations that can hold stock. TRANSIT is goods in motion — a real place. */
 const STOCK_KINDS = ['OUTLET', 'WAREHOUSE', 'TRANSIT'] as const;
 
@@ -767,30 +781,73 @@ export const reportsRouter = router({
    * `docs/source-of-truth/financial-model-targets.md` §2.
    *
    * ═════════════════════════════════════════════════════════════════════════
-   * THE NUMERATOR DOES NOT EXIST YET. THIS ROUTE SAYS SO INSTEAD OF GUESSING.
+   * THE RATIO, DEFINED. NUMERATOR, DENOMINATOR, SCALE — ALL THREE, HERE.
    * ═════════════════════════════════════════════════════════════════════════
-   * The denominator — revenue per location and per grouping node — is exact
-   * and is returned. The numerator is money the business spent moving goods,
-   * and there is no row anywhere in the Phase 1 schema that records it:
    *
-   *  · no general ledger and no expense account (Phase 3);
-   *  · no purchase order, supplier invoice or freight document (Phase 2);
-   *  · no haulier dispatch or delivery record (Phase 2, ADR-0001 — dispatch
-   *    and tracking only, and even that is not built);
-   *  · `stock_movement.unit_cost_e4` is the cost OF THE GOODS, not of moving
-   *    them, and a transfer movement carries no cost at all.
+   *   distributionCostPctE4 = round_half_up(cost × 1 000 000 ÷ netRevenue)
    *
-   * So `distributionCostMinor` is `null`, never `0`. That distinction is the
-   * entire value of this route: a zero here would read as 0.0% against a 5.0%
-   * target and look like the best logistics operation in West Africa. The
-   * shape and the permission model are settled now so that when Phase 2's
-   * haulier records land there is one place to attach them and a test already
-   * asserting that null is not zero.
+   *   NUMERATOR   `distributionCostMinor` — Σ `app.delivery.freight_cost_minor`
+   *               over third-party deliveries (ADR-0001: hauliers only, no
+   *               fleet) whose BUSINESS DATE falls in [from, to] and whose
+   *               attributed location is in scope. CANCELLED excluded, FAILED
+   *               included. Loaded by `loadHaulageSpend` — the SAME function
+   *               `logistics.haulageSpend` publishes, so the two cannot
+   *               disagree about what moving the goods cost.
    *
-   * The financial model's own note applies too: it attributes the declining
-   * curve to an owned fleet absorbing volume, and ADR-0001 removed the fleet
-   * without the target being restated (see finding 1 in the targets file).
-   * That is a question for the founder, not a number for this server.
+   *   DENOMINATOR `netRevenueMinor` — Σ (`sale.subtotal_net_minor` −
+   *               `sale.discount_minor`) over sales whose BUSINESS DATE falls
+   *               in the same [from, to] at the same locations. Ex-tax and
+   *               after discount: tax is the state's money and was never the
+   *               business's revenue, and a discount given is revenue not
+   *               earned. The identical denominator `grossMarginPctE4` uses.
+   *
+   *   SCALE       Percent × 10⁴, as an integer: 5.0% is 50000 and 2.5% is
+   *               25000, so the model's own two target figures are exactly
+   *               representable. Never a float, never a JS number, and the
+   *               1 000 000 is 100 (fraction → percent) × 10 000 (the E4).
+   *
+   *   PERIOD      Both ends inclusive, both sides dated the SAME way: the
+   *               human-asserted business date, never a device clock. That
+   *               symmetry is why migration 0010 exists — before it, revenue
+   *               was dated by `sale.business_date` and haulage by a fallback
+   *               ending in `dispatched_at`, so a delivery could be counted
+   *               in a month whose revenue excluded the sale it carried.
+   *
+   * ─────────────────────────────────────────────────────────────────────────
+   * ZERO IS NOT NULL, AND "NO DELIVERIES" IS NOT "NO BASIS"
+   * ─────────────────────────────────────────────────────────────────────────
+   * This route used to answer `null` / `NO_DISTRIBUTION_COST_SOURCE` because
+   * nothing recorded the numerator. It now answers a figure, and it keeps the
+   * distinction that made the null worth having by publishing counts beside
+   * every amount:
+   *
+   *   · `deliveryCount = 0`  — nothing moved in this period. The cost really
+   *     is zero and the percentage really is 0.0%. It is a fact, not a gap.
+   *   · `deliveriesWithNoAgreedFreight > 0` — deliveries happened and their
+   *     freight was never agreed. The sum is then a FLOOR, not a total, and
+   *     the row is flagged `INCOMPLETE_FREIGHT_BASIS` so a partial basis can
+   *     never be read as a complete one.
+   *   · `netRevenue = 0` — a percentage of nothing is not zero, it is
+   *     undefined. `distributionCostPctE4` is null and the row says
+   *     `NO_REVENUE_IN_PERIOD`. The cost itself is still reported: a
+   *     warehouse has no till and still pays hauliers, and dropping its spend
+   *     is how a network ratio ends up understated.
+   *
+   * ─────────────────────────────────────────────────────────────────────────
+   * WHICH LOCATIONS
+   * ─────────────────────────────────────────────────────────────────────────
+   * OUTLET *and* WAREHOUSE — the union of "can ring a sale" and "can bear a
+   * distribution cost". Scoping to selling locations alone would drop inbound
+   * freight into a distribution centre from the numerator while leaving every
+   * cedi of revenue in the denominator: a ratio that looks better than the
+   * business is. Σ(per-location cost) reconciles to the network figure over
+   * exactly this set, and the server refuses to answer if it does not.
+   *
+   * The financial model's own note still applies and is not this server's to
+   * settle: it attributed the declining curve to an owned fleet absorbing
+   * volume, and ADR-0001 removed the fleet without the target being restated.
+   * What changed here is that the trajectory is now MEASURED, which is the
+   * half of `open-questions.md` Q1 that was the ERP's to keep.
    */
   distributionCostRatio: marginProcedure
     .input(distributionCostReportInput)
@@ -799,32 +856,96 @@ export const reportsRouter = router({
         code: 'report.view.margin',
         widenCode: 'report.view.tenant',
         requested: input.locationIds,
-        kinds: SELLING_KINDS,
+        kinds: DISTRIBUTION_KINDS,
       });
 
-      const { byLocation, total } = await ctx.deps.runner.withTenant(
+      const { sales, haulage } = await ctx.deps.runner.withTenant(
         ctx.identity.tenantId,
-        (tx) => loadSales(tx, scope.locationIds, input.from, input.to),
+        async (tx) => {
+          // Numerator and denominator in ONE transaction, over ONE resolved
+          // location set, over ONE date range. A ratio whose halves were read
+          // at different instants is two facts presented as one.
+          const loadedSales = await loadSales(tx, scope.locationIds, input.from, input.to);
+          const loadedHaulage = await loadHaulageSpend(tx, {
+            locationIds: scope.locationIds,
+            from: input.from,
+            to: input.to,
+          });
+          return { sales: loadedSales, haulage: loadedHaulage };
+        },
       );
       const groups = await resolveGroupRollup(ctx, scope);
 
-      const UNAVAILABLE = 'NO_DISTRIBUTION_COST_SOURCE';
       const netRevenueOf = (id: string): bigint => {
-        const s = byLocation.get(id) ?? ZERO_SALES;
+        const s = sales.byLocation.get(id) ?? ZERO_SALES;
         return s.subtotalNetMinor - s.discountMinor;
       };
+      const costOf = (id: string): HaulageBucket =>
+        haulage.byLocation.get(id) ?? { freightMinor: 0n, deliveries: 0, withoutFreight: 0 };
+      const sumCost = (ids: readonly string[]): HaulageBucket =>
+        ids.reduce<HaulageBucket>(
+          (acc, id) => {
+            const b = costOf(id);
+            return {
+              freightMinor: acc.freightMinor + b.freightMinor,
+              deliveries: acc.deliveries + b.deliveries,
+              withoutFreight: acc.withoutFreight + b.withoutFreight,
+            };
+          },
+          { freightMinor: 0n, deliveries: 0, withoutFreight: 0 },
+        );
+
+      /**
+       * Rule 1 on the numerator, from OUTSIDE the loader: the per-location
+       * rows this response publishes must sum to the network figure it
+       * publishes. `loadSales` already asserts the same for revenue.
+       */
+      const perLocationCost = scope.locations.reduce(
+        (a, l) => a + costOf(l.id).freightMinor,
+        0n,
+      );
+      assertAggregateIdentity(
+        'distributionCost.distributionCostMinor',
+        perLocationCost,
+        haulage.total.freightMinor,
+      );
+
+      /**
+       * One line of the report. The percentage is integer arithmetic on
+       * bigints all the way down — `divRound` half-up at the single, stated
+       * rounding boundary (CLAUDE.md §2.3), and never a float.
+       */
+      const line = (netRevenue: bigint, cost: HaulageBucket) => ({
+        netRevenueMinor: wire(netRevenue),
+        /** Zero when nothing moved. Never null now that a source exists. */
+        distributionCostMinor: wire(cost.freightMinor),
+        /** Percent × 10⁴: 5.0% = 50000. Null only when there is no revenue. */
+        distributionCostPctE4:
+          netRevenue > 0n
+            ? wire(divRound(cost.freightMinor * 1_000_000n, netRevenue, 'half-up'))
+            : null,
+        /** 0 means nothing moved — the difference between zero and no data. */
+        deliveryCount: cost.deliveries,
+        deliveriesWithNoAgreedFreight: cost.withoutFreight,
+        unavailable:
+          cost.withoutFreight > 0
+            ? 'INCOMPLETE_FREIGHT_BASIS'
+            : netRevenue > 0n
+              ? null
+              : 'NO_REVENUE_IN_PERIOD',
+      });
+
+      const networkRevenue = sales.total.subtotalNetMinor - sales.total.discountMinor;
 
       return {
         from: input.from,
         to: input.to,
         scope: { network: scope.network, locationCount: scope.locations.length },
+        currencyCode: haulage.currencyCode,
+        moneyScale: haulage.moneyScale,
         locations: scope.locations.map((l) => ({
           ...locationHeader(l),
-          netRevenueMinor: wire(netRevenueOf(l.id)),
-          distributionCostMinor: null,
-          /** Percent × 10⁴ (5.0% = 50000) once a numerator exists. */
-          distributionCostPctE4: null,
-          unavailable: UNAVAILABLE,
+          ...line(netRevenueOf(l.id), costOf(l.id)),
         })),
         /**
          * Grouping nodes — a tenant's regions, divisions, or whatever it calls
@@ -837,24 +958,35 @@ export const reportsRouter = router({
           groupCode: g.group.code,
           groupName: g.group.name,
           locationCount: g.memberIds.length,
-          netRevenueMinor: wire(g.memberIds.reduce((a, id) => a + netRevenueOf(id), 0n)),
-          distributionCostMinor: null,
-          distributionCostPctE4: null,
-          unavailable: UNAVAILABLE,
+          ...line(
+            g.memberIds.reduce((a, id) => a + netRevenueOf(id), 0n),
+            sumCost(g.memberIds),
+          ),
         })),
         groupsNest: true,
-        total: {
-          netRevenueMinor: wire(total.subtotalNetMinor - total.discountMinor),
-          distributionCostMinor: null,
-          distributionCostPctE4: null,
-          unavailable: UNAVAILABLE,
+        total: line(networkRevenue, haulage.total),
+        /** What the numerator IS, said out loud so nobody has to infer it. */
+        costBasis: 'AGREED_NOT_INVOICED',
+        periodBasis: {
+          datedByAssertion: haulage.periodBasis.asserted,
+          datedByPlannedFor: haulage.periodBasis.plannedFor,
+          datedByDispatchClock: haulage.periodBasis.dispatchClock,
+          datedByRowCreated: haulage.periodBasis.rowCreated,
+          note: HAULAGE_PERIOD_NOTE,
         },
+        /**
+         * Kept as a REQUIRED string rather than dropped: it is what the report
+         * screen prints under the figure. It no longer explains an absence —
+         * it states the limit of what the figure is.
+         */
         unavailableReason:
-          'No Phase 1 table records money spent moving goods: there is no general ledger or ' +
-          'expense account (Phase 3), no purchase order, supplier invoice or freight document ' +
-          '(Phase 2), and no haulier dispatch record (Phase 2, ADR-0001). ' +
-          'stock_movement.unit_cost_e4 is the cost of the goods, not of moving them. ' +
-          'The revenue denominator above is exact; the cost is null, never zero.',
+          'Distribution cost is the AGREED freight on third-party deliveries, not the haulier’s ' +
+          'AP invoice — there is no general ledger until Phase 3, so this is an operational ' +
+          'figure, not an accounting one. Deliveries whose freight was never agreed are counted, ' +
+          'not guessed: where deliveriesWithNoAgreedFreight is above zero the sum is a floor and ' +
+          'the row says INCOMPLETE_FREIGHT_BASIS. A location with no deliveries reports zero, ' +
+          'which is a fact and not a gap.',
+        method: HAULAGE_METHOD_NOTE,
       };
     }),
 });

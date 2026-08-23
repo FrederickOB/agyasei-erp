@@ -1964,3 +1964,300 @@ button {
     animation-iteration-count: infinite !important;
   }
 }
+
+/* ─── BUYING, RECEIVING AND THE ROAD (Phase 2) ───────────────────────────────
+   Nothing here introduces a colour token. Every rule below reuses the palette
+   the contrast test already covers, so a screen added for the yard cannot
+   quietly ship a pair nobody checked in daylight.
+
+   The one layout change these destinations force is the nav: ten tabs do not
+   fit side by side at 360px, so the switch scrolls horizontally and each item
+   keeps its own minimum tap target rather than being squeezed. A capability
+   filter means most people see three or four; only a device that could not
+   fetch its capability list sees them all. */
+.view-switch {
+  overflow-x: auto;
+  scrollbar-width: none;
+  scroll-snap-type: x proximity;
+}
+.view-switch::-webkit-scrollbar {
+  display: none;
+}
+.view-switch-item {
+  flex: 1 0 auto;
+  min-width: 68px;
+  scroll-snap-align: start;
+}
+
+.buying-screen,
+.receiving-screen {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-4);
+}
+
+.buying-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-2);
+  margin-bottom: var(--s-3);
+}
+
+/* ─── SUPPLIERS AND THEIR PRICES ─────────────────────────────────────────── */
+.supplier-list,
+.source-list,
+.order-list,
+.delivery-list,
+.receipt-lines,
+.order-line-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+}
+
+.supplier-row,
+.source-row,
+.order-row,
+.delivery-row,
+.receipt-line,
+.order-line {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+  padding: var(--s-3) var(--s-4);
+  border: 1px solid var(--border);
+  border-radius: var(--r-3);
+  background: var(--surface);
+  box-shadow: var(--shadow-1);
+}
+
+/* The cheapest source in the common unit. Marked with a border and a badge,
+   never with colour alone — this is read in sunlight by people who may be
+   colourblind, and it is a spending decision. */
+.source-row-best {
+  border-color: var(--ok);
+  border-left-width: 4px;
+}
+
+.source-flags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-2);
+}
+.source-badge-best {
+  color: var(--ok-ink);
+  background: var(--ok-tint);
+}
+.source-badge-best .icon {
+  color: var(--ok);
+}
+.source-badge-preferred {
+  color: var(--brand-text);
+  background: var(--brand-tint);
+}
+.source-badge-preferred .icon {
+  color: var(--brand);
+}
+.source-badge-cap {
+  color: var(--text-muted);
+  background: var(--surface-2);
+}
+
+.source-alternatives {
+  list-style: none;
+  margin: 0;
+  padding: var(--s-2) var(--s-3);
+  border-radius: var(--r-2);
+  background: var(--surface-2);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-1);
+  font-size: var(--t-sm);
+}
+
+/* ─── ORDERS ─────────────────────────────────────────────────────────────── */
+.order-row {
+  padding: 0;
+}
+.order-row-open {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--s-1);
+  width: 100%;
+  min-height: var(--tap);
+  padding: var(--s-3) var(--s-4);
+  border: 0;
+  border-radius: var(--r-3);
+  background: transparent;
+  text-align: left;
+}
+.order-row-status {
+  color: var(--text-muted);
+  font-size: var(--t-sm);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.order-row-figures {
+  color: var(--text-muted);
+  font-size: var(--t-sm);
+}
+.order-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-2);
+}
+.order-line {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  align-items: center;
+  gap: var(--s-2) var(--s-3);
+}
+.order-line-net {
+  font-weight: 750;
+}
+/* A DRAFT line being corrected. Stacked rather than the three-column summary
+   row above: this one holds two text boxes and a note, and a grid that fits a
+   figure does not fit an editor on a 5-inch phone. */
+.order-line-edit {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+  padding: var(--s-3) var(--s-4);
+  border: 1px solid var(--border);
+  border-radius: var(--r-3);
+  background: var(--surface);
+  box-shadow: var(--shadow-1);
+}
+/* Struck from the order but still on the screen, because "it is gone" and
+   "you took it off and can put it back" are different states. */
+.order-line-removed {
+  background: var(--surface-2);
+  box-shadow: none;
+}
+/* A heading INSIDE a panel — one step below the panel's own. */
+.report-subhead {
+  margin: var(--s-4) 0 var(--s-2);
+  font-size: var(--t-lg);
+}
+/* An over-delivery is a fact somebody will be invoiced for, so it is never
+   clamped to zero and never hidden. */
+.over-delivered {
+  color: var(--attn-ink);
+  font-weight: 700;
+}
+
+/* ─── RECEIVING ──────────────────────────────────────────────────────────── */
+.receipt-line-off {
+  background: var(--surface-2);
+  box-shadow: none;
+}
+.receipt-line-include {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  min-height: var(--tap-min);
+}
+.receipt-line-include input {
+  width: 24px;
+  height: 24px;
+}
+
+/* A variance is NORMAL TRADE, so it is stated calmly. Short and over share the
+   waiting palette rather than the attention one: nothing has gone wrong, a
+   fact is being recorded. */
+.receipt-variance {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s-2);
+  margin: 0;
+  padding: var(--s-2) var(--s-3);
+  border-radius: var(--r-2);
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: var(--t-sm);
+  line-height: 1.45;
+}
+.receipt-variance-matched {
+  background: var(--ok-tint);
+  color: var(--ok-ink);
+}
+.receipt-variance-matched .icon {
+  color: var(--ok);
+}
+.receipt-variance-short,
+.receipt-variance-over {
+  background: var(--wait-tint);
+  color: var(--wait-ink);
+}
+.receipt-variance-short .icon,
+.receipt-variance-over .icon {
+  color: var(--wait);
+}
+
+/* Signing for a count that differs from the invoice IS a claim against a
+   supplier, so this one does carry the attention palette. */
+.receipt-signed {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s-2);
+  margin: 0;
+  padding: var(--s-2) var(--s-3);
+  border-radius: var(--r-2);
+  background: var(--attn-tint);
+  color: var(--attn-ink);
+  font-size: var(--t-sm);
+  font-weight: 650;
+  line-height: 1.45;
+}
+.receipt-signed .icon {
+  color: var(--attn);
+}
+
+/* The take-down is a COPY, and it says so wherever it is rendered. */
+.takedown-note {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s-2);
+  margin: var(--s-3) 0 0;
+  padding: var(--s-3);
+  border: 1px solid var(--control-border);
+  border-radius: var(--r-2);
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: var(--t-sm);
+  line-height: 1.5;
+}
+.takedown-note .icon {
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+
+/* An inline "there is another way to do this" control. Underlined rather than
+   coloured alone, and a full tap target on a phone. */
+.link-action {
+  min-height: var(--tap-min);
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--brand-text);
+  font: inherit;
+  font-weight: 700;
+  text-decoration: underline;
+}
+
+/* ─── ON THE ROAD ────────────────────────────────────────────────────────── */
+.delivery-status {
+  font-size: var(--t-lg);
+  font-weight: 700;
+}
+/* A move this device has queued: the row shows the status it WILL have, and
+   the badge says it has not reached the office. */
+.delivery-row-pending {
+  border-color: var(--wait);
+  border-left-width: 4px;
+}

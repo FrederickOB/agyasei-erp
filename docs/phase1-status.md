@@ -1,7 +1,67 @@
 # Phase 1 status — integration & QA report
 
-**Date:** 2026-08-22 (verification pass over the CLIENT for reporting, low
-stock, stock adjustment and credit) · **Author:** QA engineer
+**Date:** 2026-08-23 (independent QA verification of OFFLINE CREDIT VISIBILITY
+and ACCOUNT SUSPENSION — and, first, of the tenant boundary those two changes
+moved) · **Author:** tenant-isolation test engineer
+
+> **This revision (the credit-offline / isolation pass).** Migration `0013` put
+> a tenant's credit book into a sync bucket and `credit.setStatus` made an
+> account suspendable. The first of those changes moved the **tenant isolation
+> boundary**, so it was verified before anything else: on the logical
+> replication path RLS does not apply, which makes the two new parameter
+> queries the whole control rather than a backstop, and a mistake there does
+> not produce a wrong number — it puts one company's customer credit positions
+> onto another company's hardware, permanently. Four results worth the headline:
+>
+> - **Isolation holds at the sync layer, proven against raw device files.**
+>   New drill **D8, 40 checks**: exact per-table counts against a tenant-scoped
+>   server prediction, zero foreign rows across 26 physical tables in both
+>   directions, and a byte grep of the sqlite file *and its `-wal`* finding
+>   neither tenant's uuid, customer name nor balance string in the other's
+>   device — each with a live positive control. Plus the cuts no tenant test
+>   covers: the permission gate, the per-location slice, revocation, and a
+>   forged `tid`. **Mutation-tested** — removing the `credit.view` gate turns
+>   D8 red; removing a tenant predicate is refused by PowerSync itself. §5.5.
+> - **A device was receiving the credit book and could not read a row of it.**
+>   The PWA declared the synced table as `credit_account`; the rules deliver
+>   `customer_account`. Measured on a real device: **0 rows** in the client's
+>   table, **80** parked in `ps_untyped`. Sixteen unit tests green throughout.
+>   §0 ledger **row 17** — the ledger's own shape, one layer below any previous
+>   row: not a payload, a **table name**. Fixed, and pinned by a structural
+>   test that compares every bucket's tables and columns to the device schema.
+> - **Criterion 3's offline clause is now half met, and the half that is not is
+>   named.** A `credit.view` holder's device holds a real, bounded,
+>   server-derived position — balance equal to the online figure and to an
+>   independent SQL sum in the same run, ageing reconciling **locally**. A
+>   counter device holds **no balance of any customer**, which is correct, and
+>   the `credit_allowance` rows it is *meant* to hold do not exist yet. §5.3.
+> - **A device that is dark when an account is suspended keeps selling, and
+>   what happens on reconnect is now measured rather than assumed.** The sale
+>   is refused (`PRECONDITION_FAILED`), no `app.sale` row is written, no review
+>   is raised — and because the client classes that refusal *retryable*, the op
+>   stays queued and lands the moment the account is reactivated. Delayed, not
+>   lost; and not what `credit-offline-plan` R4.4 rules. §6 item 21.
+
+> **This revision (the credit-client verification pass).** `credit.openAccount`
+> and `credit.recordEntry` had no client at all; they now do, and this pass
+> verified it rather than accepting the build report. Three results worth the
+> headline:
+>
+> - **The capability is real and reachable.** Three forms behind operable
+>   controls under the `credit` nav entry, every production call site traced to
+>   a button a person can press — §6 item 10.
+> - **The arithmetic holds against an independent computation.** Balance
+>   re-derived in SQL by the drill: **1,300,000**, matching the API exactly;
+>   Σ(ageing buckets) equals it; the paid-down invoice ages separately from the
+>   untouched one.
+> - **Ledger row 16 does not recur here, and that is mutation-tested rather
+>   than asserted.** The whole credit read surface is `meta`-free; injecting one
+>   raw `Date` turns the sweep red on a `200` response.
+>
+> **Criterion 3 is reassessed and still NOT signed off** (§5). Balance and
+> ageing are met; the facility fee is gated on a human decision (Q4); and
+> "visible" is met online but **not** offline — which in an offline-first
+> product is missing code, not a formality.
 
 > **What changed in this revision.** The reporting, low-stock, stock-adjustment
 > and credit routes finally have a CLIENT — §6 items 10, 13 and 14 of the
@@ -29,21 +89,25 @@ suite. From PR #4: receipt-number regression detection — server-allocated
 blocks, burn-and-reissue on reconnect, the conflict-review queue, and the
 collision landing path that stops the outbox wedging.
 
-**Verification for THIS pass (2026-08-22).** The whole workspace builds
-(4/4), typechecks (12/12 turbo tasks) and every suite passes:
+**Verification for the CREDIT-CLIENT pass (2026-08-22, latest).** The whole
+workspace builds, typechecks (**12/12** turbo tasks) and every suite passes.
+Re-run with `--force`, **0 cached of 19 tasks**, so these are measured and not
+replayed from a turbo cache:
 
-| Package | Tests | Files | Previous | Δ |
-|---|---:|---:|---:|---:|
-| `@erp/contracts` | **105** | 4 | 105 | — |
-| `@erp/money` | **56** | 4 | 56 | — |
-| `@erp/sequence` | **14** | 1 | 14 | — |
-| `@erp/db` | **99** | 9 | 99 | — |
-| `@erp/api` | **233** | 15 | 233 | — |
-| `@erp/wire-conformance` | **46** | 5 | 35 | **+11** (`stock-client-to-api` 11, added this pass) |
-| **non-web total** | **553** | **38** | 542 | **+11** |
-| `@erp/web` | **398** | 36 | 265 | **+133** across 10 new files |
+| Package | Tests | Baseline | Δ |
+|---|---:|---:|---:|
+| `@erp/contracts` | **118** | 118 | — |
+| `@erp/money` | **56** | 56 | — |
+| `@erp/sequence` | **14** | 14 | — |
+| `@erp/db` | **146** | 132 | **+14** (`credit-position` 11, `rbac-template` 3) |
+| `@erp/api` | **399** | 380 | **+19** (`credit.setStatus`) |
+| `@erp/wire-conformance` | **95** | 90 | **+5** (`sync-rules-to-device` 5) |
+| **non-web total** | **828** | 790 | **+38** |
+| `@erp/web` | **591** | 556 | **+35** (`credit-offline` 16, `credit-no-local-total` 3, …) |
 
-**951 tests, 74 files, 0 failures** (was 807 / 63). No baseline went down;
+**1,419 tests, 0 failures** (was 1,346), `turbo run test --force`, **0 cached of
+11 tasks**; `turbo run typecheck --force` **12/12**; `pnpm build` clean;
+`node tools/lint-money.mjs` clean. **No baseline went down**;
 every delta is additive, and there is no `.only`/`.skip`/`.todo` anywhere.
 `node tools/lint-money.mjs` is clean. The vocabulary conformance test walks the
 whole of `apps/web/src` recursively, so it covers all ten new feature files;
@@ -51,11 +115,30 @@ an independent grep for a currency glyph or tenant #1 vocabulary across
 `features/`, `data/api/`, `data/queries/` and `data/mutations/adjustStock.ts`
 returns nothing.
 
-Live, against the deployed stack (API on :3001, docker Postgres on :5433):
-**D1–D7 7/7**, **D8 (RBAC) 30/30**, **D9 (credit) 13/13**, **D6 16/16**, and
-**D10 (the client's own api layer) 30/30 — new this pass**. **96 live checks
-over real HTTP.** Nothing regressed: D8, D9 and the sync-drill suite were all
-re-run after the client work and after the changes made in this pass.
+Live, against the deployed stack (API on :3001, docker Postgres on :5433) —
+**all re-run in this pass, on an API restarted from THIS tree after killing a
+stale listener on :3001**, because a dev server on older code is how this
+project has been fooled before:
+
+| Drill | Result | What it covers |
+|---|---|---|
+| `sync-drills` D1–D8 | **8/8** | partition, convergence, idempotency, isolation, receipt-number regression, **and D8 — the credit surface at the sync layer (NEW)** |
+| `drill:rbac` (D8) | **30/30** | every refusal paired with a positive control |
+| `drill:credit` (D9) | **13/13** | criterion 3 at two outlets |
+| `drill:client` (D10) | **30/30** | the client's own api modules vs Postgres |
+| `drill:procure` (D11) | **56/56** | procurement, the approval money bound |
+| `drill:q1` (D12) | **32/32** | distribution cost, the trading-day assertion |
+| `drill:counter` (D13) | **47/47** | the counter clients |
+| `drill:credit-client` (D14) | **18/18** | the credit client, as built |
+| `drill:credit-verify` (D15) | **33/33** | independent QA verification of the credit client |
+| **`drill:credit-offline` (D16)** | **37/37** | **NEW — the offline position vs the online one, staleness, suspension, the dark-device case, the row-16 sweep and the Q4 fee gate** |
+
+**296 live checks over real HTTP, 0 failures**, plus **8/8 sync drills against
+real PowerSync with real device sqlite files.** Nothing regressed. D15 is this
+pass's own drill and deliberately shares no assertions with D14: it re-derives
+every figure in SQL, sweeps the credit read surface for a superjson `meta`
+envelope (ledger row 16), and pairs every refusal with a positive control.
+`node tools/lint-money.mjs` is clean.
 
 **The previous revision's post-merge figures, kept for the record:** *616 tests, 51 files, 0
 failures* across seven packages — `tools/lint-money.mjs` is clean, and `pnpm stack:reset` (docker
@@ -67,10 +150,12 @@ payload) and D7 (receipt-number regression, with a genuine sqlite-file wipe)
 both pass in the same tree, which is the thing neither branch could show on its
 own. Per-package figures below are post-merge counts.
 
-Acceptance criteria **1, 2, 4 and 5 are demonstrated, not asserted** — measured numbers in §5.
-**Criterion 3 is now demonstrated for balance and ageing** (D9, live, across two outlets); its
-facility-fee clause remains gated on the Q4 human decision and the criterion is therefore **not
-fully met** — stated precisely in §5.3.
+Acceptance criteria **1, 2, 4 and 5 are demonstrated, not asserted** — measured numbers in §5, and
+criterion 5 now includes the two credit buckets that were added since the last revision.
+**Criterion 3 is demonstrated for balance, ageing and "across multiple locations"**, and for
+"visible" both online and — new this revision — offline for the accounts audience. It is **still
+not fully met**: the facility fee is gated on the Q4 human decision, and the counter's offline
+slice has a channel, a gate and a passing isolation test but no rows. Clause by clause in §5.3.
 
 **Access control is now enforced on the sale path, including the credit bound.** A counter clerk
 bounded at `max_order_value_minor: "0"` is refused a credit sale over real HTTP, and an outlet
@@ -83,9 +168,41 @@ total. That was §6 item 1 of the previous revision and it is closed; the eviden
 
 ## 0. Read this before trusting the drill suite again
 
-**A green suite has now failed ELEVEN times to notice that a written path had never been executed
-— and once, this pass, a green suite silently STOPPED BEING GREEN for a reason unconnected to
-anything it tests.**
+**A green suite has now failed SEVENTEEN times to notice that a written path had never been executed,
+or had never been executed under the conditions the field imposes — and once, a green suite silently
+STOPPED BEING GREEN for a reason unconnected to anything it tests.**
+
+> **This ledger is the project's, not Phase 1's, and it lives here — one place, current.**
+> Rows 12–14 were added by the **Phase 2 verification pass (2026-08-22)**; row 15 by the **Q1
+> verification pass (2026-08-22, later the same day)**; **row 16 by the wiring-verification pass
+> (2026-08-22, later still)**. The Phase 2 report is `docs/phase2-status.md`, which points here
+> rather than keeping a second copy.
+> **Rows 12, 13, 14 and 15 are now CLOSED and are marked so in place — the row stays, because the
+> ledger is a record of how the suite failed, not a to-do list. Row 16 is CLOSED in the same pass
+> that opened it, and it is the most instructive row in the table: the capability was WIRED to a
+> screen, the route answered `200`, and the PWA still could not read a word of the reply.**
+>
+> **The credit-client verification pass (2026-08-22, latest) added NO row, and that is a finding
+> rather than a silence.** It looked for one in the three places this table says to look, and
+> reports what it found: (a) an import-graph walk over every export of the new credit client —
+> **no dead export**, the three with no outside caller are composed by `fetchCreditPosition`;
+> (b) a **row-16 meta-envelope sweep of the whole credit read surface** — clean, and
+> *mutation-tested* so the clean result means something (§5 criterion 3); (c) every figure
+> re-derived in SQL by the drill instead of re-read from the API — agreeing exactly. The count
+> stays at **sixteen**. The one defect this pass did find was in the verification apparatus, not
+> the product: a D12 summary line narrating a fact that row 15 had already closed — recorded at
+> §6 item 10, deliberately not given a row, because no capability was broken.
+>
+> **The credit-offline / isolation pass (2026-08-23, latest) added ROW 17, and it is the ledger's
+> own shape one layer lower than it has ever been recorded.** Everything above concerns a *payload*
+> or a *route*. Row 17 is a TABLE NAME: the sync rules ship the credit book from
+> `app.customer_account`, PowerSync names a client table after the source table in the data query,
+> and the PWA declared the table as `credit_account`. Measured on a real device against the real
+> service: `credit_account` **0 rows**, `customer_account` **80 rows**, all 80 sitting in
+> `ps_untyped` where no query in the app can reach them. The entire offline credit position —
+> the thing migration 0013 and the `tenant_credit` bucket exist to deliver — was silently
+> unavailable on every device, with **sixteen** `credit-offline.test.tsx` tests green throughout.
+
 The count is kept here deliberately, and it goes up, because the pattern is the project's most
 reliable defect source: code is written, unit-tested against a harness that agrees with it, and
 never once run against the real stack.
@@ -103,6 +220,13 @@ never once run against the real stack.
 | **`sequence.syncBlock` guard (this pass)** | `sequence.syncBlock` was correctly tightened from "scope only" to `sale.record` at the request's location. **`apps/api/test/sequence-regression.test.ts` went from 20 tests to 26, all green.** On the live stack the entire receipt-number regression drill died at its first call: `FORBIDDEN: PERMISSION_DENIED: sale.record is not held by this user`. D7 builds its own device (`device-a6`) inside `runD7` rather than in the shared `context.ts`, and the context's provisioning loop covers only `a1/a2/a3/b1` — so A6 was the one device in the repository whose principal had never been granted anything. It worked for as long as the route required no capability. | 26/26 PASS, and D1–D6 PASS in the same run | The API harness grants every test identity the **owner role** (`identityFor(..., grant: 'owner')`), so no unit test can observe a principal with no grant. It is §0's RBAC row again, one layer down: the harness default is still the third thing that agrees with neither the drill's seed data nor the live stack. Caught in one drill run; the fix is one line in `d7.ts`. |
 | **The conformance suite EXPIRED (this pass)** | `packages/wire-conformance/test/sale-client-to-api.test.ts` — the file whose whole job is to catch the client-payload bug class — went from **19/19 green to 12/19 red with no code change**. Every till instant in it was a hard-coded literal (`'2026-08-21T09:00:00.000Z'`). `apps/api/src/pipeline.ts` clamps a claimed HLC at ±24h of the server clock and refuses beyond it with `CONFLICT: CLOCK_RESYNC_REQUIRED` **before the payload is ever parsed**. At 25.67h old the suite began failing on the clock. | 19/19 PASS, the day before | Nothing was wrong with the code and nothing tested the test. This is the ledger's inverse: not an unexecuted path, but a guard that stops guarding on a calendar boundary, with a red message pointing at the clock instead of at the payload — and the tempting repair is to relax the very assertion that catches the bug. Found by running the full suite, not by reading. |
 | **The client's api layer could not be conformance-tested at all (this pass)** | `apps/web/src/data/api/client.ts` reads `import.meta.env`. `packages/wire-conformance` — the ONLY package that may import both trees, and therefore the only place the new client reads can be driven against the real API — declared `"types": ["node"]`, so importing that module was a `tsc` error. Every new client read path (`reports.*`, `inventory.lowStock`, `credit.*`) was structurally unreachable from the one harness that could prove it. | green: `pnpm typecheck` passed 12/12, because nothing tried to import it | The module compiled fine inside `apps/web`, which declares `vite/client`. Nothing failed until this pass actually attempted the import. A layer that cannot be reached by the conformance package is a layer that will only ever be tested against itself — which is this table's one root cause, stated below. |
+| **The outbox is ordered to the MILLISECOND, and no further (Phase 2 pass) — CLOSED by the Q1 pass** | `readPendingOps` is `ORDER BY created_at ASC, id ASC`. `created_at` is an ISO string at millisecond resolution, and `apps/web/src/lib/uuidv7.ts` has **no monotonic counter inside a millisecond** — bytes 6..15 are pure randomness. Two outbox writes made in the same millisecond therefore upload in a **random relative order**. Observed live: two delivery status moves (`PLANNED→DISPATCHED`, `DISPATCHED→DELIVERED`) recorded back to back, and the second arriving first: `CONFLICT: PLANNED -> DELIVERED is not a legal delivery transition`. `classifyRejection` calls that retryable, so the op stays pending and lands on the next drain — **nothing is lost, and it self-heals** — but "strictly in queue order" (upload.ts) and "a cursor report queued before a batch of sales must reach the server before those sales do" (upload.ts, contracts/upload.ts) are properties the comments assert and the code does not have. | `delivery-client-to-api.test.ts` green, 43 tests | The conformance test stamps every op with `tillClock(n)` — a controlled clock that hands each write a **distinct** instant. The tie the field produces cannot occur there. This is the table's root cause wearing new clothes: the harness supplies a guarantee the world does not. Found by running D11 three times, not by reading. D11 now pins both instants **identical on purpose** so the tie happens every run, and asserts CONVERGENCE rather than first-pass order. **CLOSED:** `apps/web/src/data/sync/queue-seq.ts` adds `outbox.queue_seq`, a strictly increasing integer stamped inside the same local write transaction as the INSERT, and `OUTBOX_QUEUE_ORDER` is the one ordering expression the drain and every reader share. All five outbox INSERT sites stamp it (`checkout`, `adjustStock`, `recordGoodsReceipt`, `updateDeliveryStatus`, `sequence.enqueueBlockReport`) — verified by grep, not assumed. **Demonstrated live, D12 F1: six consecutive runs, two ops written at a pinned-identical instant (`created_at` tie observed 6/6), applied 2/2 on the FIRST drain pass with 0 rejected every time, delivery DELIVERED every time.** A monotonic uuidv7 would NOT have fixed it and the module says why: an op's id is minted when its work begins (a sale's id is its cart's), not when it is queued. |
+| **A 2,009-line money router with no API test suite (Phase 2 pass) — FOUND AND CLOSED** | `apps/api/src/routers/procurement.ts` — ten procedures, every purchase-order price and rounding, and `ctx.permissions.requireWithinAmount('purchase.order.approve', …)`, the money bound that decides who may commit the business to a spend — has **no file in `apps/api/test/`**. Nothing under `apps/api/test/` references `procurement.` at all. The bound had no test **anywhere** in the repository until this pass demonstrated it live (D11 2i–2m). CLAUDE.md §2.7 category 1 says a money function is not done without one. | `@erp/api` 309/309 PASS, `@erp/db` 132/132 PASS | The coverage that exists is beside the router, not on it: `packages/db/test/procurement.test.ts` tests the SCHEMA and the template's separation of duties; `apps/web/tests/procurement-api.test.ts` tests the CLIENT against a mocked `fetch`; `packages/wire-conformance/test/procurement-reads-client-to-api.test.ts` drives the READS only. Three suites around a router, none through it. A count of tests is not a map of what they cover. **Closed in the same pass:** `apps/api/test/procurement.test.ts`, 21 tests through the router's own surface — the bound above/at/refused-writes-nothing with an unbounded positive control, the bound measured against Σ(lines) that no caller supplies, half-up rounding once per line and never on the sum, separation of duties both directions, the state machine, key idempotency, and six two-tenant read-path checks. It reads the bound out of `role_permission.bound` rather than stating one. **Q1 pass:** the file is now **42 tests** — `updatePurchaseOrder`, which had no client and no test, gained 21 covering the permission at the order's OWN deliver-to location, the DRAFT-only line window, repricing on amendment, the bound measured against the AMENDED total, and two-tenant refusal holding the very same capability. `apps/api/test/distribution-cost.test.ts` (new, 616 lines) does the same for the route that answers Q1, including its own two-tenant block. **The route still has no client** — see row 15's shape and `phase2-status.md` §5. |
+| **Three client exports nothing calls (Phase 2 pass) — CLOSED by the Q1 pass** | `fetchDelivery` (`data/api/logistics.ts`), `recentDeliveryUpdates` (`data/queries/procurement-outbox.ts`) and `clearTakeDown` (`data/queries/takedown.ts`) are exported production functions that **no screen calls**. `recentDeliveryUpdates` is referenced only by its own test; `clearTakeDown` by nothing at all. Small, harmless today — and the exact shape of rows 3, 5 and 6 above. | `@erp/web` 480/480 PASS | Same mechanism as the `writeActivePriceListId` row: a unit test imports the module directly, so "does anything call this?" is never asked. Found by an import-graph walk over `apps/**` and `packages/**` excluding tests, not by the suite. **CLOSED:** all three now have a production caller — `fetchDelivery` and `recentDeliveryUpdates` at `features/deliveries/Deliveries.tsx:687` and `:661`, `clearTakeDown` at `features/receiving/Receiving.tsx:945`. Re-walked in the Q1 pass over every export of the nine new client modules: the only remaining unreferenced-outside-their-own-file exports are `buildReceiptPayload`, `buildDeliveryStatusPayload` and `CONFIG_KEY_TAKEDOWN`, each used inside its own module and imported by its own test — exported for testability, not dead. |
+| **A period key that no screen can assert (Q1 pass) — CLOSED by the wiring pass** | `planDeliveryInput.businessDate` is the trading day the whole distribution-cost ratio divides revenue by. Migration `0010`'s header argues at length for it: a device clock must never move freight across a month end. The server implements all three arms — `businessDate ?? plannedFor ?? serverDate`, recording `business_date_derived_from` as NULL / `'PLANNED_FOR'` / `'ROW_CREATED'` — and `logistics.haulageSpend` and `reports.distributionCostRatio` both publish the per-basis counts. **No screen in `apps/web` ever sends the field.** `features/deliveries/Deliveries.tsx:371` calls `planDelivery` with `plannedFor` and nothing else, and there is no route to amend a delivery's trading day afterwards: `updateDeliveryStatusInput` does not carry one and no `logistics.update` exists. So in the PRODUCT the primary arm is unreachable and a trading day, once written, is uncorrectable. | `@erp/web` 506/506, `@erp/api` 367/367, `@erp/contracts` 118/118, D11 56/56 — and D12's own B3 PASSES, because the drill supplies the field the product cannot | Exactly rows 3, 5, 6 and 14 again: a contract field, a server implementation and a database column, all correct, all tested against each other, with no production caller between them. The unit tests construct the input themselves, so "does a screen ever build this?" is never asked. Found by driving the field live and then asking who else does — `grep businessDate apps/web/src/features` returns nothing on the delivery path. **Not a wrong number today:** both fallback arms are trustworthy dates (a human-typed `plannedFor`, or the server's transaction date), and D12 H1 pins the invariant that matters — **zero** rows written since `0010` carry `DISPATCH_CLOCK`. The exposure is a delivery entered days late with no `plannedFor`, which silently books to the entry date with no way to correct it. **CLOSED:** `features/deliveries/Deliveries.tsx:377-379` holds the trading day in state, defaults it to the SERVER's own precedence (`plannedFor` when there is one, else today AT THE LOCATION'S timezone — never the tablet's), renders it as an editable date field at `:519-525` with a note at `:527` that says out loud which day the freight will count against and that it cannot be changed afterwards, and sends it **always**, never leaving it to a fallback (`:416`). **Demonstrated live, D13 D1–D12 (47/47):** a load planned through the client with `businessDate` five days back, `plannedFor` two days forward and the entry date today — three distinct days, so no fallback arm can pass by coincidence — lands with `business_date = 2026-08-17` and `business_date_derived_from = NULL` (ASSERTED); the Q1 ratio counts it in the asserted day's period and Postgres confirms it is in NEITHER fallback window; a DISPATCH through the outbox does not move it; and `periodBasis.datedByAssertion` rises while `datedByDispatchClock` stays at zero. |
+| **A route that was WIRED, answered `200`, and was still unreadable by the product (wiring pass) — FOUND AND CLOSED** | `receiving.get` selected `gr.received_at` **uncast**. `pg` returns a JS `Date` for a bare `timestamptz`; tRPC's superjson serializer cannot carry a `Date` in plain JSON, so it annotated it in a sibling `meta` block; and `apps/web/src/data/api/client.ts:231-237` **deliberately REFUSES any envelope carrying `meta`** — "response carries an encoding this device cannot apply" — because silently dropping an annotation and rendering the raw value is worse. So the server answered `200 OK` with a correct payload and the screen said it could not read the reply. The row type in the router declared `received_at: string`, which is why `tsc` never objected: **the annotation was the lie, not the code**. Every other timestamp on the wire is cast — `logistics.ts:732-733,1048-1049` does `new Date(x).toISOString()` — so this was one line out of step with a convention the codebase already had. | `@erp/api` **367/367**, `@erp/db` 132/132, `@erp/web` **536/536**, `@erp/wire-conformance` 69/69, D11 56/56, D12 32/32 — **every suite green, and the feature unusable** | The two suites that touch this route **cannot** see it, for opposite reasons. `apps/api/test/receiving.test.ts` (33 tests) calls the router **in process**: nothing is ever serialised, so no `meta` can exist. `apps/web/tests/procurement-api.test.ts` feeds the client's mappers **plain JSON somebody typed**: no `meta` can exist there either. Only a test that crosses the REAL serializer with the REAL mapper can see it — which is precisely what `packages/wire-conformance` is for, and it simply **had no case for either receiving read**. §0's one root cause, exactly: both sides tested against a third thing that agreed with neither. Found by driving the client's own `fetchGoodsReceipt` over a real socket in D13 — check B8 came back `malformed` — not by reading and not by any suite. **CLOSED:** the router casts in SQL (`to_char(... at time zone 'UTC', ...)`), and `receipt-client-to-api.test.ts` grew **three** tests that would have caught it: one asserting the client can DECODE the response and that `receivedAt` is a string, one asserting neither receiving read carries a `meta` key at the route itself, and one on the outstanding arithmetic. **Mutation-tested before being believed** — reverting the one-line cast turns them red with `expected [ 'json', 'meta' ] to not include 'meta'`. **The whole read surface was then swept**: all 25 tRPC read routes were driven live and checked for a `meta` envelope; `receiving.get` was the only one. |
+
+| **The credit book reached the device and the device could not see it (credit-offline pass) — FOUND AND CLOSED** | `infra/powersync/sync_rules.yaml`'s `tenant_credit` bucket selects `FROM "app"."customer_account"`. PowerSync derives a client table's name from the SOURCE TABLE in the data query, so those rows arrive at a device with type `customer_account`. `apps/web/src/data/schema.ts` declared the synced table as **`credit_account`**. Rows with no declared table are parked in `ps_untyped`, which nothing in the PWA queries. `loadAccountIdForCustomer` — `SELECT id FROM credit_account WHERE customer_id = ?` — therefore returned `null` for **every** customer, `loadSyncedCreditPosition` was never reached, and the whole offline credit position was unavailable on every device. **Measured, not inferred:** a probe device declaring BOTH names against the live service came back `credit_account` **0 rows**, `customer_account` **80 rows**, `ps_untyped` holding 80 `customer_account` rows plus 102 `credit_entry`, 80 `credit_position_snapshot` and 400 `credit_position_bucket` — the entire bucket, delivered and unreadable. | `@erp/web` **591 tests**, including `credit-offline.test.tsx` **16/16**; `@erp/db` 143/143; `@erp/api` 399/399; every drill green | The node test adapter builds its DDL from the SAME `LOCAL_TABLES` list, and the tests seeded `INSERT INTO credit_account`. Client, DDL and fixture all agreed with each other; **nothing compared any of them to the sync rules**. §0's one root cause with a new noun: the third thing everybody agreed with was the client's own schema constant. Found by running a real `@powersync/node` device against the real service and counting what physically landed, not by reading and not by any suite. **CLOSED:** the client table is renamed `customer_account` (one line in `schema.ts`, one in `credit-position.ts`, one in the test's INSERT), and `packages/wire-conformance/test/sync-rules-to-device.test.ts` (5 tests, no stack required) now parses every bucket's `data:` block and fails if a delivered table is undeclared, a declared synced table has no bucket, or a selected COLUMN is undeclared. **Mutation-tested:** restoring the old name turns 3 of its 5 tests red with *"rows of these types would land in ps_untyped, invisible to every query in the PWA: customer_account"*. |
 
 One root cause, stated once: **both sides were only ever tested against a third thing that agreed
 with neither of them** — a fixture, a harness default, or a hand-written payload. The RBAC entry is
@@ -122,8 +246,9 @@ What changed, so the next one is caught:
 - **Drill D6** — the same journey over a real socket against the deployed stack, so the failures an
   in-process harness cannot see (CORS preflight, a dev server on stale code, seed data that does
   not match the contract) are caught too. One of each, from now on.
-- **A pin on the client's write surface.** `apps/web` can upload **three** kinds today
-  (`sale.create`, `sequence.sync_block` and — new this pass — `stock.record_movement`).
+- **A pin on the client's write surface.** `apps/web` can upload **six** kinds today
+  (`sale.create`, `sequence.sync_block`, `stock.record_movement`, `goods.record_receipt`,
+  `logistics.update_delivery_status` and — newest — `credit.record_entry`).
   `outbox-surface.test.ts` fails the moment another appears without a test that drives *its* real
   builder against *its* real parser. **It fired again on this pass**, the moment
   `WIRE_KINDS` grew `stock_movement → 'stock.record_movement'`: the adjustment builder landed and
@@ -169,11 +294,24 @@ the shared one turns the registry assertion red.
 
 ## 0a. Offline honesty — the rule most easily broken quietly, mutation-tested
 
-Reporting, low stock, reorder thresholds and credit are served by the API over HTTP.
-`app.credit_entry` and `app.reorder_point` are in **no sync bucket**, so a partitioned device
-genuinely cannot know these things. The rule is that the UI says so plainly, and **never** shows a
-stale figure as current or an empty list that reads as "nothing is low": a wrong balance shown
-confidently at a counter is worse than no balance.
+Reporting, low stock and reorder thresholds are served by the API over HTTP; `app.reorder_point`
+is in **no sync bucket**, so a partitioned device genuinely cannot know those things. The rule is
+that the UI says so plainly, and **never** shows a stale figure as current or an empty list that
+reads as "nothing is low": a wrong balance shown confidently at a counter is worse than no balance.
+
+**Credit changed on 2026-08-23 and the rule did not.** Migration `0013_credit_offline_visibility.sql`
+adds the `tenant_credit` bucket, so a device whose holder has `credit.view` **at the tenant root**
+now receives a bounded, server-derived position (`credit_position_snapshot` + its ageing vector,
+plus a 400-day `archived_at` window of `credit_entry`). Criterion 3's *"visible and correct"* is now
+answerable offline for the accounts audience. What did not change: there are exactly **two
+provenances and they never share a rendering** — `verified_online` (`useApiQuery` + `BalancePanel`,
+still discarding its previous answer on every re-run, still no cache of any figure) and
+`synced_as_of` (`SyncedPositionPanel`, a **different component taking a different type**, every
+label carrying its own age: *"Balance as at 06:40 today"*). A device holding no snapshot — a counter
+till, anyone without `credit.view` — still sees the refusal and nothing else. **No device computes a
+credit balance or an ageing bucket**: the synced entry log is windowed, so Σ(local entries) ≠ balance
+by construction, and `apps/web/tests/credit-no-local-total.test.ts` fails if a function that sums
+them ever appears. Both rules were mutation-tested (below).
 
 The client honours this by construction. `data/api/client.ts` models nine distinct kinds of "no",
 `useApiQuery` has exactly three states and **discards the previous answer before every re-run**, and
@@ -189,6 +327,8 @@ deliberately and the suite re-run**. All three mutations were reverted; the tree
 |---|---|---|
 | `LowStock.tsx`: collapse the "no thresholds configured" branch into the reassuring "nothing is below its threshold" one | **2 tests red** (`says NO THRESHOLDS have been set, and does not say stock is healthy`; `tells counter staff who can set one`) | has teeth |
 | `use-api-query.ts`: keep the last good answer when a refresh fails, and stop clearing state on re-run | **1 test red** (`never shows a previously fetched balance after the connection drops`) | has teeth |
+| `Credit.tsx`: render the synced panel whatever the server said, mixing the two provenances | **1 test red** (`never renders a synced figure where a verified one goes`) | has teeth |
+| `credit-position.ts`: add a `SUM(amount_minor)` over `credit_entry` — the device-side balance R2 forbids | **1 test red** (`has no SQL that aggregates over credit_entry`) | has teeth |
 | `Reports.tsx`: render a failed panel's children anyway (the zero/empty table instead of the reason) | **2 tests red** (`says unavailable offline on every panel, and renders no table at all`; `explains a refusal from the server in the server's own words`) | has teeth |
 
 One honest correction to method, recorded because it nearly produced a false finding. The **first**
@@ -480,11 +620,25 @@ shape disagreement a compile error instead of a `BAD_REQUEST` at a till in Techi
   key and refuses all three spellings of tenant identity; movement/credit money as strings; no
   `SALE` movement kind and no `FEE` entry kind on the device surface; the `/sync/token` shape
 
-### `packages/wire-conformance` — 46 tests (5 files) + 4 live drills, typecheck clean
+### `packages/wire-conformance` — 95 tests (10 files) + 11 live drills, typecheck clean
 **A probe package whose only job is to prove the two sides agree.** No production code imports it.
 It exists because it is the only place that can import `apps/web`'s sources *and* `apps/api`'s:
 the PWA resolves modules as a bundler would and its imports carry no file extensions, which
 `apps/api`'s `NodeNext` compilation cannot follow, so neither app can import the other.
+
+- **`sync-rules-to-device` (5) — NEW 2026-08-23, and the only test in the repo that compares
+  `infra/powersync/sync_rules.yaml` to `apps/web/src/data/schema.ts`.** It parses every bucket's
+  `data:` block (and deliberately *not* the parameter queries, whose `FROM` names a gate table no
+  device receives) and asserts three things: every table the rules deliver is declared on the
+  device under that exact name; every synced table on the device is one some bucket can fill; and
+  every column a rule selects is declared on the client table. It needs no stack, so it runs on
+  every commit. It exists because §0 row 17 — the credit book delivered as `customer_account` into
+  a device that declared `credit_account`, 80 rows parked in `ps_untyped`, sixteen unit tests green
+  — is a defect no other test in this package could see: both sides were tested against the
+  client's own schema constant. **Mutation-tested:** restoring the old name turns 3 of its 5 tests
+  red. It also pins that `credit_allowance` carries no `balance_minor`, `credit_limit_minor`,
+  `trade_exposure_minor`, `available_minor` or `terms_days` — the counter's table must not carry a
+  figure 06 §6.5 forbids on a counter device, whatever the bucket gate says.
 
 - `sale-client-to-api` (19) — the test that would have caught the bug. Real local SQLite on the
   device's own schema → real `createCart`/`addProductToCart`/`checkout` → real outbox → real
@@ -687,7 +841,7 @@ proving checkout is a single ACID transaction.
   block after a burn
 
 ### `packages/sync-drills` — the executable acceptance demonstrations
-`pnpm --filter @erp/sync-drills drill` runs the **seven** Phase 1 drills against the
+`pnpm --filter @erp/sync-drills drill` runs the **eight** Phase 1 drills against the
 **real stack** (auto-spawns the API on :3001 if absent, tears it down after).
 D1–D5: each "device" is an `@powersync/node` client with its own sqlite file and
 its own tokens; writes go solely outbox → `POST /sync/upload`; the drill connector
@@ -717,6 +871,17 @@ no browser origin. Two closures this pass:
   compile error. That closes "the drills invented their own shape" — though a
   drill agreeing with the contract still does not prove the PWA does, which is
   why D6 exists as well.
+- **D8 — "the credit surface at the sync layer" (added 2026-08-23)** is the third
+  closure and it is about a different question: not *whose payload* but *whose
+  device*. `src/drills/d8.ts` + `d8-support.ts` execute
+  `docs/credit-offline-plan.md` R5 checks 1–6 against the **raw sqlite files** of
+  four devices with four different template roles at three different scope nodes,
+  and `src/rawdb.ts` gained a byte-level `grepDeviceFiles` that reads the file and
+  its `-wal` sidecar directly, because a row deleted from a table can still sit in
+  a freed page. D5 was extended at the same time: `SYNCED_TABLES` now declares the
+  six credit tables and `predictDeviceRows` derives its credit predictions **from
+  the same gate tables the parameter queries read**, keyed by `user_id` — so a
+  prediction cannot accidentally describe a different device's slice.
 
 ### Cross-cutting checks performed at integration
 - `node tools/lint-money.mjs` — clean (two annotated non-amount false positives
@@ -848,11 +1013,16 @@ pnpm --filter @erp/wire-conformance test   # the PWA's real payload vs the API's
 
 # The real stack + acceptance drills (reproducible from nothing):
 pnpm stack:reset                    # docker down -v → up → migrate → seed 2 tenants
-pnpm --filter @erp/sync-drills drill  # 7 drills; spawns the API on :3001 if absent
+pnpm --filter @erp/sync-drills drill  # 8 drills; spawns the API on :3001 if absent
+                                      # D8 = the credit surface at the sync layer
 pnpm --filter @erp/wire-conformance drill:live   # D6 alone, against the running stack
 pnpm --filter @erp/wire-conformance drill:rbac   # D8 — 30 authorization checks over real HTTP
 pnpm --filter @erp/wire-conformance drill:credit # D9 — acceptance criterion 3, 13 checks
 pnpm --filter @erp/wire-conformance drill:client # D10 — the CLIENT's own api layer, 30 checks
+pnpm --filter @erp/wire-conformance drill:credit-verify  # D15 — 33 checks
+pnpm --filter @erp/wire-conformance drill:credit-offline # D16 — 37 checks: the offline
+                                    # position vs the online one, suspension, the dark
+                                    # device, the row-16 sweep, the Q4 fee gate
 pnpm dev:token --role counter_staff  # a bearer for a REAL provisioned principal;
                                     # refs: counter_staff, outlet_manager,
                                     # regional_manager, accounts, head_of_operations
@@ -906,9 +1076,45 @@ real-device trial (§3) is where field latency gets measured.
    idempotency backstop: **verbatim replay of all 7 acked batches (9 ops) → 9/9
    acked `duplicate`, zero new effects, state byte-identical**.
 
-3. **Credit balance, ageing and facility fee across outlets — BALANCE AND
-   AGEING DEMONSTRATED (D9); FACILITY FEE GATED. The criterion is NOT fully
-   met, and the reason is a human decision, not missing code.**
+3. **Credit balance, ageing and facility fee across outlets — REASSESSED
+   2026-08-22 (QA verification pass), now that a CLIENT exists. Clause by
+   clause: BALANCE — met. AGEING — met. FACILITY FEE — visible, correct as a
+   provisional figure, and NOT chargeable. "Visible" — met at the Accounts
+   desk, NOT met at a partitioned outlet. The criterion is STILL NOT fully
+   met, and one of the two reasons is a human decision rather than missing
+   code; the other is missing code and is named as such.**
+
+   > **What changed in the reassessment.** The previous revision could only
+   > show this criterion at the API. It now has a screen — `features/credit/`
+   > — so "visible" can be assessed as a product claim rather than a route
+   > claim, and it splits in two: visible **to Accounts, online** (met) and
+   > visible **at an outlet that cannot reach the server** (not met, §6 item
+   > 14). An offline-first product does not get to count the second as met
+   > because the first works.
+   >
+   > **New evidence this pass, independent of D9 and D14.** `drill:credit-verify`
+   > (**D15, 33/33** over real HTTP through the PWA's own modules) re-derives
+   > every figure rather than re-reading the API's: balance is compared to
+   > `sum(app.credit_entry.amount_minor)` computed by the drill itself in SQL
+   > — **1,300,000 = 1,200,000 + 500,000 − 400,000**, API and SQL agreeing
+   > exactly — Σ(ageing buckets) = **1,300,000** = the balance across 5
+   > buckets, and the paid-down invoice ages **separately** from the other one
+   > (`dpd=[15, −45]`, outstanding **800,000** and **500,000**), which is the
+   > check that fails if two charges are aged as one lump. The fee gate still
+   > answers **HTTP 412 `FEE_POLICY_UNCONFIRMED`** with **zero** `FEE` rows on
+   > the account.
+   >
+   > **Ledger row 16 was swept for and is absent here.** Every credit read the
+   > client performs — `accountForCustomer`, `exposure`, `ageing`,
+   > `previewFacilityFee` — plus the `openAccount` reply, was driven at raw
+   > HTTP and checked for a superjson `meta` envelope: **4/4 reads clean, the
+   > mutation reply clean**, and the client's own mappers decode all four. The
+   > sweep was **mutation-tested before being believed**: injecting one raw
+   > `Date` into `credit.exposure`'s response turned it red with
+   > `META AT $.result.data.meta` while the route still answered **200**, and
+   > the client refused with row 16's verbatim words — *"response carries an
+   > encoding this device cannot apply"*. The sweep runs **unconditionally**,
+   > so an arithmetic failure upstream cannot skip it.
 
    `pnpm --filter @erp/wire-conformance drill:credit` — **13/13 over real
    HTTP**, clean slate. One regional-manager principal granted **once** at
@@ -947,15 +1153,75 @@ real-device trial (§3) is where field latency gets measured.
    posting would be the bug — so what is demonstrated is *"the fee is visible
    and refuses to be chargeable"*, **not** *"the fee is correct"*.
 
-   **What remains, precisely.** (a) **Q4 is `NEEDS-HUMAN`**: until a qualified
+   ### REASSESSED 2026-08-23 — the credit-offline / isolation pass
+
+   Migration `0013` put the credit book into a sync bucket and `credit.setStatus`
+   made an account suspendable, so the clause that failed last revision —
+   *"visible"*, offline — has to be re-judged rather than re-quoted. It is
+   judged below against what a device physically holds, not against what a
+   route answers.
+
+   | Clause | Verdict | Evidence |
+   |---|---|---|
+   | **Balance** | **MET** | Three independent computations agree on the same bigint in one run: the client's own `loadSyncedCreditPosition` reading the rows the bucket ships (**8,170,000**), `credit.exposure` online (**8,170,000**), and the drill's own `sum(app.credit_entry.amount_minor)` in SQL (**8,170,000**) — `drill:credit-offline` A4/A5. |
+   | **Ageing** | **MET** | Σ(buckets) − on-account + fee = balance holds **locally**, computed by `checkAgreement`, the same function the online path uses (A6); and the device's vector matches the server's ageing route **band for band** (A7: `1-30 = 2,049,600`, `31-60 = 6,120,400`, Σ = 8,170,000 over 5 bands). The windowing identity is asserted in bigint: `opening_before_window + Σ(local live entries) = balance` (A8). |
+   | **Facility fee** | **GATED — unchanged** | `previewFacilityFee` is visible and labelled provisional; `accrueFacilityFee` still answers **HTTP 412 `FEE_POLICY_UNCONFIRMED`** and the account carries **zero** `FEE` rows (D16 D5/D6). Q4 remains a human decision (CLAUDE.md §2.8). |
+   | **"Visible" — online** | **MET** | Unchanged from the previous revision, and re-swept: all four credit reads plus the `setStatus` reply are `meta`-free and the client's mappers decode them (D16 D1–D4). |
+   | **"Visible" — offline, ACCOUNTS audience** | **MET, and demonstrated on a real device** | A `credit.view` holder's device physically holds the book: sync-drill **D8** measured **customer_account 83, credit_limit_version 46, credit_entry 105, credit_position_snapshot 83, credit_position_bucket 415** on disk, each equal to the tenant-scoped server prediction. The staleness is stated with the figure — `as_of`, the server `as_of_hlc`, `computed_at`, `entry_window_days = 400` — and an entry newer than the snapshot is **listed** as "recorded since", never added (D16 B1–B5). |
+   | **"Visible" — offline, COUNTER audience** | **NOT MET, and deliberately so** | A counter device holds **no balance of any customer**, its own tenant's included — asserted as a byte grep over the device file (D8). What it is *meant* to hold instead is `credit_allowance`, and `app.credit_allowance` is **empty by design** until 06 §6.7's cap leases exist (migration 0013 §5). The channel and its gate ship and are tested; the rows do not flow yet. So at a partitioned till, "what may I lend this customer today" is still unanswerable. |
+   | **"Across multiple locations"** | **MET** | D9's evidence stands and is not superseded: one tenant-level account, two outlets (OUT-01 **370,800** + OUT-03 **494,400** = **865,200**), cash trade at the same two counters correctly absent. D8 adds the device-side half — a credit account has no location, so the book is keyed by tenant and the *narrowing* falls on the allowance table, whose per-location cut is proven (OUT-01 device holds OUT-01's rows and zero OUT-03's, and vice versa, in the same run). |
+
+   **One defect was found and closed inside this clause, and it is why the
+   offline half could not simply be marked met on the strength of the
+   migration.** The PWA declared the synced credit-account table as
+   `credit_account`; the rules deliver `customer_account`. On a real device the
+   client's table held **0 rows** while 80 sat unreachable in `ps_untyped`, so
+   the offline position was unavailable everywhere despite 16 green tests —
+   §0 ledger **row 17**. Fixed, and pinned by a structural test that fails if
+   any bucket table, or any selected column, is undeclared on the device.
+
+   *Honest verdict, 2026-08-23:* **balance — met. ageing — met. facility fee —
+   gated on a human. "visible" — met online, and met offline for the accounts
+   audience; NOT met offline for the counter, because the allowance table the
+   design gives the counter is unpopulated. "across multiple locations" — met.**
+   Criterion 3 is **STILL NOT signed off**, and the reason has narrowed from
+   *"credit is invisible offline"* to *"the counter's slice has a channel, a
+   gate and a test, and no rows"*.
+
+   **What remains, precisely — revised 2026-08-22.**
+
+   (a) **Q4 is `NEEDS-HUMAN`, and this is the blocking one.** Until a qualified
    accountant confirms the five fee decisions (D-1..D-5), every fee figure is
-   provisional and nothing may be billed — §6 item 5. (b) The policy store is
-   still in-memory pending its `app.credit_policy` migration. (c) **These reads
-   are ONLINE.** `app.credit_entry` is deliberately absent from every sync
-   bucket (fail-closed), so a partitioned outlet cannot see a balance at all —
-   and in an offline-first product "visible" has to mean visible from the till.
-   The criterion's first two clauses are demonstrated; the third is gated and
-   the offline half of "visible" is not built.
+   provisional and nothing may be billed — §6 item 5, and CLAUDE.md §2.8 makes
+   that review a gate, not a formality. What is demonstrated is *"the fee is
+   visible, is labelled provisional, and refuses to post"* — **not** *"the fee
+   is correct"*. Nobody should read D15's E-checks as the latter.
+
+   (b) The policy store is still in-memory pending its `app.credit_policy`
+   migration.
+
+   (c) ~~**These reads are ONLINE-ONLY**~~ — **SUPERSEDED 2026-08-23 by the
+   table above.** Migration `0013` added the `tenant_credit` and
+   `location_credit_allowance` buckets, so `app.credit_entry` is no longer
+   absent from every bucket. What remains of this clause is narrower and is
+   stated in the table: the **counter's** slice (`app.credit_allowance`) has a
+   channel, a database gate and a passing isolation test, and **no rows**,
+   because the cap-lease derivation is 06 §6.7 work. The original wording is
+   kept struck through rather than deleted, because "honesty is not
+   visibility" was the correct judgement at the time and is the reason the
+   work was done.
+
+   (d) **Not proven by this pass:** the criterion says *"across multiple
+   locations"*. D9 demonstrates that at two outlets (OUT-01 and OUT-03) and
+   still stands; **D15 deliberately does not re-prove it** — it is a
+   single-account arithmetic and wire-integrity drill, and its 1,300,000 comes
+   from two charges at one location. The multi-location evidence for this
+   criterion remains D9's, not D15's.
+
+   *Honest verdict (2026-08-22, superseded by the 2026-08-23 table above and
+   kept for the record):* clauses "balance" and "ageing" are **met**; "facility
+   fee" is **gated** on a human; "visible" is **met online and not met
+   offline**. Criterion 3 is **NOT** signed off.
 
 4. **HQ post-sync view across locations — DEMONSTRATED (D3), and it NOW HAS A SCREEN
    (D10, 2026-08-22).** The previous revision could show this only at the database and the API;
@@ -973,19 +1239,60 @@ real-device trial (§3) is where field latency gets measured.
    minor units as an exact bigint identity**; HQ on-hand per location
    (OUT-01 = 595, OUT-03 = 26) equals each location's independent ledger sum.
 
-5. **Second tenant invisible — DEMONSTRATED AT EVERY LAYER INCLUDING SYNC (D5).**
-   Previously proven at the database (RLS, 10 tests) and API (6 tests) layers;
-   now proven where §2.1 says the boundary actually is — the sync layer — by
-   inspecting the **raw sqlite files** of two devices belonging to different
-   tenants (both provisioned from the same template, both non-vacuously holding
-   data): tenant B's device holds 576 synced rows across 19 physical tables with
-   **zero** rows carrying tenant A's `tenant_id` and tenant A's uuid appearing
-   **nowhere** in the file; symmetrically, tenant A's device (664 rows) holds
-   zero of tenant B. Row counts equal the tenant-scoped predictions exactly, so
-   the buckets are neither leaking nor silently empty. Caveat honestly: the
-   sync-rule location scoping is the interim token-claim mechanism and the
-   credit book is not synced (§3) — the *tenant* boundary is fully demonstrated;
-   the *role/location* narrowing awaits the RBAC matrix.
+5. **Second tenant invisible — DEMONSTRATED AT EVERY LAYER INCLUDING SYNC
+   (D5), AND NOW ACROSS THE CREDIT BUCKETS TOO (D8, new 2026-08-23).**
+   Proven at the database (RLS), at the API (6 tests) and — where §2.1 says the
+   boundary actually is — at the sync layer, by inspecting the **raw sqlite
+   files** of devices belonging to different tenants. D5 covers the operational
+   buckets; **D8 covers the two buckets migration `0013` added**, which matter
+   more than any other because on the logical-replication path RLS does not
+   apply, so the parameter query is the whole control rather than a backstop.
+
+   **D5 was widened in the same pass, and this is the part that would have been
+   easy to skip.** Its device schema now declares the six credit tables and its
+   prediction derives the credit counts **from the same gate tables the
+   parameter queries read**, keyed by `user_id` — so the credit buckets are
+   inside the existing "raw row count equals the tenant-scoped prediction for
+   ALL synced tables" assertion rather than beside it. Latest run: tenant B's
+   device holds **1,265 rows across 26 physical tables**, tenant A's **3,933**,
+   both matching the prediction for all **23** synced tables exactly, with zero
+   foreign rows and neither tenant's uuid anywhere in the other's file.
+
+   **D8, 40 checks, all green.** Two tenants, credit customers with
+   distinguishable non-zero balances (**A = 10,633,178**, **B = 4,411,909**),
+   A's ageing across two bands, live allowances at two locations each. Every
+   zero below is paired with the same query returning `N > 0` somewhere in the
+   same run.
+
+   | What was proven | Measured |
+   |---|---|
+   | **Exact counts, not "no leak"** | Each device's on-disk count for all five book tables (`customer_account` / `credit_limit_version` / `credit_entry` / `credit_position_snapshot` / `credit_position_bucket`) equals the tenant-scoped server prediction: accounts-A **112 / 80 / 146 / 112 / 560**, accounts-B **19 / 11 / 5 / 19 / 95**, both tills **0 / 0 / 0 / 0 / 0** with **5** allowance rows each. |
+   | **Absence, both directions** | Zero rows carrying the other tenant's `tenant_id` in **any of 26 physical tables** on either device — against **3,964** own-tenant rows on A and **1,259** on B, so it is not "no data". |
+   | **The file, not the table** | A byte grep over the sqlite file **and its `-wal` sidecar** for three markers: the other tenant's uuid, its customer name, and the decimal string of its balance. All **0 hits**, each with a live positive control from the same file (own uuid 13,227 hits; own name 3; own balance 30). |
+   | **The permission gate, not the seed** | A till holding `sale.record.credit` and **not** `credit.view` holds **0** of every book table while holding **5** allowance rows; granting `credit.view` **in the same run** fills it to 112 / 80 / 146 / 112 / 560, matching the prediction exactly. |
+   | **The location slice (same tenant — §02's exposure)** | The OUT-01 till's `credit_allowance` rows carry **exactly one** distinct `location_id`, OUT-01's; the OUT-03 till's carry exactly OUT-03's, in the same run. A customer trading only at OUT-03 has **no row at all** on the OUT-01 device. And the till holds **no credit balance of any customer of its own tenant** — 0 byte hits for the balance and the trade exposure, with the allowance headroom present as the positive control. |
+   | **Revocation empties the device** | Soft-deleting the grant takes the counts from **112 / 80 / 146 / 112 / 560 → 0 / 0 / 0 / 0 / 0** on the next sync. This is the property a signed token claim cannot have, and it is why the gate is a trigger-maintained table rather than a claim. |
+   | **The forged claim** | A PowerSync token minted **outside the API** — `sub` = a real tenant-B user, `tid` = tenant A — receives **zero rows in every credit bucket**, while the same `sub` with its honest `tid` held 19 / 11 / 5 / 19 / 95 in the same run. (The API cannot produce such a token: `/sync/token` takes `tid` from the verified session and no input reaches it. Testing it through the API would test nothing, so the drill mints it directly.) |
+
+   **Mutation-tested before being believed** (`credit-offline-plan` R5.9), on
+   the live service, and the two mutations answer differently:
+
+   - **Dropping `AND tenant_id = bucket.tenant_id` from a credit data query
+     cannot ship.** PowerSync's own rule validator refuses the file —
+     *"Query must cover all bucket parameters. Expected: [bucket.tenant_id]
+     Got: []"* — and the replicator halts with a fatal error, so **no rules
+     load and no data flows at all**. It fails closed at the service, before
+     any device is involved.
+   - **Dropping the `credit.view` gate from `tenant_credit`'s parameter query
+     DOES load**, and it turns D8 **red** exactly where it must: the till
+     device begins receiving `customer_account` and the check that it holds
+     zero times out. A green D8 therefore is not surviving a removed gate.
+
+   Caveat, unchanged: the sync rules' *general* location scoping is still the
+   interim token-claim mechanism (`sync_rules.yaml` note a). The credit
+   buckets do **not** use it — both are gated on database projections
+   (`app.credit_sync_book_scope`, `app.credit_sync_location_scope`) — which is
+   why the role and location narrowing above could be demonstrated at all.
 
 **Not an acceptance criterion, but the one the last two bugs lived in — the client
 path (D6 + `@erp/wire-conformance`).** A sale rung up through the PWA's own
@@ -1048,20 +1355,56 @@ every `pnpm test`, plus D6 in the drill report.
    added it must be wired to it — that is the one place a future change silently
    breaks a guarantee that currently holds for free.
 
-3. **The credit-limit column has no database-level backstop.**
+3. **The credit-limit column has no database-level backstop — CLOSED 2026-08-22.**
    `02-security-and-access-control.md` §2.4 specifies that
    `customer_account.credit_limit_minor` is protected by a column-level `REVOKE` on
-   `app_rw` **and a trigger that raises**. Neither exists. Today the only writer is
-   `credit.openAccount`, which *is* gated on `credit.limit.change` (verified live,
-   D8 check 2) — so the prohibition holds, but it holds on one application check
-   with no defence in depth underneath it. A second writer added later would
-   silently bypass it.
+   `app_rw` **and a trigger that raises**. Migration `0011_credit_limit_versions.sql` adds the
+   trigger: `customer_account_terms_projection_only` raises on any UPDATE to
+   `credit_limit_minor`, `terms_days` or `facility_fee_bp_per_month` at
+   `pg_trigger_depth() < 2`, so the only writer is the version-apply trigger and application SQL
+   is refused whatever privilege it holds. Asserted by `apps/api/test/credit.test.ts` ("THE
+   DATABASE REFUSES a direct write to the projected column"), which was **mutation-tested**:
+   removing the trigger turns it red.
 
-4. **Sync rules still scope from the token claim, not `app.user_location_scope`.**
-   CLAUDE.md §2.6: sync rules are the authorization boundary. The table exists and
-   is correct; `infra/powersync/sync_rules.yaml` does not yet read it, and that file
-   was owned by another session this pass. Also outstanding from the original entry:
-   the §3.11.10 `sale_line` denormalisation so lines join the per-location bucket.
+   The column-level `REVOKE` was deliberately NOT paired with it, and the migration says why —
+   it would force the projection function to be `SECURITY DEFINER`, which runs outside the
+   row-level security this schema depends on. That trades a tenant-isolation guarantee for a
+   privilege one, and the trigger is the stronger half in any case: a `REVOKE` is silent for a
+   superuser and the trigger raises for everyone.
+
+4. **Sync rules still scope from the token claim — except the two credit buckets, which
+   are now table-driven.** CLAUDE.md §2.6: sync rules are the authorization boundary.
+
+   *What landed (2026-08-23).* `app.effective_permission` and `app.user_location_scope`
+   are **views**, and Postgres cannot publish a view to logical replication, so they can
+   never be a PowerSync parameter query's source. Migration `0013` therefore adds two
+   narrow, trigger-maintained projections of them — `app.credit_sync_book_scope`
+   (`credit.view` **at the tenant root**) and `app.credit_sync_location_scope`
+   (`sale.record.credit` ∩ location scope) — and `tenant_credit` /
+   `location_credit_allowance` read those. Revoking a grant empties the device on the next
+   sync, which a token claim can never do (`packages/db/test/credit-position.test.ts`).
+   Validated against the running service: the first attempt was refused by PowerSync with
+   *"Table aliases not supported in parameter queries"*, which is the reason a rules change
+   is not "done" until the container is healthy on it.
+
+   *Verified independently 2026-08-23 (QA), against the raw device files rather than the
+   migration.* Sync-drill **D8**, 40 checks: the gate admits and refuses the right
+   principals, a revoked grant takes the book off a device whose counts were previously
+   asserted `> 0`, a forged `tid` receives nothing in any credit bucket, and neither tenant's
+   uuid, customer name or balance string appears anywhere in the other's sqlite file or its
+   `-wal`. **Mutation-tested:** removing the `credit.view` join from `tenant_credit`'s
+   parameter query turns D8 red; removing `AND tenant_id = bucket.tenant_id` from a data
+   query is refused outright by PowerSync's own validator, which halts replication rather
+   than serving an unscoped bucket. Details under criterion 5.
+
+   *Still open.* `location_ops`, `tenant_reference` and `tenant_sale_lines_interim` still
+   read the `location_id` claim; the same projection shape now exists to copy. Also
+   outstanding: the §3.11.10 `sale_line` denormalisation so lines join the per-location
+   bucket, and `app.refresh_credit_sync_scope_all()` needs a place on the nightly job
+   (a grant whose `effective_to` is a future instant lapses with no DML to fire a trigger)
+   — **there is still no nightly job at all**, so today that sweep runs only by hand and a
+   future-dated lapse leaves a stale row in the gate.
+
 5. **Credit policy migration + Q4 human gate** — move the in-memory
    `credit-policy` store into the effective-dated `app.credit_policy` migration,
    and obtain the accountant's confirmation of the five fee decisions. Until
@@ -1155,12 +1498,83 @@ every `pnpm test`, plus D6 in the drill report.
    red until a real client-to-api test existed for it. The allow-list was extended only after the
    test was written, never to make the suite green.
 
-   **Still without a PWA builder: `credit.open_account` and `credit.record_entry`.** The credit
-   SCREEN exists and reads over HTTP (`data/api/credit.ts`, D10 checks 4a–4h), but a counter cannot
-   open an account or record a credit entry **offline** — those two writes have no local builder
-   and no outbox path. Given `app.credit_entry` is in no sync bucket (item 14's sibling), a device
-   could not show the resulting balance anyway, so this is coherent rather than half-done — but it
-   means "the offline write path works" still means sales and stock adjustments, not credit.
+   **`credit.open_account` and `credit.record_entry` had NO CLIENT AT ALL — CLOSED 2026-08-22.**
+   The wiring pass swept all 45 mounted procedures against `apps/web/src` and found they had
+   neither an outbox path nor a tRPC caller: in the product no screen could open a customer's
+   credit account, set or change a limit, or record a repayment. The same shape as §0 rows 3, 5,
+   6, 14 and 15 — server capability, contract, permission and tests all present, with no
+   production caller between them.
+
+   *What landed.* `features/credit/CreditForms.tsx` (three forms) wired into `Credit.tsx`:
+   `openCreditAccount` (`CreditForms.tsx:172`), `setCreditLimit` (`:341`) and `recordRepayment`
+   (`:539`), plus `fetchAccountForCustomer` at `Credit.tsx:561`.
+
+   *Three server routes had to land with it, because a client-side workaround would have been
+   worse than the gap.* `credit.setLimit` — a limit could be set once at `openAccount` and
+   **never changed**, and `credit_limit_minor` appeared in no `UPDATE` in the repository;
+   migration `0011_credit_limit_versions.sql` makes it 06 §6.6.1's append-only decision log with
+   `supersedes_id` as the compare-and-set, projects onto `customer_account` from a trigger, and
+   **closes item 3 below** (the database backstop 02 §2.4 asked for). `credit.accountForCustomer`
+   — every credit route is addressed by account and everything a device holds is addressed by
+   customer, so the old screen made a person type a UUID. `credit.exposure` also now publishes
+   `termsDays` and the accepted `limitVersionId`, which is what a limit form decides against.
+
+   *The offline split, stated.* A repayment is TRADE and rides the outbox (`WIRE_KINDS`
+   `credit_payment → credit.record_entry`); opening an account and changing a limit are RISK
+   DECISIONS, go over tRPC and are refused out loud (06 §6.6.3(7)). The queued receipt shows what
+   was recorded and **never a resulting balance** — the device holds no credit ledger to subtract
+   from. Proved hermetically by `packages/wire-conformance/test/credit-client-to-api.test.ts`
+   (18 tests, every `pnpm test`) and live by **drill D14** (`drill:credit-client`, 18/18 over real
+   HTTP from a browser origin, every figure compared to Postgres).
+
+   *Still not offered, deliberately:* `ADJUSTMENT` and `WRITE_OFF` entries (accounting judgements,
+   not trade), and `credit.setStatus` — `customer_account.status` is still enforced by
+   `sales.createSale` and **set by nothing**, so an account cannot be suspended. That is the
+   remaining credit gap.
+
+   *Independently verified 2026-08-22 (QA pass) — `drill:credit-verify`, D15, 33/33.* The build
+   report was **not** taken as evidence; a separate drill was written that shares no assertions
+   with D14. What it adds over D14:
+
+   - **A second, independent computation of every figure.** Balance is checked against
+     `sum(app.credit_entry.amount_minor)` computed in SQL *by the drill*, never against the API's
+     own arithmetic: **API 1,300,000 == SQL 1,300,000**, and that is 1,200,000 + 500,000 − 400,000
+     done by hand. Σ(ageing buckets) = **1,300,000** = the balance across 5 buckets. The paid-down
+     invoice ages at its own age (**800,000**, `dpd=15`) while the other is untouched
+     (**500,000**, `dpd=−45`) — `dpd=[15, −45]`, so the two cannot have been aged as one lump.
+   - **The row-16 sweep.** All four credit reads the client uses, plus the `openAccount` reply,
+     driven at raw HTTP and checked for a superjson `meta` envelope: **clean**. Mutation-tested —
+     one injected `Date` in `credit.exposure` turns it red at `$.result.data.meta` on a **200**
+     response while the client refuses with row 16's own words. It runs unconditionally, so an
+     upstream failure cannot silence it.
+   - **Refusals with positive controls, both directions.** An outlet manager is refused
+     `openAccount` (**403**, `credit.account.manage` absent) and the identical payload succeeds for
+     the Accounts holder on the same route; the refusal writes **0** rows. Counter staff **and**
+     outlet manager are both refused `setLimit`, and the accepted limit is unchanged after both.
+     Postgres holds exactly **one** accepted head at 8,000,000/45 days with the superseded version
+     **kept** — 2 versions, append-only, as 06 §6.6.1 requires. Nothing branches on a role name.
+   - **The fee gate, at the wire.** `accrueFacilityFee` answers **HTTP 412
+     `FEE_POLICY_UNCONFIRMED`** (confirmed with a raw `curl`, not only through the client), the
+     account carries **0** `FEE` rows, the preview is `provisional=true`
+     (`"provisional — not chargeable"`), and the balance does not move.
+
+   *No new §0 ledger instance was found in the credit client.* The import-graph walk that has
+   caught this project five times was re-run over every export of `data/api/credit.ts`,
+   `data/mutations/recordRepayment.ts` and `features/credit/CreditForms.tsx`: the only exports
+   without a caller outside their own module are `fetchExposure`, `fetchAgeing` and
+   `fetchFeePreview`, and all three are composed by `fetchCreditPosition`
+   (`data/api/credit.ts:406-408`) — exported for testability, not dead. Every form is reachable by
+   a person: `Credit.tsx:615` ("Open a credit account"), `:742` ("Change the limit"), and the
+   payment form's submit at `CreditForms.tsx:623`, all under the `credit` nav entry
+   (`features/shell/Shell.tsx:131`, gated on `CAPABILITY.creditView`, mounted at `:250`).
+
+   *One stale claim was found and fixed, in the verification apparatus rather than the product.*
+   `packages/wire-conformance/src/live-distribution-drill.ts:1027` printed, as part of D12's
+   summary, *"no apps/web screen sends businessDate on planDelivery today"* — which **ledger row
+   15 closed**: `features/deliveries/Deliveries.tsx:416` sends it on every call. A drill that
+   narrates a fact it does not check will go stale silently; the line now states what is true and
+   points at the row. Not a ledger row of its own — no capability was broken — but worth recording
+   that it was output prose, not an assertion, that drifted.
 11. **No test drives the PWA in a REAL BROWSER — narrowed, not closed.** The conformance suite
    still drives `checkout()`, `recordAdjustment()` and the outbox directly, and D10 drives the
    client's api modules directly; none of them renders a component. What changed this pass is that
@@ -1251,6 +1665,24 @@ every `pnpm test`, plus D6 in the drill report.
    so instead of being shown a zero.** That was the part that could have shipped silently wrong;
    it did not.
 
+   **REVISED 2026-08-23 — the credit half of this item is now HALF CLOSED, and the halves are
+   different audiences.** Migration `0013` added the `tenant_credit` bucket, so a `credit.view`
+   holder's device holds a bounded, server-derived position offline — measured on a real device
+   at **112 accounts / 146 entries / 112 snapshots / 560 ageing rows** (D8), with the balance
+   equalling the online figure and an independent SQL sum in the same run (D16 A4/A5). The
+   **counter** half is unchanged and is the one that is still open: `app.credit_allowance` is
+   the table a till is meant to hold, and it is **empty by design** until 06 §6.7's cap leases
+   exist. The bucket, its database gate and its isolation tests ship now (D8's location-slice
+   checks run against drill-seeded rows precisely so the assertions are not vacuous); the
+   derivation does not. `app.reorder_point` is unchanged and still in no bucket.
+
+   *One defect was found closing this item and is worth repeating here:* the credit book was
+   reaching devices and the PWA could not read a row of it, because the client declared the table
+   as `credit_account` and the rules deliver `customer_account` — §0 **row 17**. Sixteen unit
+   tests were green throughout. A structural test
+   (`packages/wire-conformance/test/sync-rules-to-device.test.ts`) now fails on any bucket table
+   or selected column the device does not declare.
+
 15. **Nothing in onboarding seeds a reorder point.** `applyReorderPoints` correctly seeds nothing
    at template time (thresholds exist only where the ledger already shows stock) and
    `infra/scripts/bootstrap.ts` never calls `ensureReorderPoints` afterwards. A freshly provisioned
@@ -1296,6 +1728,83 @@ every `pnpm test`, plus D6 in the drill report.
    production (the PWA is always Vite-built) and never in D10 (which always passes an explicit
    endpoint), so it is a robustness note rather than a bug — recorded because the function's own
    contract says it returns `null` for a device with no server.
+
+20. **`credit.view` is in the wrong template roles, and the credit bucket makes that a
+    device-residency question — NEW, OPEN, owner `rbac-security-engineer`.**
+    `credit-offline-plan` R1.b: *"`credit.view` must never be in the counter-staff or
+    outlet-manager template role"* — because a stolen accounts tablet holding 400 days of
+    the book is a different exposure from an outlet tablet that can merely ask the server.
+    The shipped template grants `credit.view` to **Outlet manager and Regional manager**
+    (`select name, permission_code from app.role join app.role_permission …`). Migration
+    0013 narrows the RESIDENCY gate to `credit.view` **at the tenant root**, which is the
+    right rule (a credit account has no location, 06 §6.5) and is the strongest narrowing
+    available without changing another owner's seed — but it is **not sufficient**, because
+    the dev seed assigns most principals at ROOT. Until the template is corrected, an
+    outlet manager assigned at the root receives the book. The test that will prove the fix
+    is already written (`admits a ROOT-scoped credit.view holder and refuses an
+    OUTLET-scoped one`).
+
+    **MEASURED 2026-08-23, and pinned.** `select r.name, rp.permission_code from
+    app.role_permission rp join app.role r … where rp.permission_code = 'credit.view'`
+    returns **three roles per tenant** — `Accounts`, `Outlet manager`, `Regional manager` —
+    on both seeded tenants, from the template, on a stack built from nothing. On the dev
+    stack `app.credit_sync_book_scope` holds outlet-manager and regional-manager principals
+    alongside the Accounts ones (the dev seed assigns at ROOT for convenience, and only a
+    ROOT-scoped grant confers the book). Exact user counts are not quoted here because the
+    dev database accumulates drill principals across runs; the durable, reproducible fact is
+    the template grant above. Every non-Accounts principal holding it at the root downloads
+    the whole tenant credit book. The exposure is real and it is live as of `0013`.
+
+    Three tests were added to `packages/db/test/rbac-template.test.ts` — **pinned, not
+    endorsed**, in the shape this document already uses for a known divergence: one asserts
+    that exactly `['accounts', 'outlet_manager', 'regional_manager']` hold `credit.view` in
+    the template (so removing a grant turns it red and says which), one proves the residency
+    gate is doing the narrowing the template does not (a ROOT-scoped outlet manager is in
+    book scope, the same role at an OUTLET is not, from one query in one run), and one pins
+    that counter staff hold `sale.record.credit` and **not** `credit.view`.
+
+    **Why the fix was not simply applied here.** Removing `credit.view` from those two roles
+    also removes their ONLINE credit reads (`exposure`, `ageing`, `accountForCustomer`,
+    `previewFacilityFee` are all gated on it at `any` scope), and the counter's intended
+    replacement — `app.credit_allowance` — is deliberately unpopulated until 06 §6.7. So the
+    correction is a product decision about what an outlet manager may see at all, not a
+    tidy-up, and it belongs with the owner named above rather than with a QA pass. It is
+    **the highest-severity open item in this section**, because it is the one gap whose
+    failure mode is unrecoverable (CLAUDE.md §2.1: once the book is on the hardware, it
+    cannot be recalled).
+
+21. **A credit sale from a device that was dark during a suspension is REFUSED, where the
+    design says it must be ACCEPTED AND FLAGGED — NEW, OPEN, owner `credit-engineer`.**
+    `docs/credit-offline-plan.md` R4 item 4 rules that such a sale is *"accepted, never
+    discarded (06 §6.7 rule 1 — the goods are gone)"* and raises a new conflict class #20,
+    `credit_sale_after_suspension`, `AUTO+FLAG`, severity 2, routed to Accounts.
+
+    **What actually happens, measured (D16 E1–E7):** `sales.createSale` refuses any account
+    that is not `ACTIVE`, so the upload is acked `rejected` with
+    `PRECONDITION_FAILED: credit account is SUSPENDED`; **no `app.sale` row is written**;
+    and **no `conflict_review` row of that class exists** (there is no such class).
+
+    **What the counter sees, measured with the real client and the real transport:**
+    `classifyRejection` puts `PRECONDITION_FAILED` in the *retryable* bucket, so the op is
+    **not** dead-lettered — a real `drainOutbox` pass reports `completed=0, rejected=0,
+    deferred=1` and leaves `rejected_at` NULL. The sale sits in the outbox, is retried on
+    every drain, and **lands exactly once the moment the account is reactivated** (E7:
+    `completed=1`, one `app.sale` row, original idempotency key). So the sale is **delayed,
+    not lost** — which is a better failure mode than discarding it, and a worse one than the
+    plan's: for as long as the suspension stands the goods are gone, the server has no
+    record of them, nobody is reviewing anything, and the till shows a stuck queue rather
+    than a reason a person can act on.
+
+    **The exposure is bounded by nothing that exists yet.** R4 item 1 says the worst case is
+    `Σ(live caps)` over dark locations — but `credit_account_location_cap` is not built and
+    `app.credit_allowance` is empty, so today a dark till's credit selling is bounded only
+    by the `sale.record.credit` **bound on the role** (counter staff `0`, outlet manager
+    `500,000`, regional `2,000,000` per order), checked against the server's own total when
+    the sale finally uploads — not by anything per-customer and not by `cap_valid_until`.
+    R4 item 2's mechanism ("suspension shortens the runway") therefore does not exist either.
+
+    D16 E3 and E4 **pin the current behaviour**, named as a divergence, so building R4.4
+    turns them red and forces this item and the drill to be updated together.
 
 None of these gaps is hidden in a passing test suite: everything green above is
 green because the thing it tests genuinely works in the tested environment, and

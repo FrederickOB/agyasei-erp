@@ -37,7 +37,9 @@
  * arithmetic on any figure in this file.
  */
 import { useMemo, useState, type ReactNode } from 'react';
+import { divRound } from '@erp/money';
 import type { ApiCallOptions } from '../../data/api/client';
+import { fetchHaulageSpend } from '../../data/api/logistics';
 import type { LocalDb } from '../../data/db';
 import {
   fetchCashPosition,
@@ -45,6 +47,7 @@ import {
   fetchInventoryDays,
   fetchSalesByLocation,
   fetchStockOnHand,
+  type DistributionCostLine,
   type ReportScope,
 } from '../../data/api/reports';
 import { CAPABILITY, holdsCapability, type PermissionsState } from '../../data/api/session';
@@ -369,6 +372,12 @@ function withheld(reason: string | null): string {
       return 'nothing sold in this period';
     case 'NO_DISTRIBUTION_COST_SOURCE':
       return 'not recorded anywhere yet';
+    case 'NO_REVENUE_IN_PERIOD':
+      // A percentage of nothing is undefined, not zero. The COST is still
+      // shown beside this: a warehouse has no till and still pays hauliers.
+      return 'nothing was sold here in this period';
+    case 'INCOMPLETE_FREIGHT_BASIS':
+      return 'some freight was never agreed';
     case null:
       return 'not available';
     default:
@@ -486,6 +495,84 @@ function InventoryDaysPanel({ from, to, apiOptions }: RangeProps): ReactNode {
 // Distribution cost — behind report.view.margin
 // ---------------------------------------------------------------------------
 
+/**
+ * ═══════════════════════════════════════════════════════════════════════════
+ * THE NUMBER ADR-0001 PROMISED IN EXCHANGE FOR GIVING UP THE FLEET
+ * ═══════════════════════════════════════════════════════════════════════════
+ * The plan and the financial model both assumed an owned fleet absorbing
+ * volume, and attributed a 5.0% → 2.5% fall in distribution cost to it.
+ * ADR-0001 removed the fleet. What was promised instead was that the ERP would
+ * MEASURE distribution cost as a percentage of revenue, per location and per
+ * grouping node, so the real trajectory is visible and somebody qualified can
+ * judge it (`open-questions.md` Q1). This panel is where a person sees it.
+ *
+ * ---------------------------------------------------------------------------
+ * WHY THERE IS NO TARGET LINE ON THIS SCREEN
+ * ---------------------------------------------------------------------------
+ * Deliberate, and worth stating so nobody adds one. The 5.0% → 2.5% curve is a
+ * figure in ONE tenant's financial model. It is not on the wire, no tenant
+ * configuration carries it, and hard-coding it here would put tenant #1's
+ * numbers into platform code — exactly what CLAUDE.md §2.9 and ADR-0006
+ * forbid. When a target belongs to a tenant it will arrive as tenant data and
+ * be rendered from that. Until then the screen shows what IS, and says so.
+ *
+ * ---------------------------------------------------------------------------
+ * ZERO, ABSENT, AND UNDEFINED ARE THREE DIFFERENT THINGS
+ * ---------------------------------------------------------------------------
+ * · nothing moved      → the cost really is zero and the ratio really is 0.0%,
+ *                        and the delivery count beside it says why.
+ * · freight not agreed  → the sum is a FLOOR. The row is marked, because a
+ *                        partial basis read as a complete one understates the
+ *                        very trajectory this panel exists to expose.
+ * · no revenue          → a percentage of nothing is undefined, not zero. The
+ *                        COST is still shown: a warehouse has no till and
+ *                        still pays hauliers, and dropping its spend is how a
+ *                        network ratio ends up flattering itself.
+ *
+ * Every figure is a `bigint` — money through `<Money>`, the percentage through
+ * `formatPercentE4`, which rounds once, in integer arithmetic (`lib/ratio.ts`).
+ * Nothing on this screen does arithmetic on a displayed value.
+ */
+
+/** The percentage cell: a ratio, an absence with the server's reason, or both. */
+function RatioCell({ line }: { readonly line: DistributionCostLine }): ReactNode {
+  if (line.distributionCostPctE4 === null) {
+    return <span className="figure-withheld">{withheld(line.unavailable)}</span>;
+  }
+  return (
+    <>
+      <span className="tabular">{formatPercentE4(line.distributionCostPctE4)}%</span>
+      {line.deliveriesWithNoAgreedFreight > 0 ? (
+        <span className="figure-withheld"> at least</span>
+      ) : null}
+    </>
+  );
+}
+
+/** The cost cell. A zero is printed as a zero ONLY when it is a real zero. */
+function CostCell({ line }: { readonly line: DistributionCostLine }): ReactNode {
+  if (line.distributionCostMinor === null) {
+    return <span className="figure-withheld">{withheld(line.unavailable)}</span>;
+  }
+  return <Money amount={line.distributionCostMinor} />;
+}
+
+/** How many loads the figure rests on — the zero-versus-gap tell. */
+function DeliveriesCell({ line }: { readonly line: DistributionCostLine }): ReactNode {
+  if (line.deliveryCount === 0) return <span className="figure-withheld">nothing moved</span>;
+  return (
+    <>
+      <span className="tabular">{String(line.deliveryCount)}</span>
+      {line.deliveriesWithNoAgreedFreight > 0 ? (
+        <span className="figure-withheld">
+          {' '}
+          ({String(line.deliveriesWithNoAgreedFreight)} with no agreed freight)
+        </span>
+      ) : null}
+    </>
+  );
+}
+
 function DistributionPanel({ from, to, apiOptions }: RangeProps): ReactNode {
   const { state, refresh } = useApiQuery(
     () => fetchDistributionCost({ from, to }, apiOptions),
@@ -493,7 +580,7 @@ function DistributionPanel({ from, to, apiOptions }: RangeProps): ReactNode {
   );
   return (
     <Panel
-      title="Distribution cost"
+      title="Cost of moving the goods"
       what="Distribution cost against revenue"
       state={state}
       onRetry={refresh}
@@ -501,9 +588,23 @@ function DistributionPanel({ from, to, apiOptions }: RangeProps): ReactNode {
       {state.status === 'ready' ? (
         <>
           <ScopeChip scope={state.data.scope} />
-          {/* The denominator is exact and is shown; the numerator does not
-              exist in this phase and is null, never zero — a zero would read
-              as the best logistics operation anyone has ever run. */}
+
+          {/* The headline: one ratio, for whatever this caller's scope is. */}
+          <p className="report-note">
+            <strong>
+              {state.data.total.distributionCostPctE4 === null ? (
+                <span className="figure-withheld">{withheld(state.data.total.unavailable)}</span>
+              ) : (
+                <span className="tabular">
+                  {formatPercentE4(state.data.total.distributionCostPctE4)}% of revenue
+                </span>
+              )}
+            </strong>{' '}
+            went on moving goods between {state.data.from} and {state.data.to} —{' '}
+            <CostCell line={state.data.total} /> against{' '}
+            <Money amount={state.data.total.netRevenueMinor} /> taken, net of tax.
+          </p>
+
           <div className="report-table-scroll">
             <table className="report-table">
               <thead>
@@ -511,6 +612,8 @@ function DistributionPanel({ from, to, apiOptions }: RangeProps): ReactNode {
                   <th scope="col">Location</th>
                   <th scope="col" className="numeric">Revenue, net of tax</th>
                   <th scope="col" className="numeric">Cost of moving goods</th>
+                  <th scope="col" className="numeric">As % of revenue</th>
+                  <th scope="col" className="numeric">Loads</th>
                 </tr>
               </thead>
               <tbody>
@@ -521,9 +624,9 @@ function DistributionPanel({ from, to, apiOptions }: RangeProps): ReactNode {
                       <span className="report-loc-code tabular">{l.locationCode}</span>
                     </th>
                     <td className="numeric"><Money amount={l.netRevenueMinor} /></td>
-                    <td className="numeric">
-                      <span className="figure-withheld">{withheld(l.unavailable)}</span>
-                    </td>
+                    <td className="numeric"><CostCell line={l} /></td>
+                    <td className="numeric"><RatioCell line={l} /></td>
+                    <td className="numeric"><DeliveriesCell line={l} /></td>
                   </tr>
                 ))}
               </tbody>
@@ -531,24 +634,34 @@ function DistributionPanel({ from, to, apiOptions }: RangeProps): ReactNode {
                 <tr>
                   <th scope="row">{totalLabel(state.data.scope)}</th>
                   <td className="numeric"><Money amount={state.data.total.netRevenueMinor} /></td>
-                  <td className="numeric">
-                    <span className="figure-withheld">{withheld(state.data.total.unavailable)}</span>
-                  </td>
+                  <td className="numeric"><CostCell line={state.data.total} /></td>
+                  <td className="numeric"><RatioCell line={state.data.total} /></td>
+                  <td className="numeric"><DeliveriesCell line={state.data.total} /></td>
                 </tr>
               </tfoot>
             </table>
           </div>
+
+          {/* PER REGION — or per whatever this tenant calls its grouping nodes.
+              The platform sees a GROUP node and renders the tenant's own name
+              for it; nothing here says "region" about a row (ADR-0006). */}
           {state.data.groups.length > 0 ? (
             <div className="report-table-scroll">
               <table className="report-table">
                 <caption>
-                  Groupings{state.data.groupsNest ? ' — these nest, so they do not add up to the total above' : ''}
+                  Groupings
+                  {state.data.groupsNest
+                    ? ' — these nest, so they do not add up to the total above'
+                    : ''}
                 </caption>
                 <thead>
                   <tr>
                     <th scope="col">Grouping</th>
                     <th scope="col" className="numeric">Locations</th>
                     <th scope="col" className="numeric">Revenue, net of tax</th>
+                    <th scope="col" className="numeric">Cost of moving goods</th>
+                    <th scope="col" className="numeric">As % of revenue</th>
+                    <th scope="col" className="numeric">Loads</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -560,13 +673,196 @@ function DistributionPanel({ from, to, apiOptions }: RangeProps): ReactNode {
                       </th>
                       <td className="numeric tabular">{String(g.locationCount)}</td>
                       <td className="numeric"><Money amount={g.netRevenueMinor} /></td>
+                      <td className="numeric"><CostCell line={g} /></td>
+                      <td className="numeric"><RatioCell line={g} /></td>
+                      <td className="numeric"><DeliveriesCell line={g} /></td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             </div>
           ) : null}
+
+          {/* THE DATING WARNING. A delivery dated by a device clock is dated by
+              something 03 §3.4.2 does not trust, and a ratio computed across a
+              period boundary inherits it. Said only when it actually happened. */}
+          {state.data.periodBasis.datedByDispatchClock +
+            state.data.periodBasis.datedByRowCreated >
+          0 ? (
+            <p className="adjust-rejected" role="status">
+              <Icon name="alert" size={18} />
+              <span>
+                {String(
+                  state.data.periodBasis.datedByDispatchClock +
+                    state.data.periodBasis.datedByRowCreated,
+                )}{' '}
+                of these deliveries carry no business date anybody asserted, so they were placed in
+                this period by a clock rather than by a person. Figures that straddle the start or
+                the end of the period inherit that.
+              </span>
+            </p>
+          ) : null}
+
           <p className="report-note">{state.data.unavailableReason}</p>
+          <p className="report-note">{state.data.method}</p>
+        </>
+      ) : null}
+    </Panel>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Haulage per carrier — the negotiating view, behind report.view.margin
+// ---------------------------------------------------------------------------
+
+/**
+ * ═══════════════════════════════════════════════════════════════════════════
+ * THE RATIO IS THE OUTCOME. THIS IS THE LEVER.
+ * ═══════════════════════════════════════════════════════════════════════════
+ * The panel above says what proportion of revenue went on moving goods.
+ * ADR-0001 gave up the owned fleet on the argument that third-party rates
+ * could be driven DOWN as volume grew — and a rate is driven down in one
+ * conversation, with one haulier, holding what that haulier has actually been
+ * agreed over a period and how many loads it was for. Without this split the
+ * founder can watch the ratio move and has nothing to act on.
+ *
+ * It is also ordinary accounts-payable-by-supplier, which is exactly why a
+ * carrier is a supplier here and never a truck (ADR-0001).
+ *
+ * ---------------------------------------------------------------------------
+ * A FLOOR IS NOT A TOTAL, AND THE ROW SAYS WHICH IT IS
+ * ---------------------------------------------------------------------------
+ * A load dispatched with no agreed freight contributes nothing to the sum. So
+ * a carrier's spend is a FLOOR whenever any of its loads went out with nothing
+ * agreed, and the row says "at least" — because walking into a rate
+ * negotiation with a figure that is quietly missing four loads is worse than
+ * walking in with no figure at all.
+ *
+ * The share of spend is computed in integer arithmetic from the two `bigint`
+ * sums, rounded ONCE, and nothing downstream computes with the rounded value.
+ * It is not derived from anything already rendered.
+ */
+function carrierSharePctE4(spendMinor: bigint, totalMinor: bigint): bigint | null {
+  if (totalMinor <= 0n) return null;
+  return divRound(spendMinor * 1_000_000n, totalMinor, 'half-up');
+}
+
+function CarrierPanel({ from, to, apiOptions }: RangeProps): ReactNode {
+  const input = useMemo(() => ({ from, to }), [from, to]);
+  const { state, refresh } = useApiQuery(
+    () => fetchHaulageSpend(input, apiOptions),
+    [input, apiOptions],
+  );
+  return (
+    <Panel
+      title="What each haulier has been agreed"
+      what="Haulage spend by carrier"
+      state={state}
+      onRetry={refresh}
+    >
+      {state.status === 'ready' ? (
+        <>
+          <ScopeChip scope={state.data.scope} />
+
+          <p className="report-note">
+            <strong>
+              <Money amount={state.data.total.haulageSpendMinor} />
+            </strong>{' '}
+            agreed across {String(state.data.total.deliveryCount)} load
+            {state.data.total.deliveryCount === 1 ? '' : 's'}
+            {state.data.total.deliveriesWithNoAgreedFreight > 0 ? (
+              <>
+                {' '}
+                — <span className="figure-withheld">at least</span>, because{' '}
+                {String(state.data.total.deliveriesWithNoAgreedFreight)} of them went out with
+                nothing agreed
+              </>
+            ) : null}
+            .
+          </p>
+
+          {state.data.carriers.length === 0 ? (
+            <div className="empty-state">
+              <Icon name="download" size={40} />
+              <span className="empty-title">No load was handed to anybody in this period</span>
+              <p className="empty-body">
+                Nothing moved through a haulier between these dates, so there is no rate to
+                negotiate from yet.
+              </p>
+            </div>
+          ) : (
+            <div className="report-table-scroll">
+              <table className="report-table">
+                <caption>
+                  Every haulier that carried a load in this period, most agreed first
+                </caption>
+                <thead>
+                  <tr>
+                    <th scope="col">Haulier</th>
+                    <th scope="col" className="numeric">Agreed</th>
+                    <th scope="col" className="numeric">Share of the spend</th>
+                    <th scope="col" className="numeric">Loads</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {state.data.carriers.map((c) => {
+                    const share = carrierSharePctE4(
+                      c.haulageSpendMinor,
+                      state.data.total.haulageSpendMinor,
+                    );
+                    return (
+                      <tr key={c.carrierSupplierId}>
+                        <th scope="row">
+                          <span className="report-loc-name">{c.carrierName}</span>
+                        </th>
+                        <td className="numeric">
+                          <Money amount={c.haulageSpendMinor} />
+                          {c.deliveriesWithNoAgreedFreight > 0 ? (
+                            <span className="figure-withheld"> at least</span>
+                          ) : null}
+                        </td>
+                        <td className="numeric">
+                          {share === null ? (
+                            <span className="figure-withheld">nothing agreed yet</span>
+                          ) : (
+                            <span className="tabular">{formatPercentE4(share)}%</span>
+                          )}
+                        </td>
+                        <td className="numeric tabular">
+                          {String(c.deliveryCount)}
+                          {c.deliveriesWithNoAgreedFreight > 0 ? (
+                            <span className="figure-withheld">
+                              {' '}
+                              ({String(c.deliveriesWithNoAgreedFreight)} with no agreed freight)
+                            </span>
+                          ) : null}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+                <tfoot>
+                  <tr>
+                    <th scope="row">{totalLabel(state.data.scope)}</th>
+                    <td className="numeric">
+                      <Money amount={state.data.total.haulageSpendMinor} />
+                    </td>
+                    <td className="numeric" />
+                    <td className="numeric tabular">
+                      {String(state.data.total.deliveryCount)}
+                    </td>
+                  </tr>
+                </tfoot>
+              </table>
+            </div>
+          )}
+
+          {/* WHAT THE FIGURE IS, in the server's own words rather than a
+              paraphrase that could drift from it. An agreed rate is not an
+              invoice, and a rate conversation held against the wrong one is a
+              conversation about the wrong number. */}
+          <p className="report-note">{state.data.method}</p>
+          <p className="report-note">{state.data.periodBasis.note}</p>
         </>
       ) : null}
     </Panel>
@@ -677,6 +973,16 @@ function ReportsFor({
             <DistributionPanel from={activeFrom} to={activeTo} apiOptions={options} />
           ) : (
             <NotYours title="Distribution cost" what="What it costs to move goods" />
+          )}
+          {/* The ratio above is the outcome; this is the lever ADR-0001 traded
+              the fleet for. Same capability, because it is the same money. */}
+          {canSeeMargin ? (
+            <CarrierPanel from={activeFrom} to={activeTo} apiOptions={options} />
+          ) : (
+            <NotYours
+              title="What each haulier has been agreed"
+              what="What each haulier is paid"
+            />
           )}
         </>
       )}
