@@ -568,44 +568,46 @@ describe('reconciliation settles', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Settled, and still not sellable — the refusal that keeps the bug closed
+// A tax-inclusive default — the refusal that WAS here, and why it is gone
 // ---------------------------------------------------------------------------
 
-describe('a configured default this build cannot ring against', () => {
-  it('refuses a tax-inclusive list instead of binding it', async () => {
-    // Tenant #1's real configuration, as the dev stack seeds it: the
-    // best-ranked list carries tax-inclusive shelf prices. Neither
-    // `lineNetMinor` here nor `sales.createSale` there can price one yet, so
-    // binding it would put the counter straight back to recording sales the
-    // upload rejects.
+describe('a configured default whose prices already include tax', () => {
+  it('binds it, where it used to refuse', async () => {
+    // Tenant #1's real configuration, as the shipped template seeds it: the
+    // best-ranked list carries tax-inclusive shelf prices. This gate answered
+    // `status: 'unsupported'` and cleared the device — correct while nothing
+    // could de-gross a shelf price, and a launch blocker the moment extraction
+    // existed, because it left the counter unable to trade at all.
     const db = openTestDb();
     await provisionLocation(db);
-    await seedPriceList(db, { code: 'RETAIL', priority: 10, taxInclusive: true });
+    const retail = await seedPriceList(db, { code: 'RETAIL', priority: 10, taxInclusive: true });
     await seedPriceList(db, { code: 'WHOLESALE', priority: 20 });
 
     const state = await reconcileDevicePriceList(db, devBearer([uuidv7()]), NOW);
 
-    expect(state.status).toBe('unsupported');
-    expect(blocksSales(state)).toBe(true);
-    expect(await readActivePriceListId(db)).toBeNull();
-    expect(state.message).toContain('include tax');
+    expect(state.status).toBe('provisioned');
+    expect(state.priceListId).toBe(retail);
+    expect(blocksSales(state)).toBe(false);
+    expect(await readActivePriceListId(db)).toBe(retail);
+    expect(state.message).toBeNull();
   });
 
-  it('does NOT quietly fall through to the next list down', async () => {
-    // The single most damaging thing this module could do: charge every
-    // walk-in customer off a list the tenant did not choose for them.
+  it('still does NOT fall through to the next list down', async () => {
+    // The single most damaging thing this module could do — charge every
+    // walk-in customer off a list the tenant did not choose for them — is
+    // still not done. The best-ranked list wins because it is best-ranked.
     const db = openTestDb();
     await provisionLocation(db);
-    await seedPriceList(db, { code: 'RETAIL', priority: 10, taxInclusive: true });
+    const retail = await seedPriceList(db, { code: 'RETAIL', priority: 10, taxInclusive: true });
     const wholesale = await seedPriceList(db, { code: 'WHOLESALE', priority: 20 });
 
     const state = await reconcileDevicePriceList(db, devBearer([uuidv7()]), NOW);
 
+    expect(state.priceListId).toBe(retail);
     expect(state.priceListId).not.toBe(wholesale);
-    expect(state.choices.map((c) => c.code)).toEqual(['RETAIL']);
   });
 
-  it('drops a stored tax-inclusive list it was previously pointed at', async () => {
+  it('keeps a stored tax-inclusive list it was already pointed at', async () => {
     const db = openTestDb();
     await provisionLocation(db);
     const retail = await seedPriceList(db, { code: 'RETAIL', priority: 10, taxInclusive: true });
@@ -613,14 +615,12 @@ describe('a configured default this build cannot ring against', () => {
 
     const state = await reconcileDevicePriceList(db, devBearer([uuidv7()]), NOW);
 
-    expect(state.status).toBe('unsupported');
-    expect(state.replacedPriceListId).toBe(retail);
-    expect(await readActivePriceListId(db)).toBeNull();
+    expect(state.status).toBe('confirmed');
+    expect(state.replacedPriceListId).toBeNull();
+    expect(await readActivePriceListId(db)).toBe(retail);
   });
 
-  it('reports the same refusal when one is chosen by hand, rather than throwing', async () => {
-    // Tapping an offered list is not a mistake by whoever tapped it; it is the
-    // same configuration problem, and it deserves the same sentence.
+  it('takes one chosen by hand out of a tie', async () => {
     const db = openTestDb();
     await provisionLocation(db);
     const retail = await seedPriceList(db, { code: 'RETAIL', priority: 10, taxInclusive: true });
@@ -628,8 +628,8 @@ describe('a configured default this build cannot ring against', () => {
 
     const state = await chooseDevicePriceList(db, devBearer([uuidv7()]), retail, NOW);
 
-    expect(state.status).toBe('unsupported');
-    expect(await readActivePriceListId(db)).toBeNull();
+    expect(state.status).toBe('confirmed');
+    expect(await readActivePriceListId(db)).toBe(retail);
   });
 
   it('takes a tax-exclusive list from the same tie without complaint', async () => {
@@ -642,6 +642,107 @@ describe('a configured default this build cannot ring against', () => {
 
     expect(state.status).toBe('confirmed');
     expect(state.priceListId).toBe(trade);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// THE REFUSALS THAT ARE STILL REAL. Removing the tax-inclusive one must not
+// have loosened any of these: each has a cause that has nothing to do with tax
+// and that no amount of arithmetic in @erp/money addresses.
+// ---------------------------------------------------------------------------
+
+describe('the refusals that survive', () => {
+  it('still refuses a TIE at the best ranking, tax convention notwithstanding', async () => {
+    // Two lists the tenant ranked equally are two lists the platform has no
+    // basis to choose between. Both inclusive here, so the only thing that
+    // could have "resolved" the tie is the removed rule — it must not.
+    const db = openTestDb();
+    await provisionLocation(db);
+    await seedPriceList(db, { code: 'RETAIL', priority: 10, taxInclusive: true });
+    await seedPriceList(db, { code: 'COUNTER', priority: 10, taxInclusive: true });
+
+    const state = await reconcileDevicePriceList(db, devBearer([uuidv7()]), NOW);
+
+    expect(state.status).toBe('ambiguous');
+    expect(blocksSales(state)).toBe(true);
+    expect(state.choices.map((c) => c.code).sort()).toEqual(['COUNTER', 'RETAIL']);
+    expect(await readActivePriceListId(db)).toBeNull();
+  });
+
+  it('still refuses when lists exist and none covers this counter today', async () => {
+    const db = openTestDb();
+    await provisionLocation(db);
+    await seedPriceList(db, { code: 'ELSEWHERE', priority: 10, locationId: uuidv7() });
+    await seedPriceList(db, { code: 'LAPSED', priority: 20, effectiveTo: TODAY });
+
+    const state = await reconcileDevicePriceList(db, devBearer([uuidv7()]), NOW);
+
+    expect(state.status).toBe('unconfigured');
+    expect(blocksSales(state)).toBe(true);
+  });
+
+  it('still WAITS when no tenant list has arrived yet', async () => {
+    const db = openTestDb();
+    await provisionLocation(db);
+    // A local-only placeholder is not tenant configuration; it must not count.
+    await seedPriceList(db, { code: 'PLACEHOLDER', priority: 1, synced: false });
+
+    const state = await reconcileDevicePriceList(db, devBearer([uuidv7()]), NOW);
+
+    expect(state.status).toBe('awaiting-config');
+    expect(blocksSales(state)).toBe(true);
+  });
+
+  it('still refuses when the device has no location', async () => {
+    const db = openTestDb();
+    await seedPriceList(db, { code: 'RETAIL', priority: 10, taxInclusive: true });
+
+    const state = await reconcileDevicePriceList(db, devBearer([uuidv7()]), NOW);
+
+    expect(state.status).toBe('location-unknown');
+    expect(blocksSales(state)).toBe(true);
+  });
+
+  it('still refuses a hand-picked list this counter is not offered', async () => {
+    const db = openTestDb();
+    const locationId = await provisionLocation(db);
+    await seedPriceList(db, { code: 'OURS', priority: 10, taxInclusive: true });
+    const elsewhere = await seedPriceList(db, {
+      code: 'ELSEWHERE',
+      priority: 1,
+      locationId: uuidv7(),
+      taxInclusive: true,
+    });
+
+    await expect(
+      chooseDevicePriceList(db, devBearer([locationId]), elsewhere, NOW),
+    ).rejects.toBeInstanceOf(PriceListChoiceNotOfferedError);
+  });
+
+  it('still refuses a CART pinned to a list that lapsed overnight', async () => {
+    const db = openTestDb();
+    await provisionLocation(db);
+    const lapsed = await seedPriceList(db, {
+      code: 'LAPSED',
+      priority: 10,
+      taxInclusive: true,
+      effectiveTo: TODAY,
+    });
+
+    const state = await resolveCartPriceList(db, lapsed, NOW);
+
+    expect(state.status).toBe('not-offered');
+    expect(blocksSale(state)).toBe(true);
+  });
+
+  it('still refuses a CART pinned to a row that is gone', async () => {
+    const db = openTestDb();
+    await provisionLocation(db);
+
+    const state = await resolveCartPriceList(db, uuidv7(), NOW);
+
+    expect(state.status).toBe('unrecognised');
+    expect(blocksSale(state)).toBe(true);
   });
 });
 

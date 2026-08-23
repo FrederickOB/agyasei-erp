@@ -55,6 +55,24 @@ export function creditCounts(dbPath: string): Record<string, number> {
   }
 }
 
+/**
+ * How many synced data tables in this device file actually hold rows.
+ *
+ * The positive control for an ABSENCE claim: "no credit book on this device"
+ * means nothing if the device never synced at all, and a count of empty tables
+ * would not tell them apart. This counts tables with rows, so a zero credit
+ * book beside a non-zero everything-else is a gate doing its job rather than a
+ * device that failed to connect.
+ */
+export function nonEmptyDataTables(dbPath: string): number {
+  const raw = new RawDeviceDb(dbPath);
+  try {
+    return raw.dataTables().filter((t) => raw.countRows(t) > 0).length;
+  } finally {
+    raw.close();
+  }
+}
+
 /** Distinct values of a JSON field in one credit table on disk. */
 export function distinctOnDisk(dbPath: string, table: string, field: string): string[] {
   const raw = new RawDeviceDb(dbPath);

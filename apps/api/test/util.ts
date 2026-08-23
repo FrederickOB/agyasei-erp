@@ -101,6 +101,19 @@ export interface ApiHarness {
     unitPriceE4: bigint,
     effectiveFrom?: string,
   ): Promise<void>;
+  /**
+   * Seed a price on ANY of the template's lists for a product's default sell
+   * unit — `RETAIL` is the tax-INCLUSIVE one (priority 10, the list tenant #1's
+   * counter actually resolves), `WHOLESALE` the exclusive one. The price means
+   * whatever the list says it means: a shelf price on RETAIL, a net on WHOLESALE.
+   */
+  seedListPrice(
+    tenantId: string,
+    priceListCode: string,
+    productId: string,
+    unitPriceE4: bigint,
+    effectiveFrom?: string,
+  ): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -424,13 +437,24 @@ export async function createApiHarness(): Promise<ApiHarness> {
     unitPriceE4: bigint,
     effectiveFrom = '2019-01-01',
   ): Promise<void> {
+    return seedListPrice(tenantId, 'WHOLESALE', productId, unitPriceE4, effectiveFrom);
+  }
+
+  async function seedListPrice(
+    tenantId: string,
+    priceListCode: string,
+    productId: string,
+    unitPriceE4: bigint,
+    effectiveFrom = '2019-01-01',
+  ): Promise<void> {
     await db.withTenant(tenantId, async (tx) => {
       const writeId = await serverWrite(tx, tenantId, 'test.price_seed');
       const list = await tx.query<{ id: string }>(
-        `select id from app.price_list where code = 'WHOLESALE' and deleted_at is null`,
+        `select id from app.price_list where code = $1 and deleted_at is null`,
+        [priceListCode],
       );
-      if (!list.rows[0]) throw new Error('WHOLESALE price list missing — template not applied?');
-      // The template seeds the WHOLESALE price LIST from 2026-08-01 (tenant
+      if (!list.rows[0]) throw new Error(`${priceListCode} price list missing — template not applied?`);
+      // The template seeds the price LISTS from 2026-08-01 (tenant
       // #1's launch). Tax-boundary and money-property tests sell on earlier
       // business dates, so widen the tenant-owned list's validity back to the
       // item's start — ordinary tenant configuration, done under the tenant's
@@ -476,6 +500,7 @@ export async function createApiHarness(): Promise<ApiHarness> {
     firstOutlet,
     pickProduct,
     seedWholesalePrice,
+    seedListPrice,
     rootLocation,
     grantOwner,
     grantRole,

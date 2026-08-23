@@ -94,8 +94,9 @@ is allowed to make (`apps/web/src/data/session/`). Expect, for tenant A at `OUT-
 
 The prices are **dev fixtures** seeded by the bootstrap, not tenant data: a template seeds price
 list structure and deliberately no prices, so a freshly-bootstrapped stack has a catalogue nothing
-can be rung from. See `infra/scripts/dev-prices.ts` — including why it makes the counter list
-tax-EXCLUSIVE, which is a fixture standing in for pricing support the platform does not have yet.
+can be rung from. See `infra/scripts/dev-prices.ts`. It supplies prices and **nothing else**: the
+counter list ships tax-INCLUSIVE and stays that way, so the dev stack runs the same price-list
+configuration a real tenant does and a shelf price is de-grossed at the till and on the server.
 
 ---
 
@@ -172,10 +173,12 @@ against a different `DEV_JWT_SECRET`. Mint a fresh one.
 **Web shows no data** — with no `.env.local` that is correct (local-only mode). For sync mode,
 confirm all three `VITE_` values are set and the API is up.
 
-**A till that says its price list "uses prices that already include tax"** — correct, and not a
-bug in the device. Neither the client nor `sales.createSale` can ring a tax-inclusive list; the
-bootstrap's dev-price step flips the dev database's counter list to tax-exclusive so the till runs.
-Re-run `pnpm stack:bootstrap` if you are seeing this on a stack seeded before that step existed.
+**A till that refuses because its price list "uses prices that already include tax"** — this no
+longer happens, and if you see it you are on a build from before 2026-08-23. Tax-inclusive shelf
+prices are de-grossed at the till (`apps/web/src/data/pricing/`) and on the server
+(`apps/api/src/tax.ts`), against the jurisdiction pack's declared composition. The bootstrap no
+longer flips the counter list to tax-exclusive either — the dev stack runs the same configuration
+a real tenant does. `pnpm --filter @erp/wire-conformance drill:inclusive` proves it end to end.
 
 **A till stuck on "still receiving its price lists"** — that gate clears itself when the tenant's
 `price_list` rows arrive, so a device that sits on it forever is not downloading. Historically the

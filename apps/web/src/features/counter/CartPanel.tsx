@@ -18,7 +18,11 @@
  */
 import { useState, type ReactNode } from 'react';
 import type { CartLineRow } from '../../data/queries/cart';
-import { cartTotalMinor, lineTotalMinor } from '../../data/mutations/checkout';
+import {
+  lineTotalMinor,
+  priceCart,
+  type CartPricing,
+} from '../../data/pricing/cart-pricing';
 import { formatQtyScaled, oneWholeUnit } from '../../lib/quantity';
 import { Money } from '../../money/Money';
 import { Icon } from '../../ui/Icon';
@@ -34,6 +38,7 @@ export function CartPanel({
   onUndoRemove,
   removed,
   onTakePayment,
+  pricing,
   sellable = true,
   variant = 'dock',
   modal = false,
@@ -45,6 +50,12 @@ export function CartPanel({
   readonly onUndoRemove: () => void;
   readonly removed: RemovedLine | null;
   readonly onTakePayment: () => void;
+  /**
+   * What the cart comes to, and its tax split when this device can state one
+   * (data/pricing/cart-pricing.ts). Passed in rather than recomputed here so
+   * the footer, the amount due and the recorded sale are one number.
+   */
+  readonly pricing?: CartPricing;
   /**
    * False when this cart's price list is not one the counter may sell from
    * (data/session/device-price-list.ts). The lines stay on screen — they are
@@ -104,10 +115,7 @@ export function CartPanel({
       ) : null}
 
       <footer className="cart-footer">
-        <div className="total-row">
-          <span className="total-label">Total</span>
-          <Money amount={cartTotalMinor(lines)} className="money total-value cart-total" />
-        </div>
+        <CartTotals pricing={pricing ?? priceCart(lines)} />
         <button
           type="button"
           className="primary-action pressable"
@@ -118,6 +126,48 @@ export function CartPanel({
         </button>
       </footer>
     </section>
+  );
+}
+
+/**
+ * The footer's money, in the order a customer asks for it.
+ *
+ * On a tax-EXCLUSIVE list the lines above are net, so the tax has to be shown
+ * for the total to make sense — otherwise the arithmetic on screen does not
+ * add up and a cashier is left defending a number they cannot derive. On a
+ * tax-INCLUSIVE list the total IS the sum of the shelf prices, so it stands
+ * alone and the tax is noted beneath it as the receipt has to state it.
+ *
+ * When this device cannot state the split, nothing is shown but the total.
+ * A zero tax line would be a claim, not a blank.
+ */
+function CartTotals({ pricing }: { readonly pricing: CartPricing }): ReactNode {
+  const breakdown = pricing.breakdown;
+  const showsTax = breakdown !== null && breakdown.taxTotalMinor !== 0n;
+  return (
+    <>
+      {showsTax && !pricing.isTaxInclusive ? (
+        <>
+          <div className="total-row subtotal-row">
+            <span className="total-label">Subtotal</span>
+            <Money amount={breakdown.netMinor} className="money cart-subtotal" />
+          </div>
+          <div className="total-row subtotal-row">
+            <span className="total-label">Tax</span>
+            <Money amount={breakdown.taxTotalMinor} className="money cart-tax" />
+          </div>
+        </>
+      ) : null}
+      <div className="total-row">
+        <span className="total-label">Total</span>
+        <Money amount={pricing.grossMinor} className="money total-value cart-total" />
+      </div>
+      {showsTax && pricing.isTaxInclusive ? (
+        <p className="total-note">
+          Includes tax <Money amount={breakdown.taxTotalMinor} className="money cart-tax" />
+        </p>
+      ) : null}
+    </>
   );
 }
 

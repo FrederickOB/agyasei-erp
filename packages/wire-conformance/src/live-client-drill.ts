@@ -139,6 +139,15 @@ async function main(): Promise<void> {
       [locationId],
     );
     if (loc === undefined) throw new Error('the token names a location that does not exist');
+    // THE TAX-EXCLUSIVE LIST, ON PURPOSE — and no longer for the old reason.
+    // This filter used to be the only way a drill could ring anything: the
+    // best-ranked list was tax-inclusive and neither side could price one. That
+    // is fixed, and D17 (`drill:inclusive`) rings the counter's REAL default,
+    // inclusive, on tenant #1's own configuration. This drill keeps the
+    // exclusive list so the two directions of §4.13 are both exercised live —
+    // compose tax onto a net here, de-gross a shelf price there. `priority desc`
+    // picks the worst-ranked list deliberately: it is the one a counter would
+    // NOT resolve, which keeps this drill and D17 on different data.
     const [list] = await scoped<{ code: string; id: string }>(
       `select id, code from app.price_list
         where deleted_at is null and is_tax_inclusive = false

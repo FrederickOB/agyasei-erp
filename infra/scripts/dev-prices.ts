@@ -33,6 +33,12 @@
  * Writes take the ONE write path: a SERVER-origin `app.write_log` row first,
  * then the items, under the tenant's own RLS context. Idempotent by
  * construction — every id is derived, so a re-run inserts nothing.
+ *
+ * WHAT THIS FILE DOES NOT DO ANY MORE. It used to flip every tax-INCLUSIVE
+ * price list to exclusive so the counter could ring one. It does not, and must
+ * never again: the flip made the dev stack the only place in the world running
+ * that configuration, and every live drill was green against it while the
+ * pilot's own best-ranked list could not be sold from at all.
  */
 import {
   createHlcClock,
@@ -99,8 +105,14 @@ interface PricedProduct {
 export interface DevPriceResult {
   readonly items: number;
   readonly lists: readonly string[];
-  /** Lists this had to make tax-EXCLUSIVE to be sellable. See below. */
-  readonly madeExclusive: readonly string[];
+  /**
+   * Lists whose shelf prices already contain tax, reported so the bootstrap can
+   * say out loud that the dev stack carries the SAME configuration a real
+   * tenant does. This used to be `madeExclusive` — the list of price lists this
+   * fixture quietly rewrote. It no longer rewrites anything; see the note above
+   * `applyDevPrices`.
+   */
+  readonly inclusiveLists: readonly string[];
 }
 
 /**
@@ -111,30 +123,23 @@ export interface DevPriceResult {
 export async function applyDevPrices(tx: SqlClient, tenantId: string): Promise<DevPriceResult> {
   const clock = createHlcClock(hlcNodeFromName(`${SEED_NS}:${tenantId}`));
 
-  // ── THE TAX-INCLUSIVE GAP, STATED RATHER THAN PAPERED OVER ───────────────
-  // Neither this client nor `sales.createSale` can ring a list whose shelf
-  // prices already contain tax: nothing extracts tax back out of a gross
-  // price, and both refuse rather than approximate it (ADR-0004 — rounding is
-  // explicit at every boundary). The construction template marks its counter
-  // list tax-inclusive, which is what a Ghanaian retail shelf price actually
-  // is, so a bootstrapped dev tenant resolves to a list the platform cannot
-  // sell from and the till stops at its price-list gate.
+  // ── THE TAX-INCLUSIVE LISTS ARE LEFT ALONE ───────────────────────
+  // This block used to `update app.price_list set is_tax_inclusive = false` on
+  // every inclusive list, because neither the client nor `sales.createSale`
+  // could de-gross a shelf price and the counter therefore stopped at its
+  // price-list gate. It was announced on every run and it was still a fixture
+  // that made the dev stack a configuration NO tenant runs — which meant every
+  // live drill was green over a launch blocker it could not rediscover.
   //
-  // A DEV DATABASE gets the flip so the counter runs. This is a fixture, not a
-  // fix: the shipped template is untouched, `pnpm stack:reset` re-applies it
-  // inclusive, and the real answer is inclusive-price support in the pricing
-  // work-package (a jurisdiction question, not a data-entry one). When that
-  // lands, delete this block — the loud line it prints is the reminder.
-  const inclusive = await tx.query<{ id: string; code: string }>(
-    `select id, code from app.price_list where deleted_at is null and is_tax_inclusive`,
+  // Inclusive pricing landed (@erp/money `extractTaxFromGross`, `apps/api`
+  // `extractLineTaxes`, `apps/web` `data/pricing/`), so the flip is deleted
+  // rather than kept behind a flag: a dev stack that does not reproduce the
+  // pilot's own price lists cannot be evidence about the pilot. What this
+  // fixture supplies is prices; what a list means is the tenant's own data.
+  const inclusive = await tx.query<{ code: string }>(
+    `select code from app.price_list where deleted_at is null and is_tax_inclusive
+      order by priority, code`,
   );
-  for (const list of inclusive.rows) {
-    await tx.query(
-      `update app.price_list set is_tax_inclusive = false, updated_at = transaction_timestamp()
-        where tenant_id = $1 and id = $2`,
-      [tenantId, list.id],
-    );
-  }
 
   const lists = await tx.query<{ id: string; code: string }>(
     `select id, code from app.price_list where deleted_at is null order by priority, code`,
@@ -201,6 +206,6 @@ export async function applyDevPrices(tx: SqlClient, tenantId: string): Promise<D
   return {
     items,
     lists: lists.rows.map((l) => l.code),
-    madeExclusive: inclusive.rows.map((l) => l.code),
+    inclusiveLists: inclusive.rows.map((l) => l.code),
   };
 }

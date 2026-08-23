@@ -14,6 +14,7 @@
  * distinguishes a real permission model from a role enum with the names
  * changed.
  */
+import { readFile } from 'node:fs/promises';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   BRIEF_RESTRICTED_PERMISSIONS,
@@ -25,8 +26,9 @@ import {
 import { applyTemplate, applyTenant1Locations, TEMPLATE_ID } from '../src/seed/template.js';
 import { TEMPLATE_ROLES } from '../src/seed/roles.js';
 import { createTenant, type TestDb } from '../src/testing/harness.js';
+import { uuidv7 } from '../src/ids.js';
 import { assignRole, makeUser } from './rbac-fixtures.js';
-import { setupDb } from './util.js';
+import { newWrite, nextHlc, setupDb } from './util.js';
 
 const T1 = '018f0000-0000-8000-8000-0000000000f1';
 
@@ -305,53 +307,111 @@ describe('THE TWO HARD PROHIBITIONS, resolved from data', () => {
  * `02-security-and-access-control` §2.5: THE RIGHT TO SEE SOMETHING IS NOT THE
  * RIGHT TO HAVE IT ON YOUR DEVICE. `docs/credit-offline-plan.md` R1.b says so
  * in as many words — "`credit.view` must never be in the counter-staff or
- * outlet-manager template role" — and `infra/powersync/sync_rules.yaml` repeats
- * it above the `tenant_credit` bucket.
+ * outlet-manager template role" — §2's own template table gives `credit.read`
+ * (this catalogue's `credit.view`) to Accounts and to nobody else, and
+ * `infra/powersync/sync_rules.yaml` repeats it above the `tenant_credit` bucket.
  *
- * The shipped template grants it to **Outlet manager** and **Regional
- * manager** as well as Accounts. These tests PIN that, they do not endorse it:
- * the exposure is real, it is named in §6 of `docs/phase1-status.md`, and
- * removing the grant is a product decision (it also removes the ONLINE credit
- * reads those roles have today, and `app.credit_allowance` — the counter's
- * intended replacement — is deliberately unpopulated until 06 §6.7's cap
- * leases exist). When that decision is taken, these two tests go red and say
- * exactly what to change.
+ * The template used to grant it to Outlet manager and Regional manager as well.
+ * These tests no longer PIN that divergence — they ENFORCE its absence, which is
+ * the only durable protection available: the database cannot forbid the grant
+ * (CLAUDE.md §2.9 — a tenant may compose whatever role it likes, and one whose
+ * org chart genuinely puts the book in a branch office may), so the guard has to
+ * sit on THIS FILE. Re-adding the code to either role turns the first test red
+ * and names the role that did it.
  *
- * The mitigation that IS in force is the residency gate: only a grant at the
- * tenant ROOT confers the book. An outlet manager assigned at their outlet, or
- * a regional manager at their region, receives nothing — proven in
- * `credit-position.test.ts`, "admits a ROOT-scoped credit.view holder and
- * refuses an OUTLET-scoped one".
+ * Two layers, and both are needed:
+ *   1. the TEMPLATE (here) — the code is not granted to a counter or outlet role
+ *      in the first place, so no assignment scope can confer the book;
+ *   2. the RESIDENCY GATE (migration 0013) — only a grant at the tenant ROOT
+ *      confers it, so even a root-happy tenant assigning Accounts at a leaf gets
+ *      nothing. Proven below and in `credit-position.test.ts`, "admits a
+ *      ROOT-scoped credit.view holder and refuses an OUTLET-scoped one".
  */
-describe('credit.view is now a device-residency decision, not only a read', () => {
-  it('PINNED: three template roles hold credit.view — R1.b says exactly one should', () => {
+describe('credit.view is a device-residency decision, not only a read', () => {
+  it('exactly ONE template role holds credit.view — Accounts', () => {
     const holders = TEMPLATE_ROLES.filter((r) =>
       r.permissions.some((p) => p.code === 'credit.view'),
     )
       .map((r) => r.ref)
       .sort();
-    expect(holders).toEqual(['accounts', 'outlet_manager', 'regional_manager']);
+    expect(holders).toEqual(['accounts']);
   });
 
-  it('a ROOT-scoped outlet manager is in the credit sync book scope; the same role at an OUTLET is not', async () => {
-    const atRoot = await db.withTenant(T1, (tx) => makeUser(tx, T1, 'tpl-om-root'));
-    const atOutlet = await db.withTenant(T1, (tx) => makeUser(tx, T1, 'tpl-om-outlet'));
-    const om = roleIdByRef.get('outlet_manager')!;
+  it('NEITHER the counter-staff NOR the outlet-manager role grants credit.view — R1.b, verbatim', () => {
+    // Named separately from the test above, and asserted per role, so a future
+    // seed edit gets a failure that says WHICH role reintroduced it rather than
+    // an array diff. This is the regression guard the fix is worth nothing
+    // without: the template is the only place this rule can live.
+    for (const ref of ['counter_staff', 'outlet_manager'] as const) {
+      const role = TEMPLATE_ROLES.find((r) => r.ref === ref)!;
+      const codes = role.permissions.map((p) => p.code);
+      expect(codes, `${ref} must not grant credit.view (credit-offline-plan R1.b)`).not.toContain(
+        'credit.view',
+      );
+    }
+  });
+
+  it('the regional-manager role does not inherit it through the spread either', () => {
+    // It is composed as OUTLET_MANAGER.permissions minus two codes, so removing
+    // the grant upstream silently removes it here too. Assert it, because the
+    // next person to re-add a code to the outlet role will not be thinking
+    // about this one — and a regional manager's tablet travels across six
+    // regions, which is a field device, not a back office.
+    const regional = TEMPLATE_ROLES.find((r) => r.ref === 'regional_manager')!;
+    expect(regional.permissions.map((p) => p.code)).not.toContain('credit.view');
+  });
+
+  it('a ROOT-scoped OUTLET MANAGER is now OUT of the credit sync book scope, and a ROOT-scoped ACCOUNTS user is in it', async () => {
+    // The positive control and the refusal come from ONE query in ONE run, so
+    // "the manager is absent" cannot mean "the projection is empty" or "the
+    // fixture never ran". Both users sit at the SAME node — the tenant root,
+    // the only scope that confers the book at all — so the ONLY thing that
+    // differs is the role's composition. This is the test the template fix
+    // exists to turn green; before it, the manager was in this list.
+    const managerAtRoot = await db.withTenant(T1, (tx) => makeUser(tx, T1, 'tpl-om-root'));
+    const accountsAtRoot = await db.withTenant(T1, (tx) => makeUser(tx, T1, 'tpl-acc-root'));
     await db.withTenant(T1, (tx) =>
-      assignRole(tx, T1, { userId: atRoot, roleId: om, scopeLocationId: rootLoc }),
+      assignRole(tx, T1, {
+        userId: managerAtRoot,
+        roleId: roleIdByRef.get('outlet_manager')!,
+        scopeLocationId: rootLoc,
+      }),
     );
     await db.withTenant(T1, (tx) =>
-      assignRole(tx, T1, { userId: atOutlet, roleId: om, scopeLocationId: flagship }),
+      assignRole(tx, T1, {
+        userId: accountsAtRoot,
+        roleId: roleIdByRef.get('accounts')!,
+        scopeLocationId: rootLoc,
+      }),
     );
     const held = await db.withTenant(T1, (tx) =>
       tx.query<{ user_id: string }>(
         `select user_id from app.credit_sync_book_scope where user_id = any($1::uuid[])`,
-        [[atRoot, atOutlet]],
+        [[managerAtRoot, accountsAtRoot]],
       ),
     );
-    // The positive control and the refusal come from ONE query in ONE run:
-    // this is the residency gate doing the narrowing the template does not.
-    expect(held.rows.map((r) => r.user_id)).toEqual([atRoot]);
+    expect(held.rows.map((r) => r.user_id)).toEqual([accountsAtRoot]);
+  });
+
+  it('the residency gate still narrows the role that DOES hold it — Accounts at an OUTLET receives nothing', async () => {
+    // The second layer, on the role that legitimately carries the code. A
+    // credit account has no location (06 §6.5), so an outlet-scoped grant is a
+    // right the tenant-keyed bucket cannot express and must not serve.
+    const accountsAtOutlet = await db.withTenant(T1, (tx) => makeUser(tx, T1, 'tpl-acc-outlet'));
+    await db.withTenant(T1, (tx) =>
+      assignRole(tx, T1, {
+        userId: accountsAtOutlet,
+        roleId: roleIdByRef.get('accounts')!,
+        scopeLocationId: flagship,
+      }),
+    );
+    const held = await db.withTenant(T1, (tx) =>
+      tx.query<{ user_id: string }>(
+        `select user_id from app.credit_sync_book_scope where user_id = $1`,
+        [accountsAtOutlet],
+      ),
+    );
+    expect(held.rows).toEqual([]);
   });
 
   it('counter staff hold sale.record.credit and NOT credit.view — the counter never gets the book', () => {
@@ -359,5 +419,158 @@ describe('credit.view is now a device-residency decision, not only a read', () =
     const codes = counter.permissions.map((p) => p.code);
     expect(codes).toContain('sale.record.credit');
     expect(codes).not.toContain('credit.view');
+  });
+
+  it('an outlet manager keeps the capability that lets them SELL on credit — the fix removes a read, not their job', () => {
+    // Stated as its own assertion because the failure mode of over-correcting
+    // here is a role that cannot do the work: `sale.record.credit` with its
+    // bound is what "credit sales up to a set limit" means, and it is also the
+    // gate on `location_credit_allowance` (credit-offline-plan R1.a) — the
+    // narrower, per-location headroom slice that replaces the book at the till
+    // once 06 §6.7's cap leases exist.
+    const manager = TEMPLATE_ROLES.find((r) => r.ref === 'outlet_manager')!;
+    const credit = manager.permissions.find((p) => p.code === 'sale.record.credit');
+    expect(credit?.bound).toEqual({ max_order_value_minor: '500000' });
+    expect(manager.permissions.map((p) => p.code)).toContain('customer.view');
+  });
+});
+
+/**
+ * ═══════════════════════════════════════════════════════════════════════════
+ * MIGRATION 0014 — THE OTHER HALF OF THE FIX
+ * ═══════════════════════════════════════════════════════════════════════════
+ * The seed correction above protects tenants provisioned from tomorrow. Every
+ * tenant provisioned before it is still carrying the grant, and its devices are
+ * still holding the book — so the fix is only real if the migration's predicate
+ * matches the rows `applyTemplate` actually wrote. That is what these two tests
+ * check, by rebuilding the pre-fix row exactly as the applier built it (same
+ * role, same `write_id`, same `origin`/`op` on the write-log entry) and running
+ * the migration file itself.
+ *
+ * The second test is the one that stops this migration being too blunt: a grant
+ * the TENANT added is a decision the tenant owns (ADR-0006) and the platform
+ * must not silently revoke it. 0014 warns and leaves it.
+ *
+ * Placed last in the file: it mutates T1's role rows, so nothing may run after.
+ */
+describe('migration 0014 withdraws the grant from a tenant already provisioned', () => {
+  const MIGRATION = new URL(
+    '../migrations/0014_credit_view_template_correction.sql',
+    import.meta.url,
+  );
+
+  let managerAtRoot: string;
+  let regionalAtRoot: string;
+
+  beforeAll(async () => {
+    const templateWrite = await db.withTenant(T1, (tx) =>
+      tx.query<{ id: string }>(
+        `select id from app.write_log where op = 'template.apply:roles' and origin = 'SERVER'`,
+      ),
+    );
+    const writeId = templateWrite.rows[0]!.id;
+    expect(writeId).toBeDefined();
+
+    // (a) THE PRE-FIX ROW, rebuilt byte-for-byte in provenance: the applier's
+    //     own write_log entry, on the template's own outlet_manager role.
+    // (b) A TENANT-MADE ROW on the regional role, carrying an ordinary DEVICE
+    //     write — indistinguishable by role, distinguishable by write.
+    await db.withTenant(T1, async (tx) => {
+      const tenantWrite = await newWrite(tx, T1, 'role.grant');
+      await tx.query(
+        `insert into app.role_permission (tenant_id, id, write_id, hlc, role_id, permission_code)
+         values ($1, $2, $3, $4, $5, 'credit.view'), ($1, $6, $7, $8, $9, 'credit.view')`,
+        [
+          T1,
+          uuidv7(),
+          writeId,
+          nextHlc(),
+          roleIdByRef.get('outlet_manager')!,
+          uuidv7(),
+          tenantWrite,
+          nextHlc(),
+          roleIdByRef.get('regional_manager')!,
+        ],
+      );
+    });
+
+    managerAtRoot = await db.withTenant(T1, (tx) => makeUser(tx, T1, 'mig-om-root'));
+    regionalAtRoot = await db.withTenant(T1, (tx) => makeUser(tx, T1, 'mig-rm-root'));
+    await db.withTenant(T1, (tx) =>
+      assignRole(tx, T1, {
+        userId: managerAtRoot,
+        roleId: roleIdByRef.get('outlet_manager')!,
+        scopeLocationId: rootLoc,
+      }),
+    );
+    await db.withTenant(T1, (tx) =>
+      assignRole(tx, T1, {
+        userId: regionalAtRoot,
+        roleId: roleIdByRef.get('regional_manager')!,
+        scopeLocationId: rootLoc,
+      }),
+    );
+
+    // The exposure, before: BOTH principals are holding the whole book. If this
+    // is ever empty the test below proves nothing, so it is asserted, not assumed.
+    const before = await db.withTenant(T1, (tx) =>
+      tx.query<{ user_id: string }>(
+        `select user_id from app.credit_sync_book_scope where user_id = any($1::uuid[]) order by user_id`,
+        [[managerAtRoot, regionalAtRoot].sort()],
+      ),
+    );
+    expect(before.rows.map((r) => r.user_id)).toEqual([managerAtRoot, regionalAtRoot].sort());
+
+    // Run the migration file itself — not a paraphrase of it. `exec` is the
+    // same call the runner makes. (Under PGlite this connects as a superuser,
+    // which BYPASSES rls; the per-tenant `set_config` in the DO block is what
+    // makes the same SQL work for the schema owner in production, where FORCE
+    // ROW LEVEL SECURITY does apply. The predicate is what is under test here.)
+    await db.exec(await readFile(MIGRATION, 'utf8'));
+  }, 120_000);
+
+  it('withdraws the TEMPLATE-written grant and takes the book off that device', async () => {
+    const row = await db.withTenant(T1, (tx) =>
+      tx.query<{ deleted_at: string | null }>(
+        `select deleted_at from app.role_permission
+          where role_id = $1 and permission_code = 'credit.view'`,
+        [roleIdByRef.get('outlet_manager')!],
+      ),
+    );
+    // Soft-deleted, not erased: the row IS the audit record that this tenant's
+    // outlet manager once held it (app.effective_permission reads deleted_at).
+    expect(row.rows).toHaveLength(1);
+    expect(row.rows[0]!.deleted_at).not.toBeNull();
+
+    const held = await db.withTenant(T1, (tx) =>
+      tx.query<{ user_id: string }>(
+        `select user_id from app.credit_sync_book_scope where user_id = $1`,
+        [managerAtRoot],
+      ),
+    );
+    expect(held.rows).toEqual([]);
+  });
+
+  it('LEAVES a grant the tenant made itself — the platform corrects its own row, not the tenant org chart', async () => {
+    const row = await db.withTenant(T1, (tx) =>
+      tx.query<{ deleted_at: string | null }>(
+        `select deleted_at from app.role_permission
+          where role_id = $1 and permission_code = 'credit.view'`,
+        [roleIdByRef.get('regional_manager')!],
+      ),
+    );
+    expect(row.rows).toHaveLength(1);
+    expect(row.rows[0]!.deleted_at).toBeNull();
+
+    // And it still works, which is the whole point of not touching it: a tenant
+    // that deliberately put the book in a regional office still has it there.
+    // 0014 raises a WARNING naming the tenant instead of silently revoking.
+    const held = await db.withTenant(T1, (tx) =>
+      tx.query<{ user_id: string }>(
+        `select user_id from app.credit_sync_book_scope where user_id = $1`,
+        [regionalAtRoot],
+      ),
+    );
+    expect(held.rows.map((r) => r.user_id)).toEqual([regionalAtRoot]);
   });
 });

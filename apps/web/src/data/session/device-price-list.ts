@@ -44,12 +44,21 @@
  *   none, and none configured  → WAIT. The rows have not arrived yet.
  *   none, but some configured  → REFUSE. A real configuration gap: nothing the
  *                                tenant has published covers this counter today.
- *   settled but tax-inclusive  → REFUSE, at the till. Neither this client nor
- *                                the API can price a gross shelf price yet, so
- *                                binding it would record sales the upload then
- *                                rejects — the very failure this file exists
- *                                to end. See `UNSUPPORTED_MESSAGE`.
  *   stored list not a candidate → reconcile to configuration and say so.
+ *
+ * A SETTLED TAX-INCLUSIVE LIST IS NO LONGER A REFUSAL, and the reason it was
+ * one is the reason it stopped being one. This gate used to answer
+ * `status: 'unsupported'` for a list whose shelf prices already contain tax,
+ * because nothing on either side could de-gross one: the counter's own total
+ * would have been wrong and `sales.createSale` refused the upload outright, so
+ * binding the list meant recording sales the upload then rejected — the exact
+ * failure this file exists to end. Extraction now exists (`@erp/money`, driven
+ * from the pack rows this device already holds; see `../pricing/`), the
+ * counter's total is the shelf price the customer is looking at, and the
+ * refusal would now be the harm rather than the protection: tenant #1's
+ * best-ranked list IS tax-inclusive, so the gate blocked its counters from
+ * trading at all. The refusals that remain are the ones whose cause is still
+ * real — a tie, a coverage gap, and rows that have not arrived yet.
  *
  * No branch reads a tenant's identity and no list code appears in this file
  * (CLAUDE.md §2.9). A tenant that ranks its trade list above its counter list
@@ -100,9 +109,7 @@ export type DevicePriceListStatus =
   /** No tenant price list has reached this device yet. Not a fault — wait. */
   | 'awaiting-config'
   /** The device has no location, so "which list applies HERE" has no answer yet. */
-  | 'location-unknown'
-  /** Configuration settles it, and it is a list this build cannot yet ring. */
-  | 'unsupported';
+  | 'location-unknown';
 
 /** A price list the operator may bind this device to. Codes are tenant data. */
 export interface PriceListChoice {
@@ -114,8 +121,9 @@ export interface PriceListChoice {
   /** The tenant's ranking. Low wins; equal ranks are what "ambiguous" means. */
   readonly priority: number;
   /**
-   * Shelf prices that already contain tax. Carried because it decides whether
-   * this build can ring against the list at all — see `UNSUPPORTED_MESSAGE`.
+   * Shelf prices that already contain tax. Carried because it decides which
+   * DIRECTION the counter computes in — de-gross the extension, or compose
+   * tax onto it (`../pricing/cart-pricing.ts`). It is not a reason to refuse.
    */
   readonly isTaxInclusive: boolean;
 }
@@ -258,26 +266,29 @@ const AWAITING_MESSAGE =
   'arrive — leave it connected.';
 
 /**
- * A list this build cannot ring against, and why that is a REFUSAL rather than
- * a reason to pick the next one down.
+ * THE REFUSAL THAT USED TO LIVE HERE, and why it is gone.
  *
- * The counter's local arithmetic treats `unit_price_e4` as a NET unit price:
- * `lineNetMinor` (@erp/money) extends and rounds it, and nothing anywhere
- * extracts tax back out of a gross shelf price. The API says the same thing
- * about itself in the same words — `sales.createSale` answers
- * PRECONDITION_FAILED, 'tax-inclusive price lists are not yet supported',
- * rather than approximating the extraction (ADR-0004: rounding is explicit at
- * every boundary, never improvised).
+ * `UNSUPPORTED_MESSAGE` refused to bind a price list whose shelf prices
+ * already contain tax, because the counter's arithmetic treated
+ * `unit_price_e4` as a NET unit price and nothing anywhere could extract tax
+ * back out of a gross one — so the local total would have been wrong and
+ * `sales.createSale` refused the upload in the same words. Both halves of that
+ * are now addressed: `@erp/money` de-grosses against the pack's own declared
+ * composition, and `../pricing/cart-pricing.ts` drives it from the rows this
+ * device already holds. The extension of a gross shelf price IS what the
+ * customer hands over, so the counter's total is right whether or not the
+ * split can be stated.
  *
- * So the device stops HERE, at the till, before a cart exists. The tempting
- * alternative — quietly resolving to the next list down — is the worst thing
- * this module could do: it would charge every walk-in customer off a list the
- * tenant did not choose for them, all day, with nothing on screen to say so.
+ * The refusals kept are the ones whose cause did not change:
+ *   · `ambiguous`       — two lists the tenant ranked equally. The platform
+ *                         has no basis to choose, and guessing charges every
+ *                         customer off the wrong list, silently, all day.
+ *   · `unconfigured`    — real lists exist and none covers this counter today.
+ *   · `awaiting-config` — nothing has arrived yet. A wait, not a fault.
+ *   · `location-unknown`— "which list applies HERE" has no answer without a here.
+ *   · the cart's own `unrecognised` / `not-offered`.
+ * None of them was ever about tax, and none of them is weakened below.
  */
-const UNSUPPORTED_MESSAGE =
-  'The price list set up for this counter uses prices that already include tax, which this ' +
-  'version cannot yet ring up. This needs a price list with tax-exclusive prices, or an ' +
-  'update to this app.';
 
 const LOCATION_UNKNOWN_MESSAGE =
   'This device has no location assigned, so it cannot tell which price list applies here. ' +
@@ -359,30 +370,19 @@ export async function reconcileDevicePriceList(
     // configuration still offers is either the default this function bound
     // last time or a choice a human made at this counter; silently overriding
     // the second every morning would undo a decision without telling anyone.
-    if (held.isTaxInclusive) {
-      await clearActivePriceListId(db);
-      return state('unsupported', null, UNSUPPORTED_MESSAGE, {
-        choices: [held],
-        replaced: stored,
-      });
-    }
+    //
+    // `isTaxInclusive` is deliberately NOT consulted: it decides which
+    // direction the counter computes in, not whether it may (see the note
+    // above the messages below).
     return state('confirmed', stored, null);
   }
 
   const tied = bestRanked(candidates);
   const [only] = tied;
   if (tied.length === 1 && only !== undefined) {
-    // Settled, but not necessarily sellable. Refuse BEFORE binding: a bound
-    // list is one `createCart` will hand to a cart and `checkout` will put on
-    // the wire, and the whole point of this module is that no sale is recorded
-    // against a list that cannot survive the trip.
-    if (only.isTaxInclusive) {
-      if (stored !== null) await clearActivePriceListId(db);
-      return state('unsupported', null, UNSUPPORTED_MESSAGE, {
-        choices: [only],
-        replaced: stored,
-      });
-    }
+    // Settled by the tenant's own ranking, and therefore bound — including a
+    // list whose prices already contain tax, which is the ordinary shape of a
+    // counter list and which the counter can now price in both directions.
     await writeActivePriceListId(db, only.id);
     if (stored === null) return state('provisioned', only.id, null);
     return state(
@@ -479,6 +479,13 @@ export interface CartPriceListState {
   readonly code: string | null;
   /** One sentence a counter can act on, or `null` when nothing is wrong. */
   readonly message: string | null;
+  /**
+   * The list's own convention: do its prices already contain tax? It decides
+   * which DIRECTION the counter computes the total in, so it travels with the
+   * verdict rather than being read a second time by every caller. `false` on a
+   * refusal, where there is no list to compute against.
+   */
+  readonly isTaxInclusive: boolean;
 }
 
 /**
@@ -501,22 +508,37 @@ export async function resolveCartPriceList(
   businessDateOverride?: string,
 ): Promise<CartPriceListState> {
   if (priceListId === null || priceListId.length === 0) {
-    return { status: 'unrecognised', code: null, message: CART_UNRECOGNISED_MESSAGE };
+    return {
+      status: 'unrecognised',
+      code: null,
+      message: CART_UNRECOGNISED_MESSAGE,
+      isTaxInclusive: false,
+    };
   }
 
-  const rows = await db.getAll('SELECT code, tenant_id FROM price_list WHERE id = ? LIMIT 1', [
-    priceListId,
-  ]);
+  const rows = await db.getAll(
+    'SELECT code, tenant_id, is_tax_inclusive FROM price_list WHERE id = ? LIMIT 1',
+    [priceListId],
+  );
   const row = rows[0];
   const code = row === undefined ? null : row['code'];
   if (typeof code !== 'string' || code.length === 0) {
-    return { status: 'unrecognised', code: null, message: CART_UNRECOGNISED_MESSAGE };
+    return {
+      status: 'unrecognised',
+      code: null,
+      message: CART_UNRECOGNISED_MESSAGE,
+      isTaxInclusive: false,
+    };
   }
+  // SQLite has no boolean; anything that is not a clear 0 counts as inclusive
+  // — the cautious direction, matching `toChoice` above. Reading it the other
+  // way round would ring gross shelf prices as if they were net.
+  const isTaxInclusive = row?.['is_tax_inclusive'] !== 0;
 
   // A row this device made up rather than received. See the header: this is
   // local-only mode's list, and it is judged by nothing but its own existence.
   if (row?.['tenant_id'] === null || row?.['tenant_id'] === undefined) {
-    return { status: 'sellable', code, message: null };
+    return { status: 'sellable', code, message: null, isTaxInclusive };
   }
 
   const location = await readDeviceLocation(db);
@@ -524,23 +546,25 @@ export async function resolveCartPriceList(
     // "Which list applies HERE" has no answer without a here. The location
     // gate owns that failure and checkout refuses on it first, so raising a
     // second, competing refusal would only bury the one that can be acted on.
-    return { status: 'sellable', code, message: null };
+    return { status: 'sellable', code, message: null, isTaxInclusive };
   }
 
   const businessDate = businessDateOverride ?? businessDateFor(nowIso, location.timeZone);
   const candidates = await readPriceListCandidates(db, location.id, businessDate);
   const held = candidates.find((c) => c.id === priceListId);
   if (held === undefined) {
-    return { status: 'not-offered', code: null, message: CART_NOT_OFFERED_MESSAGE };
+    return {
+      status: 'not-offered',
+      code: null,
+      message: CART_NOT_OFFERED_MESSAGE,
+      isTaxInclusive: false,
+    };
   }
-  // Offered, genuinely configured, and still not rungable. `is_tax_inclusive`
-  // is a synced column and can change under a cart that is already open — the
-  // gate refuses to BIND such a list and the API refuses to PRICE one, and a
-  // pinned cart was the one path between them that checked neither.
-  if (held.isTaxInclusive) {
-    return { status: 'not-offered', code: null, message: UNSUPPORTED_MESSAGE };
-  }
-  return { status: 'sellable', code, message: null };
+  // `is_tax_inclusive` is a synced column and CAN change under a cart that is
+  // already open, so the verdict carries the live value rather than whatever
+  // was true when the cart was pinned. It is no longer a refusal: the cart is
+  // priced in whichever direction the list currently declares.
+  return { status: 'sellable', code, message: null, isTaxInclusive: held.isTaxInclusive };
 }
 
 /** Does this state stop the cart being sold? */
@@ -582,13 +606,8 @@ export async function chooseDevicePriceList(
   );
   const chosen = candidates.find((c) => c.id === priceListId);
   if (chosen === undefined) throw new PriceListChoiceNotOfferedError(priceListId);
-  if (chosen.isTaxInclusive) {
-    // Offered, genuinely configured, and still not rungable. Reported through
-    // the state rather than thrown, because this is not a bad choice by whoever
-    // tapped it — it is the same refusal reconciliation would reach.
-    await clearActivePriceListId(db);
-    return state('unsupported', null, UNSUPPORTED_MESSAGE, { choices: [chosen] });
-  }
+  // Membership of the offered set is the whole test. A list's tax convention
+  // is not a second gate — it is an input to the arithmetic.
   await writeActivePriceListId(db, priceListId);
   return reconcileDevicePriceList(db, bearerToken, nowIso);
 }

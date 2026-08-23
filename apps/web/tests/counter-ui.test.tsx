@@ -259,3 +259,92 @@ describe('search and browse', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: /Roofing sheet/ })).toBeTruthy());
   });
 });
+
+// ---------------------------------------------------------------------------
+// A list whose shelf prices already contain tax
+// ---------------------------------------------------------------------------
+
+/** Pack rows as the sync stream delivers them: three charges on the same net. */
+async function seedPackRates(db: LocalDb): Promise<void> {
+  for (const [code, bp] of [
+    ['A.LEVY1', '250'],
+    ['A.LEVY2', '250'],
+    ['A.STD', '1500'],
+  ] as const) {
+    await db.execute(
+      `INSERT INTO tax_rate (id, jurisdiction_code, tax_code, rate_bp, base_kind, base_includes,
+                             rounding_level, rounding_mode, effective, legal_reference,
+                             confirmed_by, confirmed_at)
+       VALUES (?, 'XX', ?, CAST(? AS INTEGER), 'net', '{}', 'line', 'half_up',
+               '[2000-01-01,)', 'a statute', NULL, NULL)`,
+      [uuidv7(), code, bp],
+    );
+  }
+}
+
+/** The rendered text of one money slot. `Money` prefixes the configured
+ * symbol, so an exact-text query would be asserting the currency, not the
+ * figure — and the symbol is tenant configuration, not something a test picks. */
+function money(selector: string): string {
+  return document.querySelector(selector)?.textContent ?? '';
+}
+
+describe('the counter on a tax-inclusive list', () => {
+  beforeEach(() => setLayout(true));
+
+  async function inclusiveTill(): Promise<LocalDb> {
+    const { db, priceListId } = await tillWithOneProduct();
+    await db.execute('UPDATE price_list SET is_tax_inclusive = 1 WHERE id = ?', [priceListId]);
+    await seedPackRates(db);
+    return db;
+  }
+
+  it('charges the price on the shelf, and says the tax is already in it', async () => {
+    // The one thing that must be true on this screen: the number a cashier
+    // reads out is the number on the shelf label. 620.00 is the shelf price;
+    // it is NOT 620.00 plus tax, and it is NOT the net inside it.
+    const db = await inclusiveTill();
+    render(renderCounter(db));
+
+    fireEvent.click(await screen.findByRole('button', { name: /Cement 50kg/ }));
+
+    await waitFor(() => expect(money('.cart-total')).toContain('620.00'));
+    // Stated, because "is tax on top of that?" is the question a counter is
+    // asked, and a till that cannot answer it invites an argument.
+    expect(screen.getByText(/Includes tax/)).toBeTruthy();
+    // 620.00 gross at an effective 20% de-grosses to 516.66 + 103.34, which
+    // sums back to 620.00 EXACTLY. Not 516.67 + 103.33 — that is what a naive
+    // divide-and-round produces, and it foots to 620.00 only by luck.
+    expect(money('.cart-tax')).toContain('103.34');
+    // And no subtotal/tax pair: on an inclusive list the total IS the sum of
+    // the shelf prices and stands on its own.
+    expect(screen.queryByText('Subtotal')).toBeNull();
+  });
+
+  it('carries the SAME amount through to the tender panel', async () => {
+    const db = await inclusiveTill();
+    render(renderCounter(db));
+    fireEvent.click(await screen.findByRole('button', { name: /Cement 50kg/ }));
+    await waitFor(() => expect(money('.cart-total')).toContain('620.00'));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Take payment' }));
+
+    await waitFor(() => expect(money('.tender-total')).toContain('620.00'));
+    expect(screen.getByText(/Includes tax/)).toBeTruthy();
+  });
+
+  it('shows a subtotal and a tax line when the list is tax-EXCLUSIVE', async () => {
+    // The mirror case, and the one that used to under-state what was owed: the
+    // lines are net, so the tax has to appear for the total to add up.
+    const { db } = await tillWithOneProduct();
+    await seedPackRates(db);
+    render(renderCounter(db));
+
+    fireEvent.click(await screen.findByRole('button', { name: /Cement 50kg/ }));
+
+    await waitFor(() => expect(screen.getByText('Subtotal')).toBeTruthy());
+    expect(money('.cart-subtotal')).toContain('620.00');
+    expect(money('.cart-tax')).toContain('124.00');
+    expect(money('.cart-total')).toContain('744.00');
+  });
+});

@@ -22,6 +22,48 @@
  * Totals are exact bigint sums of the rounded parts; the schema's
  * sale_total_identity CHECK is the backstop.
  *
+ * ============================================================================
+ * TAX-INCLUSIVE PRICE LISTS (04 §4.13 rows 6 and 10)
+ * ============================================================================
+ * `price_list.is_tax_inclusive` says whether the stored `unit_price_e4` is a
+ * NET price or the SHELF price the customer reads off the bag. Counter retail
+ * is quoted inclusive and contractor wholesale exclusive (§4.6), which is why
+ * the flag is per list and why tenant #1's best-ranked list is the inclusive
+ * one — a till that cannot price it cannot trade.
+ *
+ * Both kinds price through the same three steps and store the SAME SHAPE:
+ *
+ *   1. extend once, half-up, on the extended amount (row 3). On an inclusive
+ *      list that figure is the extended GROSS — the shelf price × quantity;
+ *   2. take the operator's discount off THAT figure (row 10 for the inclusive
+ *      case: discount the gross, then de-gross — the customer negotiates
+ *      against the price they were quoted, and de-grossing first would move
+ *      the tax and produce a receipt whose arithmetic they cannot follow);
+ *   3. net and tax lines: forward from the net (row 5) on an exclusive list,
+ *      carved OUT of the gross (row 6) on an inclusive one.
+ *
+ * Extraction is not one division. It inverts whatever composition the pack
+ * declares — `base_kind`, `base_includes`, `rounding_level`, `rounding_mode`
+ * — via `@erp/money`, which derives the gross-up as an exact rational from the
+ * component set. Ghana's two regimes differ only in composition (20% effective
+ * on the flat set, 21.9% on the pre-2026 cascade) with no rate changing, so a
+ * constant or a jurisdiction branch here would be an ADR-0002/ADR-0007
+ * violation as well as simply wrong for one of the two dates.
+ *
+ * THE ROUNDING DECISION the de-grossed net needs — §4.13 row 6 states a formula
+ * and no mode for it — is `netRoundingModeFor` in ../tax.ts. Read that comment
+ * before changing anything here: the counter derives the same mode by the same
+ * rule while offline, and the two must not drift apart.
+ *
+ * WHAT COMES OUT is a net, its tax lines and a total — and nothing that names
+ * the kind of list. `app.sale` has no inclusive/exclusive column and gets
+ * none: the same cart on two lists whose prices are equivalent stores byte-
+ * identical figures. The flag stays a property of the price list, reachable
+ * from a sale only through the `price_list_id` it already pins (which is how
+ * `recomputeCheck` below re-derives the right direction, and the only place
+ * that is allowed to care).
+ * ============================================================================
+ *
  * Authorisation: the capability follows the TENDER — `sale.record` for cash,
  * `sale.record.credit` for credit — at the request's location, resolved from
  * the database per request and never from the token (see `SALE_PERMISSION`
@@ -44,11 +86,18 @@ import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
 import { comparePriceCheck, createSaleInput, type CreateSaleParsed } from '@erp/contracts';
 import { deterministicUuid, type PermissionCode } from '@erp/db';
-import { lineNetMinor, mulBps, mulDiv } from '@erp/money';
+import { lineNetMinor, mulBps, mulDiv, type RoundingMode } from '@erp/money';
 import { emergencyNumber } from '@erp/sequence';
 import type { Queryable } from '../db.js';
 import { runIdempotent, type JsonValue } from '../pipeline.js';
-import { computeLineTaxes, taxComponentsInForce, type ComputedTaxLine } from '../tax.js';
+import {
+  assertPackPriceable,
+  computeLineTaxes,
+  extractLineTaxes,
+  taxComponentsInForce,
+  type ComputedTaxLine,
+  type TaxComponentRow,
+} from '../tax.js';
 import { assertLocationInScope, requiresPermission, router, tenantProcedure } from '../trpc.js';
 import {
   SEQUENCE_REVIEW_PERMISSION,
@@ -109,6 +158,75 @@ interface PricedLine {
   stockTracking: string;
   taxes: ComputedTaxLine[];
   lineTaxMinor: bigint;
+}
+
+/**
+ * One line off a tax-INCLUSIVE list, priced into the shape an exclusive line
+ * produces: an undiscounted NET, a discount, and the component tax lines.
+ *
+ * ── THE INVARIANT ────────────────────────────────────────────────────────
+ *   net − discount + Σ taxes === extendedGross − grossDiscount
+ * exactly, for every input. With no discount that reads: the line total IS the
+ * shelf price × quantity, to the minor unit. The tax is carved OUT of what the
+ * customer was quoted, never added to it. @erp/money guarantees the
+ * `net + Σ tax === gross` half and asserts it internally; the discount half is
+ * arithmetic on top of it and is exact by construction below.
+ * ─────────────────────────────────────────────────────────────────────────
+ *
+ * WHAT THE DISCOUNT IS DENOMINATED IN, and why it is not what was typed.
+ *
+ * The operator grants a discount against the INCLUSIVE price, because that is
+ * the number on the shelf and the number being negotiated — §4.13 row 10 is
+ * explicit that the gross is discounted first. But `sale_line.line_net_minor`
+ * is the REVENUE figure and `line_discount_minor` is its contra (07 §7.3.2:
+ * "the revenue figure is gross of discount and the tax base is net of it";
+ * 05 §5.6.2 rule 1b posts gross revenue plus a SALES_DISCOUNT contra). Revenue
+ * and a revenue contra are tax-EXCLUSIVE accounts. Storing the typed gross
+ * discount in `line_discount_minor` would post the tax inside the discount to
+ * a revenue contra, and inflate `line_net_minor` by the same amount to keep the
+ * document footing — two wrong figures whose errors cancel in the total.
+ *
+ * So both stored figures are net-of-tax: `line_net_minor` is the de-grossed
+ * extended shelf price and `line_discount_minor` is the net the discount
+ * actually gave away — the difference between de-grossing before and after it.
+ * The customer's total is identical either way (see the invariant); what
+ * changes is that the books receive two figures that are true separately, not
+ * only in sum. The till still prints the gross discount it took, which is what
+ * the customer can follow; that is a receipt-rendering fact, not a stored one.
+ *
+ * NEEDS A HUMAN (CLAUDE.md §2.8): an accountant should confirm this on the
+ * chart-of-accounts review, because it is the one place where the figure
+ * stored is not the figure typed. With no line discount — every sale the pilot
+ * actually rings today — the question does not arise: `discountMinor` is `0n`
+ * by construction and one extraction runs, not two.
+ */
+function priceInclusive(
+  extendedGrossMinor: bigint,
+  grossDiscountMinor: bigint,
+  components: readonly TaxComponentRow[],
+): { net: bigint; discountMinor: bigint; taxes: ComputedTaxLine[] } {
+  // Row 10: discount the gross, THEN de-gross. This is the taxable side —
+  // the base every component computes on, and the tax that prints.
+  const taxed = extractLineTaxes(extendedGrossMinor - grossDiscountMinor, components);
+  if (grossDiscountMinor === 0n) {
+    return { net: taxed.netMinor, discountMinor: 0n, taxes: taxed.taxes };
+  }
+  // The revenue side: the same shelf price de-grossed WITHOUT the discount.
+  const full = extractLineTaxes(extendedGrossMinor, components);
+  const discountMinor = full.netMinor - taxed.netMinor;
+  if (discountMinor < 0n || discountMinor > full.netMinor) {
+    // Unreachable for any real pack: de-grossing is monotone in the gross for
+    // non-negative rates, so a smaller gross cannot yield a larger net. It is
+    // checked rather than assumed because the alternative is a negative
+    // discount reaching the books silently.
+    throw new TRPCError({
+      code: 'INTERNAL_SERVER_ERROR',
+      message:
+        `de-grossing is not monotone for this component set: gross ${extendedGrossMinor} → net ` +
+        `${full.netMinor}, gross ${extendedGrossMinor - grossDiscountMinor} → net ${taxed.netMinor}`,
+    });
+  }
+  return { net: full.netMinor, discountMinor, taxes: taxed.taxes };
 }
 
 /**
@@ -217,20 +335,17 @@ export const salesRouter = router({
           if (!priceList) {
             throw new TRPCError({ code: 'PRECONDITION_FAILED', message: `no price list ${input.priceListCode} in force` });
           }
-          if (priceList.is_tax_inclusive) {
-            // Exact tax EXTRACTION from inclusive shelf prices is the POS
-            // pricing work-package; refusing beats approximating (ADR-0004:
-            // rounding explicit at every boundary, never improvised here).
-            throw new TRPCError({
-              code: 'PRECONDITION_FAILED',
-              message: 'tax-inclusive price lists are not yet supported by sales.createSale',
-            });
-          }
+          // Whether `unit_price_e4` on this list is a net price or the shelf
+          // price. It selects the DIRECTION of step 3 below and nothing else:
+          // it is never stored on the sale and never leaves in a response.
+          const taxInclusive = priceList.is_tax_inclusive;
 
           const components = await taxComponentsInForce(tx, jur.jurisdictionCode, input.businessDate);
           if (components.length === 0) {
             throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'no tax rates in force on the business date' });
           }
+          // Fail closed, once, before any line is priced (07 §7.2.4 M12).
+          assertPackPriceable(components, input.businessDate);
 
           const pricedLines: PricedLine[] = [];
           for (let i = 0; i < input.lines.length; i += 1) {
@@ -303,13 +418,20 @@ export const salesRouter = router({
             }
             const unitPriceE4 = BigInt(priced.unit_price_e4);
 
-            // §4.13 row 3: rounded ONCE on the extended amount, half-up.
-            const net = lineNetMinor(line.qty, sell.qty_scale, unitPriceE4, 'half-up');
-            if (line.lineDiscountMinor > net) {
+            // §4.13 row 3: rounded ONCE on the extended amount, half-up. On an
+            // inclusive list this is the extended SHELF price — what the
+            // customer hands over, before any discount.
+            const extendedMinor = lineNetMinor(line.qty, sell.qty_scale, unitPriceE4, 'half-up');
+            if (line.lineDiscountMinor > extendedMinor) {
               throw new TRPCError({ code: 'BAD_REQUEST', message: 'line discount exceeds line amount' });
             }
-            const taxable = net - line.lineDiscountMinor;
-            const taxes = computeLineTaxes(taxable, components);
+            const { net, discountMinor, taxes } = taxInclusive
+              ? priceInclusive(extendedMinor, line.lineDiscountMinor, components)
+              : {
+                  net: extendedMinor,
+                  discountMinor: line.lineDiscountMinor,
+                  taxes: computeLineTaxes(extendedMinor - line.lineDiscountMinor, components),
+                };
             const lineTax = taxes.reduce((acc, t) => acc + t.taxMinor, 0n);
 
             // What LEFT THE YARD: rational conversion snapshot, rounded once.
@@ -338,7 +460,7 @@ export const salesRouter = router({
               qtyStockScale: product.stocking_scale,
               factorNum,
               factorDen,
-              discountMinor: line.lineDiscountMinor,
+              discountMinor,
               lineNetMinor: net,
               stockTracking: product.stock_tracking,
               taxes,
@@ -495,6 +617,14 @@ export const salesRouter = router({
                 rateBp: wire(t.rateBp),
                 baseKind: t.baseKind,
                 baseMinor: wire(t.baseMinor),
+                // `ROUND(baseMinor × rateBp / 10000)` — the figure a re-verifier
+                // reproduces — and the de-grossing leftover placed on top of it,
+                // reported separately so `taxMinor` is checkable rather than
+                // merely trusted. `app.sale_tax_line` has no column for either
+                // yet (see the note on the insert below), so the write log's
+                // response body is where they survive.
+                computedMinor: wire(t.computedMinor),
+                residualMinor: wire(t.residualMinor),
                 taxMinor: wire(t.taxMinor),
                 taxRateId: t.taxRateId,
               })),
@@ -570,6 +700,18 @@ export const salesRouter = router({
                   ],
                 );
                 for (const t of l.taxes) {
+                  // KNOWN GAP, recorded where it bites: `tax_minor` here is
+                  // `computed + residual`, and the table has no column for the
+                  // split. On a de-grossed line the residual is commonly ±1
+                  // minor unit, so a reader recomputing `ROUND(base × rate)`
+                  // straight off this row will disagree with `tax_minor` on
+                  // roughly one inclusive line in six under a 20% set. That is
+                  // the correct FIGURE — it is what makes net + tax equal the
+                  // shelf price — but it is not independently checkable from
+                  // this row alone. `recomputeCheck` below re-derives it
+                  // properly, and the write log keeps the split; the durable
+                  // fix is `computed_minor`/`residual_minor` columns on
+                  // app.sale_tax_line, which is a packages/db change.
                   await atx.query(
                     `insert into app.sale_tax_line
                        (tenant_id, id, write_id, hlc, sale_id, sale_line_id, seq, tax_code,
@@ -762,37 +904,97 @@ export const salesRouter = router({
         ctx.permissions.requireAt('sale.view', sale.locationId);
         const mismatches: string[] = [];
 
+        // The ONE place a sale is allowed to ask which kind of list priced it,
+        // and it asks the list — through the `price_list_id` the sale already
+        // pins — not the sale. Recompute has to invert the same direction the
+        // original pricing ran in; everything else downstream reads the figures
+        // and is entitled to know nothing about the difference.
+        const basis = await tx.query<{ is_tax_inclusive: boolean }>(
+          `select pl.is_tax_inclusive
+             from app.sale s
+             join app.price_list pl on pl.id = s.price_list_id
+            where s.id = $1`,
+          [input.saleId],
+        );
+        const taxInclusive = basis.rows[0]?.is_tax_inclusive ?? false;
+        if (!basis.rows[0]) mismatches.push('price list for this sale is unresolvable');
+
         let subtotal = 0n;
         let discount = 0n;
         let taxTotal = 0n;
         for (const line of sale.lines) {
-          const recomputedNet = lineNetMinor(
+          const extendedMinor = lineNetMinor(
             BigInt(line.qty),
             line.qtyScale,
             BigInt(line.unitPriceE4),
             'half-up',
           );
-          if (wire(recomputedNet) !== line.lineNetMinor) {
-            mismatches.push(`line ${line.lineNo}: net ${line.lineNetMinor} != recomputed ${wire(recomputedNet)}`);
-          }
-          let lineTax = 0n;
-          for (const t of line.taxLines) {
-            const mode =
-              t.roundingMode === 'half_up' ? 'half-up' : t.roundingMode === 'half_even' ? 'half-even' : 'down';
-            const recomputedTax = mulBps(BigInt(t.baseMinor), BigInt(t.rateBp), mode);
-            if (wire(recomputedTax) !== t.taxMinor) {
+          const storedNet = BigInt(line.lineNetMinor);
+          const storedDiscount = BigInt(line.lineDiscountMinor);
+          const storedTax = line.taxLines.reduce((s, t) => s + BigInt(t.taxMinor), 0n);
+          // Rebuilt from the SALE's own snapshot — rate, base composition,
+          // rounding level and mode as applied — never from today's pack.
+          const snapshot = line.taxLines.map(componentFromSnapshot);
+
+          if (taxInclusive) {
+            // The revenue figure: the extended shelf price, de-grossed.
+            const full = extractLineTaxes(extendedMinor, snapshot);
+            if (wire(full.netMinor) !== line.lineNetMinor) {
               mismatches.push(
-                `line ${line.lineNo} ${t.taxCode}: tax ${t.taxMinor} != recomputed ${wire(recomputedTax)}`,
+                `line ${line.lineNo}: net ${line.lineNetMinor} != de-grossed ${wire(full.netMinor)}`,
               );
             }
-            lineTax += BigInt(t.taxMinor);
+            // The taxable side, re-derived from the stored parts and required to
+            // de-gross back to exactly those parts: net + Σ tax is the gross the
+            // customer paid, and extracting it must return that same net and
+            // those same component amounts, residual placement included.
+            const taxable = storedNet - storedDiscount;
+            const again = extractLineTaxes(taxable + storedTax, snapshot);
+            if (again.netMinor !== taxable) {
+              mismatches.push(
+                `line ${line.lineNo}: taxable net ${wire(taxable)} != de-grossed ${wire(again.netMinor)}`,
+              );
+            }
+            for (let i = 0; i < line.taxLines.length; i += 1) {
+              const t = line.taxLines[i]!;
+              const r = again.taxes[i];
+              if (!r || r.taxCode !== t.taxCode) {
+                mismatches.push(`line ${line.lineNo} ${t.taxCode}: component missing on recompute`);
+                continue;
+              }
+              if (wire(r.baseMinor) !== t.baseMinor) {
+                mismatches.push(
+                  `line ${line.lineNo} ${t.taxCode}: base ${t.baseMinor} != recomputed ${wire(r.baseMinor)}`,
+                );
+              }
+              if (wire(r.taxMinor) !== t.taxMinor) {
+                mismatches.push(
+                  `line ${line.lineNo} ${t.taxCode}: tax ${t.taxMinor} != recomputed ${wire(r.taxMinor)}`,
+                );
+              }
+            }
+          } else {
+            if (wire(extendedMinor) !== line.lineNetMinor) {
+              mismatches.push(
+                `line ${line.lineNo}: net ${line.lineNetMinor} != recomputed ${wire(extendedMinor)}`,
+              );
+            }
+            for (const t of line.taxLines) {
+              const recomputedTax = mulBps(BigInt(t.baseMinor), BigInt(t.rateBp), roundingModeOf(t.roundingMode));
+              if (wire(recomputedTax) !== t.taxMinor) {
+                mismatches.push(
+                  `line ${line.lineNo} ${t.taxCode}: tax ${t.taxMinor} != recomputed ${wire(recomputedTax)}`,
+                );
+              }
+            }
           }
-          if (wire(lineTax) !== line.taxMinor) {
-            mismatches.push(`line ${line.lineNo}: tax_minor ${line.taxMinor} != Σ components ${wire(lineTax)}`);
+
+          if (wire(storedTax) !== line.taxMinor) {
+            mismatches.push(`line ${line.lineNo}: tax_minor ${line.taxMinor} != Σ components ${wire(storedTax)}`);
           }
-          subtotal += BigInt(line.lineNetMinor);
-          discount += BigInt(line.lineDiscountMinor);
-          taxTotal += lineTax;
+          subtotal += storedNet;
+          discount += storedDiscount;
+          taxTotal += storedTax;
         }
         if (wire(subtotal) !== sale.subtotalNetMinor) mismatches.push('subtotal mismatch');
         if (wire(taxTotal) !== sale.taxTotalMinor) mismatches.push('tax total mismatch');
@@ -848,13 +1050,15 @@ async function loadSale(tx: Queryable, saleId: string) {
     tax_code: string;
     rate_bp: string;
     base_kind: string;
+    base_includes: string[];
+    rounding_level: string;
     rounding_mode: string;
     base_minor: string;
     tax_minor: string;
     tax_rate_id: string;
   }>(
-    `select sale_line_id, seq, tax_code, rate_bp::text, base_kind, rounding_mode,
-            base_minor::text, tax_minor::text, tax_rate_id
+    `select sale_line_id, seq, tax_code, rate_bp::text, base_kind, base_includes,
+            rounding_level, rounding_mode, base_minor::text, tax_minor::text, tax_rate_id
      from app.sale_tax_line where sale_id = $1 order by sale_line_id, seq`,
     [saleId],
   );
@@ -890,11 +1094,64 @@ async function loadSale(tx: Queryable, saleId: string) {
         taxCode: t.tax_code,
         rateBp: t.rate_bp,
         baseKind: t.base_kind,
+        // The full basis, not just the rate (07 §7.3.3) — a reprint and a
+        // recompute both need the composition that was actually applied.
+        baseIncludes: t.base_includes,
+        roundingLevel: t.rounding_level,
         roundingMode: t.rounding_mode,
         baseMinor: t.base_minor,
         taxMinor: t.tax_minor,
         taxRateId: t.tax_rate_id,
       })),
     })),
+  };
+}
+
+/** `platform.tax_rate.rounding_mode`'s three values, as @erp/money's. The
+ * column is CHECK-constrained to exactly these, so the fallback is `'down'`
+ * rather than a throw. */
+function roundingModeOf(stored: string): RoundingMode {
+  return stored === 'half_up' ? 'half-up' : stored === 'half_even' ? 'half-even' : 'down';
+}
+
+/**
+ * One persisted `app.sale_tax_line` back as the pack component it was applied
+ * from. This is what makes a reprice reproduce a document years later without
+ * consulting the pack at all (07 §7.3.3): rate, `base_kind`, `base_includes`,
+ * `rounding_level` and `rounding_mode` are all snapshotted on the row, so the
+ * composition that priced the sale is reconstructible even if the pack row it
+ * came from has since been superseded.
+ */
+function componentFromSnapshot(t: {
+  seq: number;
+  taxCode: string;
+  rateBp: string;
+  baseKind: string;
+  baseIncludes: string[];
+  roundingLevel: string;
+  roundingMode: string;
+  taxRateId: string;
+}): TaxComponentRow {
+  if (t.baseKind !== 'net' && t.baseKind !== 'net_plus') {
+    throw new TRPCError({
+      code: 'INTERNAL_SERVER_ERROR',
+      message: `sale_tax_line ${t.taxCode}: unknown base_kind ${t.baseKind}`,
+    });
+  }
+  if (t.roundingLevel !== 'line' && t.roundingLevel !== 'document') {
+    throw new TRPCError({
+      code: 'INTERNAL_SERVER_ERROR',
+      message: `sale_tax_line ${t.taxCode}: unknown rounding_level ${t.roundingLevel}`,
+    });
+  }
+  return {
+    taxRateId: t.taxRateId,
+    taxCode: t.taxCode,
+    rateBp: BigInt(t.rateBp),
+    baseKind: t.baseKind,
+    baseIncludes: t.baseIncludes,
+    roundingLevel: t.roundingLevel,
+    roundingMode: roundingModeOf(t.roundingMode),
+    seq: t.seq,
   };
 }
