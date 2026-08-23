@@ -157,6 +157,14 @@ const COVERED_BY_A_REAL_CLIENT_TEST: ReadonlySet<string> = new Set<DeviceOpKind>
   // table in Phase 2: the contract's DELIVERY_TRANSITIONS against
   // app.delivery_legal_transitions() read out of a real Postgres.
   'logistics.update_delivery_status',
+  // credit-client-to-api.test.ts — the PWA's own `recordRepayment`, recorded
+  // under a REAL partition, drained on reconnect, and asserted against
+  // Σ(credit_entry) read straight out of Postgres. It also proves the OTHER
+  // half of the credit decision: `credit.open_account` is in DEVICE_OP_KINDS
+  // and the client deliberately does NOT queue it, because opening an account
+  // sets a credit LIMIT and 06 §6.6.3(7) rules that severity-1 credit
+  // resolutions require connectivity.
+  'credit.record_entry',
 ]);
 
 describe("the PWA's uploadable write surface", () => {
@@ -176,13 +184,25 @@ describe("the PWA's uploadable write surface", () => {
     }
     // And the pin itself: today the counter records sales, adjusts stock and
     // reports its receipt-number cursor on reconnect; the yard signs for
-    // goods; and whoever hears from the driver moves a delivery along. Nothing
-    // else. The two credit ops are still server-only — `data/api/credit.ts`
-    // reaches them over HTTP and says so out loud when it cannot — and so are
-    // raising, approving and BOOKING, which are commitments made against terms
-    // and bounds a partitioned device may hold a stale copy of
+    // goods; whoever hears from the driver moves a delivery along; and the
+    // credit desk takes a customer's repayment. Nothing else.
+    //
+    // `credit.record_entry` is here because a repayment is TRADE — the money
+    // is in the drawer whether or not the tower is up, and exposure is Σ over
+    // an append-only log of signed integers, so two offline batches commute
+    // and there is no conflict case (06 §6.2). The client's builder narrows it
+    // to PAYMENT: ADJUSTMENT and WRITE_OFF are accounting judgements, and an
+    // ordered upload queue on a tablet is not where a write-off is authorised.
+    //
+    // `credit.open_account` is deliberately ABSENT even though the server
+    // accepts it on this path, and `data/api/credit.ts` carries the reason:
+    // opening an account SETS A CREDIT LIMIT, and whatever forbids an offline
+    // limit edit forbids an offline limit at birth. So are raising, approving
+    // and BOOKING, which are commitments made against terms and bounds a
+    // partitioned device may hold a stale copy of
     // (packages/contracts/src/procurement.ts, data/api/procurement.ts).
     expect([...emitted].sort()).toEqual([
+      'credit.record_entry',
       'goods.record_receipt',
       'logistics.update_delivery_status',
       'sale.create',

@@ -23,7 +23,12 @@
  */
 import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
-import { openAccountInput, recordEntryInput } from '@erp/contracts';
+import {
+  accountForCustomerInput,
+  openAccountInput,
+  recordEntryInput,
+  setLimitInput,
+} from '@erp/contracts';
 import { deterministicUuid } from '@erp/db';
 import { mulDiv } from '@erp/money';
 import { days30, type CreditPolicy } from '../credit-policy.js';
@@ -91,6 +96,41 @@ async function requireAccount(
     feeRateBp: BigInt(row.facility_fee_bp_per_month),
     creditLimitMinor: BigInt(row.credit_limit_minor),
     status: row.status,
+  };
+}
+
+/**
+ * The accepted head of an account's credit-limit decision log.
+ *
+ * Exactly one accepted version per account exists — `credit_limit_one_head`
+ * (migration 0011) makes that a database guarantee rather than a convention —
+ * so this is a lookup, not a search, and there is no "which one is current?"
+ * to get wrong. `null` means the account predates the log; its limit is
+ * whatever `openAccount` inserted and the first change writes the genesis
+ * version.
+ */
+async function loadHeadVersion(
+  tx: Queryable,
+  accountId: string,
+): Promise<{ id: string; limitMinor: bigint; termsDays: number; effectiveFrom: string } | null> {
+  const res = await tx.query<{
+    id: string;
+    limit_minor: string;
+    terms_days: number;
+    effective_from: string;
+  }>(
+    `select id, limit_minor::text, terms_days, effective_from::text
+     from app.credit_limit_version
+     where credit_account_id = $1 and state = 'accepted'`,
+    [accountId],
+  );
+  const row = res.rows[0];
+  if (!row) return null;
+  return {
+    id: row.id,
+    limitMinor: BigInt(row.limit_minor),
+    termsDays: row.terms_days,
+    effectiveFrom: row.effective_from,
   };
 }
 
@@ -281,12 +321,217 @@ export const creditRouter = router({
                 input.feeRateBpPerMonth,
               ],
             );
+            // THE GENESIS VERSION (06 §6.6.1). Opening an account IS a limit
+            // decision, so it gets a row in the decision log like every later
+            // one — with `supersedes_id` null, which is what makes the first
+            // change's compare-and-set have something to name. An account with
+            // no genesis row is the case `credit_limit_one_accepted_child`'s
+            // NULLS NOT DISTINCT exists to close (M-12: the root case failed
+            // OPEN under the default).
+            await atx.query(
+              `insert into app.credit_limit_version
+                 (tenant_id, id, write_id, hlc, credit_account_id, limit_minor,
+                  terms_days, fee_rate_bp, reason_code, note, supersedes_id,
+                  state, decided_by, decided_at_location, effective_from)
+               values ($1,$2,$3,$4,$5,$6,$7,$8,'ACCOUNT_OPENED',null,null,
+                       'accepted',$9,null,current_date)`,
+              [
+                tenantId,
+                deterministicUuid(key, 'credit_limit_version'),
+                key,
+                ctx.deps.clock.next(),
+                accountId,
+                wire(input.creditLimitMinor),
+                input.termsDays,
+                input.feeRateBpPerMonth,
+                ctx.identity.userId,
+              ],
+            );
           },
         };
       },
     );
     return result.response;
   }),
+
+  /**
+   * ═══════════════════════════════════════════════════════════════════════
+   * CHANGE A CREDIT LIMIT — append a decision, never edit a column
+   * ═══════════════════════════════════════════════════════════════════════
+   * Before migration 0011 a limit could be set once, at `openAccount`, and
+   * never changed: `credit_limit_minor` was INSERTed and appeared in no UPDATE
+   * anywhere. CLAUDE.md §3 lists "limits" as a Phase 1 pillar and a number
+   * that can be typed once and never corrected is not one.
+   *
+   * TWO CAPABILITIES, BOTH TENANT-WIDE, AND `credit.limit.change` IS
+   * UNCONDITIONAL HERE — unlike `openAccount`, which asks for it only when the
+   * limit it is setting is non-zero. Cutting a customer to zero is as much a
+   * risk decision as raising them to fifty thousand, and the person who may do
+   * one may do the other.
+   *
+   * `supersedesId` IS THE COMPARE-AND-SET (06 §6.6.1). It names the version
+   * the author had in front of them. A claim that does not match the accepted
+   * head is REFUSED with the head's own figures — the loser sees the number
+   * that won and decides again against it. This is the canonical hard case
+   * (CLAUDE.md §2.2) answered the way §3.6 rules: not last-write-wins, and
+   * not "lower wins" either, which §6.6.3 deletes by name. Nobody's judgement
+   * is discarded silently, because nobody's judgement is discarded at all —
+   * the second author is told and asked again.
+   *
+   * The fee rate is carried forward from the account, never taken from the
+   * caller: `previewFacilityFee` and `accrueFacilityFee` read the account's
+   * CURRENT rate, so a new one would reprice history. An effective-dated fee
+   * rate is 06 §6.4 work that is not built, and inventing a half of it here
+   * would put a wrong number on a customer's statement.
+   */
+  setLimit: permissionProcedure({
+    code: 'credit.account.manage',
+    at: 'tenant',
+  }).input(setLimitInput).mutation(async ({ ctx, input }) => {
+    ctx.permissions.requireTenantWide('credit.limit.change');
+    const tenantId = ctx.identity.tenantId;
+    const decidedBy = ctx.identity.userId;
+    const key = input.idempotencyKey;
+    const result = await runIdempotent(
+      { runner: ctx.deps.runner, clock: ctx.deps.clock },
+      ctx.identity,
+      { op: 'credit.set_limit', idempotencyKey: key, claimedHlc: input.claimedHlc, clientWallAt: input.clientWallAt },
+      input,
+      async (tx) => {
+        const account = await requireAccount(tx, input.accountId);
+        const head = await loadHeadVersion(tx, input.accountId);
+
+        // The CAS, in the application, for a message a person can act on. The
+        // database says the same thing structurally (`credit_limit_one_head`),
+        // which is what makes two SIMULTANEOUS writes impossible rather than
+        // merely unlikely — this check cannot see a transaction that has not
+        // committed yet, and the index can.
+        const claimed = input.supersedesId ?? null;
+        const current = head === null ? null : head.id;
+        if (claimed !== current) {
+          throw new TRPCError({
+            code: 'CONFLICT',
+            message:
+              `LIMIT_VERSION_STALE: this account's limit was decided by somebody else while you ` +
+              `were deciding. Nothing has been changed. The limit in force is ` +
+              `${wire(account.creditLimitMinor)} minor units` +
+              (head === null ? '' : ` from ${head.effectiveFrom}`) +
+              `. Read the account again and decide against that figure.`,
+          });
+        }
+
+        // §6.6.2: never future-dated. The scheduled write that would apply it
+        // does not exist, so the account would go on showing the old limit as
+        // current — which is the one thing a credit screen may not do. The
+        // database trigger says this too; here it is a BAD_REQUEST rather than
+        // a 500.
+        const today = await tx.query<{ today: string }>(`select current_date::text as today`);
+        if (input.effectiveFrom > today.rows[0]!.today) {
+          throw new TRPCError({
+            code: 'BAD_REQUEST',
+            message:
+              `a credit limit may not be future-dated: ${input.effectiveFrom} is after ` +
+              `${today.rows[0]!.today}. Nothing applies it on the day it arrives.`,
+          });
+        }
+        if (head !== null && input.effectiveFrom < head.effectiveFrom) {
+          throw new TRPCError({
+            code: 'BAD_REQUEST',
+            message:
+              `a credit limit may not take effect (${input.effectiveFrom}) before the version ` +
+              `it replaces (${head.effectiveFrom}).`,
+          });
+        }
+
+        const versionId = deterministicUuid(key, 'credit_limit_version');
+        const response = {
+          accountId: input.accountId,
+          versionId,
+          supersedesId: current,
+          previousLimitMinor: wire(account.creditLimitMinor),
+          creditLimitMinor: wire(input.creditLimitMinor),
+          previousTermsDays: account.termsDays,
+          termsDays: input.termsDays,
+          /** Carried forward, never taken from the caller. See the header. */
+          feeRateBpPerMonth: Number(account.feeRateBp),
+          effectiveFrom: input.effectiveFrom,
+        };
+        return {
+          response,
+          apply: async (atx) => {
+            // Parent first, so there is no instant at which two accepted
+            // versions exist: `credit_limit_one_head` is checked per statement.
+            if (current !== null) {
+              await atx.query(
+                `update app.credit_limit_version
+                    set state = 'superseded', updated_at = transaction_timestamp()
+                  where id = $1 and state = 'accepted'`,
+                [current],
+              );
+            }
+            await atx.query(
+              `insert into app.credit_limit_version
+                 (tenant_id, id, write_id, hlc, credit_account_id, limit_minor,
+                  terms_days, fee_rate_bp, reason_code, note, supersedes_id,
+                  state, decided_by, decided_at_location, effective_from)
+               values ($1,$2,$3,$4,$5,$6,$7,$8,'MANUAL',$9,$10,
+                       'accepted',$11,null,$12::date)`,
+              [
+                tenantId,
+                versionId,
+                key,
+                ctx.deps.clock.next(),
+                input.accountId,
+                wire(input.creditLimitMinor),
+                input.termsDays,
+                Number(account.feeRateBp),
+                input.reason,
+                current,
+                decidedBy,
+                input.effectiveFrom,
+              ],
+            );
+            // `app.customer_account.credit_limit_minor` is NOT written here.
+            // The projection trigger owns it and is the only thing the
+            // database permits to write it (migration 0011 §5).
+          },
+        };
+      },
+    );
+    return result.response;
+  }),
+
+  /**
+   * Which account belongs to this customer?
+   *
+   * Every other credit route is addressed by ACCOUNT; everything a device
+   * holds is addressed by CUSTOMER, and `app.customer_account` is in no sync
+   * bucket — so before this route the only client that could read a credit
+   * position was one that made a person type a UUID.
+   *
+   * `credit.view` at ANY location, deliberately the same guard as the reads it
+   * precedes: it discloses an identifier and a status word and no money at
+   * all, so it cannot leak a figure to somebody who could not then read it.
+   */
+  accountForCustomer: permissionProcedure({ code: 'credit.view', at: 'any' })
+    .input(accountForCustomerInput)
+    .query(async ({ ctx, input }) => {
+      return ctx.deps.runner.withTenant(ctx.identity.tenantId, async (tx) => {
+        const res = await tx.query<{ id: string; status: string }>(
+          `select id, status from app.customer_account
+           where customer_id = $1 and deleted_at is null`,
+          [input.customerId],
+        );
+        const row = res.rows[0];
+        if (!row) {
+          throw new TRPCError({
+            code: 'NOT_FOUND',
+            message: 'NO_CREDIT_ACCOUNT: this customer has no credit account.',
+          });
+        }
+        return { accountId: row.id, customerId: input.customerId, status: row.status };
+      });
+    }),
 
   recordEntry: permissionProcedure({
     code: 'credit.entry.record',
@@ -362,12 +607,24 @@ export const creditRouter = router({
           [input.accountId],
         );
         const exposure = BigInt(res.rows[0]!.exposure);
+        const head = await loadHeadVersion(tx, input.accountId);
         return {
           accountId: input.accountId,
           exposureMinor: wire(exposure),
           creditLimitMinor: wire(account.creditLimitMinor),
           availableMinor: wire(account.creditLimitMinor - exposure),
           status: account.status,
+          /** The terms the NEXT charge will age against (06 §6.3). */
+          termsDays: account.termsDays,
+          /**
+           * The accepted head of the limit decision log, or null for an
+           * account opened before migration 0011. A client that wants to
+           * CHANGE the limit sends this back as `supersedesId`: it is the
+           * compare-and-set, and it is published here because this is the read
+           * that shows the number a person is about to decide against
+           * (06 §6.6.1).
+           */
+          limitVersionId: head === null ? null : head.id,
         };
       });
     }),

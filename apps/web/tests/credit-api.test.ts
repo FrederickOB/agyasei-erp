@@ -24,7 +24,6 @@ import {
   fetchAgeing,
   fetchCreditPosition,
   fetchExposure,
-  isAccountRef,
   type CreditAgeing,
   type CreditExposure,
 } from '../src/data/api/credit';
@@ -69,6 +68,8 @@ function exposurePayload(over: Record<string, unknown> = {}): unknown {
     creditLimitMinor: '5000000',
     availableMinor: '4505600',
     status: 'ACTIVE',
+    termsDays: 30,
+    limitVersionId: '018f3a1e-0000-7000-8000-0000000000a9',
     ...over,
   };
 }
@@ -183,6 +184,8 @@ describe('the breakdown reconciles to the headline, in integers', () => {
       creditLimitMinor: 5_000_000n,
       availableMinor: 5_000_000n - minor,
       status: 'ACTIVE',
+      termsDays: 30,
+      limitVersionId: null,
     };
   }
   function ageingOf(
@@ -373,16 +376,6 @@ describe('the fee gate is not an error', () => {
     );
     expect(outcome.kind).toBe('refused');
     expect(asked).toEqual([]);
-  });
-});
-
-describe('what counts as an account reference has one definition', () => {
-  it('accepts the shape the shared contract accepts, and trims', () => {
-    expect(isAccountRef(` ${ACCOUNT} `)).toBe(true);
-  });
-  it('rejects anything else, without claiming the account exists', () => {
-    expect(isAccountRef('ACC-001')).toBe(false);
-    expect(isAccountRef('')).toBe(false);
   });
 });
 

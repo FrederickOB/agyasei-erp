@@ -21,11 +21,28 @@ import { createApiHarness, type ApiHarness } from './util.js';
 let h: ApiHarness;
 let tenantId: string;
 let caller: ReturnType<ApiHarness['callerFor']>;
+/**
+ * A tenant with the template APPLIED, so the authorization tests below run
+ * against the tenant's real composed roles rather than the harness's
+ * grant-everything default — which is the third thing that agreed with
+ * neither the seed data nor the live stack (phase1-status §0, the RBAC row).
+ */
+let roleTenantId: string;
+
+/**
+ * TODAY, computed. `openAccount` stamps the genesis version with the
+ * database's `current_date` and 06 §6.6.2 makes `effective_from`
+ * non-decreasing along the chain, so a hard-coded literal here would start
+ * failing on the calendar — exactly phase1-status §0's row 10.
+ */
+const TODAY = new Date().toISOString().slice(0, 10);
 
 beforeAll(async () => {
   h = await createApiHarness();
   tenantId = await h.provisionTenant('credit-t');
   caller = h.callerFor(await h.identityFor(tenantId, { role: 'accounts' }));
+  roleTenantId = await h.provisionTenant('credit-roles');
+  await h.applyTemplate(roleTenantId);
 }, 180_000);
 
 afterAll(async () => {
@@ -300,5 +317,310 @@ describe('facility fee: the Q4 gate, then cumulative-delta accrual', () => {
 
     const exp = await caller.credit.exposure({ accountId });
     expect(exp.exposureMinor).toBe('6200');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The credit limit is an append-only decision log (06 §6.6, migration 0011)
+// ---------------------------------------------------------------------------
+
+describe('setting and changing a credit limit', () => {
+  it('opening an account writes the genesis version, and exposure publishes it', async () => {
+    const accountId = await openAccount({ code: 'CR-GEN', limitMinor: '500000' });
+    const exp = await caller.credit.exposure({ accountId });
+    expect(exp.limitVersionId).not.toBeNull();
+    expect(exp.creditLimitMinor).toBe('500000');
+
+    const rows = await h.db.withTenant(tenantId, (tx) =>
+      tx.query<{ limit_minor: string; state: string; supersedes_id: string | null }>(
+        `select limit_minor::text, state, supersedes_id
+         from app.credit_limit_version where credit_account_id = $1`,
+        [accountId],
+      ),
+    );
+    expect(rows.rows).toHaveLength(1);
+    expect(rows.rows[0]!.state).toBe('accepted');
+    expect(rows.rows[0]!.supersedes_id).toBeNull();
+    expect(rows.rows[0]!.limit_minor).toBe('500000');
+  });
+
+  it('a change appends a version, supersedes the old one and PROJECTS onto the account', async () => {
+    const accountId = await openAccount({ code: 'CR-CHG', limitMinor: '500000' });
+    const before = await caller.credit.exposure({ accountId });
+
+    const res = await caller.credit.setLimit({
+      idempotencyKey: uuidv7(),
+      accountId,
+      creditLimitMinor: '800000',
+      termsDays: 45,
+      effectiveFrom: TODAY,
+      reason: 'deposit cleared, raised after review',
+      supersedesId: before.limitVersionId!,
+    });
+    expect(res.previousLimitMinor).toBe('500000');
+    expect(res.creditLimitMinor).toBe('800000');
+
+    // The PROJECTION is what every other route reads.
+    const after = await caller.credit.exposure({ accountId });
+    expect(after.creditLimitMinor).toBe('800000');
+    expect(after.termsDays).toBe(45);
+    expect(after.limitVersionId).toBe(res.versionId);
+
+    const rows = await h.db.withTenant(tenantId, (tx) =>
+      tx.query<{ limit_minor: string; state: string; note: string | null }>(
+        `select limit_minor::text, state, note from app.credit_limit_version
+         where credit_account_id = $1 order by created_at, limit_minor`,
+        [accountId],
+      ),
+    );
+    expect(rows.rows.map((r) => `${r.limit_minor}:${r.state}`).sort()).toEqual([
+      '500000:superseded',
+      '800000:accepted',
+    ]);
+    // The reason is recorded, verbatim. A limit that changed for no stated
+    // reason is unauditable.
+    expect(rows.rows.find((r) => r.state === 'accepted')!.note).toBe(
+      'deposit cleared, raised after review',
+    );
+  });
+
+  it('the fee rate is CARRIED FORWARD, never taken from the caller', async () => {
+    const accountId = await openAccount({ code: 'CR-FEE-FWD', feeBp: 250 });
+    const head = await caller.credit.exposure({ accountId });
+    const res = await caller.credit.setLimit({
+      idempotencyKey: uuidv7(),
+      accountId,
+      creditLimitMinor: '2000000',
+      termsDays: 30,
+      effectiveFrom: TODAY,
+      reason: 'annual review',
+      supersedesId: head.limitVersionId!,
+    });
+    expect(res.feeRateBpPerMonth).toBe(250);
+    const row = await h.db.withTenant(tenantId, (tx) =>
+      tx.query<{ fee_rate_bp: number }>( // lint-money-ignore: an integer bp rate column
+        `select fee_rate_bp from app.credit_limit_version where id = $1`,
+        [res.versionId],
+      ),
+    );
+    expect(row.rows[0]!.fee_rate_bp).toBe(250);
+  });
+
+  it('THE COMPARE-AND-SET: a stale claim is refused and NOTHING is changed', async () => {
+    const accountId = await openAccount({ code: 'CR-CAS', limitMinor: '500000' });
+    const head = await caller.credit.exposure({ accountId });
+
+    // Two people, each holding the same version, each decide a number.
+    await caller.credit.setLimit({
+      idempotencyKey: uuidv7(),
+      accountId,
+      creditLimitMinor: '800000',
+      termsDays: 30,
+      effectiveFrom: TODAY,
+      reason: 'saw the deposit arrive',
+      supersedesId: head.limitVersionId!,
+    });
+
+    await expect(
+      caller.credit.setLimit({
+        idempotencyKey: uuidv7(),
+        accountId,
+        creditLimitMinor: '300000',
+        termsDays: 30,
+        effectiveFrom: TODAY,
+        reason: 'heard they are slow paying',
+        supersedesId: head.limitVersionId!,
+      }),
+    ).rejects.toThrow(/LIMIT_VERSION_STALE/);
+
+    // Not last-write-wins, and not "lower wins" either (§6.6.3 deletes that
+    // rule by name). The first decision stands and the second author is told.
+    const after = await caller.credit.exposure({ accountId });
+    expect(after.creditLimitMinor).toBe('800000');
+    const count = await h.db.withTenant(tenantId, (tx) =>
+      tx.query<{ n: string }>(
+        `select count(*)::text as n from app.credit_limit_version where credit_account_id = $1`,
+        [accountId],
+      ),
+    );
+    expect(count.rows[0]!.n).toBe('2');
+  });
+
+  it('refuses a future-dated version — nothing would apply it on the day', async () => {
+    const accountId = await openAccount({ code: 'CR-FUT' });
+    const head = await caller.credit.exposure({ accountId });
+    await expect(
+      caller.credit.setLimit({
+        idempotencyKey: uuidv7(),
+        accountId,
+        creditLimitMinor: '900000',
+        termsDays: 30,
+        effectiveFrom: '2099-01-01',
+        reason: 'takes effect next century',
+        supersedesId: head.limitVersionId!,
+      }),
+    ).rejects.toThrow(/future-dated/);
+  });
+
+  it('THE DATABASE REFUSES a direct write to the projected column', async () => {
+    const accountId = await openAccount({ code: 'CR-BACKSTOP', limitMinor: '500000' });
+    await expect(
+      h.db.withTenant(tenantId, (tx) =>
+        tx.query(`update app.customer_account set credit_limit_minor = 99999999 where id = $1`, [
+          accountId,
+        ]),
+      ),
+    ).rejects.toThrow(/projection of app.credit_limit_version/);
+    const exp = await caller.credit.exposure({ accountId });
+    expect(exp.creditLimitMinor).toBe('500000');
+  });
+
+  it('THE DATABASE REFUSES editing a decision that was already made', async () => {
+    const accountId = await openAccount({ code: 'CR-APPEND', limitMinor: '400000' });
+    const head = await caller.credit.exposure({ accountId });
+    await expect(
+      h.db.withTenant(tenantId, (tx) =>
+        tx.query(`update app.credit_limit_version set limit_minor = 1 where id = $1`, [
+          head.limitVersionId,
+        ]),
+      ),
+    ).rejects.toThrow(/append-only/);
+  });
+
+  it('a replayed key returns the same version and appends nothing', async () => {
+    const accountId = await openAccount({ code: 'CR-IDEM', limitMinor: '500000' });
+    const head = await caller.credit.exposure({ accountId });
+    const key = uuidv7();
+    const body = {
+      idempotencyKey: key,
+      accountId,
+      creditLimitMinor: '700000',
+      termsDays: 30,
+      effectiveFrom: TODAY,
+      reason: 'reviewed with the customer',
+      supersedesId: head.limitVersionId!,
+    };
+    const first = await caller.credit.setLimit(body);
+    const second = await caller.credit.setLimit(body);
+    expect(second.versionId).toBe(first.versionId);
+    const count = await h.db.withTenant(tenantId, (tx) =>
+      tx.query<{ n: string }>(
+        `select count(*)::text as n from app.credit_limit_version where credit_account_id = $1`,
+        [accountId],
+      ),
+    );
+    expect(count.rows[0]!.n).toBe('2');
+  });
+});
+
+describe('who may change a limit', () => {
+  async function accountsCaller(): Promise<ReturnType<ApiHarness['callerFor']>> {
+    return h.callerFor(await h.principal(roleTenantId, { roleRef: 'accounts' }));
+  }
+
+  async function openOn(code: string, limitMinor: string): Promise<string> {
+    const accounts = await accountsCaller();
+    const res = await accounts.credit.openAccount({
+      idempotencyKey: uuidv7(),
+      newCustomer: { code, name: `Customer ${code}` },
+      termsDays: 30,
+      feeRateBpPerMonth: 200,
+      creditLimitMinor: limitMinor,
+    });
+    return res.accountId;
+  }
+
+  it('an outlet manager may READ the account and may NOT change the limit', async () => {
+    const accounts = await accountsCaller();
+    const accountId = await openOn('CR-RBAC', '500000');
+    const head = await accounts.credit.exposure({ accountId });
+    const manager = h.callerFor(await h.principal(roleTenantId, { roleRef: 'outlet_manager' }));
+
+    // The positive control on the same route family with the same principal:
+    // "refused" here must not be able to mean "the route is broken".
+    const seen = await manager.credit.exposure({ accountId });
+    expect(seen.creditLimitMinor).toBe('500000');
+
+    await expect(
+      manager.credit.setLimit({
+        idempotencyKey: uuidv7(),
+        accountId,
+        creditLimitMinor: '9000000',
+        termsDays: 30,
+        effectiveFrom: TODAY,
+        reason: 'trying it on',
+        supersedesId: head.limitVersionId!,
+      }),
+    ).rejects.toThrow(/PERMISSION_DENIED/);
+    const after = await accounts.credit.exposure({ accountId });
+    expect(after.creditLimitMinor).toBe('500000');
+  });
+
+  it('counter staff hold no credit capability at all — not even the read', async () => {
+    const accountId = await openOn('CR-RBAC-2', '500000');
+    const counter = h.callerFor(await h.principal(roleTenantId, { roleRef: 'counter_staff' }));
+    await expect(counter.credit.exposure({ accountId })).rejects.toThrow(/PERMISSION_DENIED/);
+    await expect(
+      counter.credit.recordEntry({
+        idempotencyKey: uuidv7(),
+        accountId,
+        kind: 'PAYMENT',
+        amountMinor: '-1000',
+        businessDate: '2026-08-01',
+      }),
+    ).rejects.toThrow(/PERMISSION_DENIED/);
+  });
+});
+
+describe('finding the account for a customer', () => {
+  it('answers with the account, so no screen has to make a person type one', async () => {
+    const opened = await caller.credit.openAccount({
+      idempotencyKey: uuidv7(),
+      newCustomer: { code: 'CR-BY-CUST', name: 'Customer CR-BY-CUST' },
+      termsDays: 30,
+      feeRateBpPerMonth: 200,
+      creditLimitMinor: '100000',
+    });
+    const found = await caller.credit.accountForCustomer({ customerId: opened.customerId });
+    expect(found.accountId).toBe(opened.accountId);
+    expect(found.status).toBe('ACTIVE');
+  });
+
+  it('says NO_CREDIT_ACCOUNT for a customer who buys for cash', async () => {
+    const cashOnly = uuidv7();
+    await h.db.withTenant(tenantId, async (tx) => {
+      const writeId = uuidv7();
+      await tx.query(
+        `insert into app.write_log (tenant_id, id, origin, hlc, op, request_hash)
+         values ($1,$2,'SERVER',$3,'test.cash_customer','\\x00'::bytea)`,
+        [tenantId, writeId, h.deps.clock.next()],
+      );
+      await tx.query(
+        `insert into app.customer (tenant_id, id, write_id, hlc, code, name)
+         values ($1,$2,$3,$4,'CASH-ONLY','Walk-in')`,
+        [tenantId, cashOnly, writeId, h.deps.clock.next()],
+      );
+    });
+    await expect(caller.credit.accountForCustomer({ customerId: cashOnly })).rejects.toThrow(
+      /NO_CREDIT_ACCOUNT/,
+    );
+  });
+
+  it('is invisible across a tenant boundary — a second tenant sees NOT_FOUND', async () => {
+    const opened = await caller.credit.openAccount({
+      idempotencyKey: uuidv7(),
+      newCustomer: { code: 'CR-ISO', name: 'Customer CR-ISO' },
+      termsDays: 30,
+      feeRateBpPerMonth: 200,
+      creditLimitMinor: '100000',
+    });
+    const other = await h.provisionTenant('credit-t2');
+    const otherCaller = h.callerFor(await h.identityFor(other, { role: 'accounts' }));
+    await expect(
+      otherCaller.credit.accountForCustomer({ customerId: opened.customerId }),
+    ).rejects.toThrow(/NO_CREDIT_ACCOUNT/);
+    await expect(otherCaller.credit.exposure({ accountId: opened.accountId })).rejects.toThrow(
+      /credit account not found/,
+    );
   });
 });

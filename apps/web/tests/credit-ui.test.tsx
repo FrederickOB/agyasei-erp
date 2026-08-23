@@ -24,7 +24,7 @@ import type { ApiCallOptions, ApiEndpoint, ApiFetch } from '../src/data/api/clie
 import { CAPABILITY, type PermissionsState } from '../src/data/api/session';
 import type { LocalDb } from '../src/data/db';
 import { DEV_PLACEHOLDER_CURRENCY } from '../src/data/seed';
-import { writeCreditAccountRef, readCreditAccountRef } from '../src/data/session/credit-account-ref';
+import { readPendingOps } from '../src/data/sync/upload';
 import { Credit } from '../src/features/credit/Credit';
 import { CurrencyProvider } from '../src/money/CurrencyContext';
 import { provisionDevice, seedCustomer } from './helpers/fixtures';
@@ -34,6 +34,7 @@ const ENDPOINT: ApiEndpoint = { url: 'http://api.test', bearer: 'dev' };
 const LOC = '018f3a1e-0000-7000-8000-00000000aaaa';
 const ACCOUNT = '018f3a1e-0000-7000-8000-0000000000a1';
 const CUSTOMER = '018f3a1e-0000-7000-8000-0000000000c1';
+const VERSION = '018f3a1e-0000-7000-8000-0000000000v1'.replace('v', 'a');
 const SIGN = DEV_PLACEHOLDER_CURRENCY.symbol;
 
 type Answer =
@@ -72,6 +73,8 @@ function exposurePayload(over: Record<string, unknown> = {}): unknown {
     creditLimitMinor: '5000000',
     availableMinor: '4505600',
     status: 'ACTIVE',
+    termsDays: 30,
+    limitVersionId: VERSION,
     ...over,
   };
 }
@@ -124,6 +127,10 @@ function feePayload(over: Record<string, unknown> = {}): unknown {
 
 function answering(over: Readonly<Record<string, Answer>> = {}): Readonly<Record<string, Answer>> {
   return {
+    'credit.accountForCustomer': {
+      ok: true,
+      json: { accountId: ACCOUNT, customerId: CUSTOMER, status: 'ACTIVE' },
+    },
     'credit.exposure': { ok: true, json: exposurePayload() },
     'credit.ageing': { ok: true, json: ageingPayload() },
     'credit.previewFacilityFee': { ok: true, json: feePayload() },
@@ -144,12 +151,15 @@ function holding(codes: readonly string[]): PermissionsState {
   };
 }
 
-/** A device that knows the customer and has been told the account reference. */
-async function counter(options: { readonly withRef?: boolean } = {}): Promise<LocalDb> {
+/**
+ * A device that knows the customer. It knows NOTHING about their account — no
+ * identifier, no figure — because `credit.accountForCustomer` is the only
+ * thing that can say which account belongs to whom.
+ */
+async function counter(): Promise<LocalDb> {
   const db = openTestDb();
   await provisionDevice(db, { locationId: LOC, locationCode: 'OUT-01' });
   await seedCustomer(db, { id: CUSTOMER, code: 'CU-001', name: 'Kofi Buildings' });
-  if (options.withRef !== false) await writeCreditAccountRef(db, CUSTOMER, ACCOUNT);
   return db;
 }
 
@@ -249,7 +259,9 @@ describe('the balance and the headroom', () => {
     expect(await screen.findByText('Balance')).toBeDefined();
     expect(screen.getByText(`${SIGN}4944.00`)).toBeDefined();
     expect(screen.getByText('Limit')).toBeDefined();
-    expect(screen.getByText(`${SIGN}50000.00`)).toBeDefined();
+    // The limit is stated twice — in the headline figures and again beside the
+    // control that changes it, which is where a person decides against it.
+    expect(screen.getAllByText(`${SIGN}50000.00`).length).toBeGreaterThan(0);
     expect(screen.getByText('Left to spend')).toBeDefined();
     expect(screen.getByText(`${SIGN}45056.00`)).toBeDefined();
   });
@@ -465,65 +477,61 @@ describe('the fee', () => {
   });
 });
 
-describe('addressing an account', () => {
-  it('asks for the reference once, states why, and remembers only that', async () => {
-    const db = await counter({ withRef: false });
+describe('finding the account, without asking a person for a UUID', () => {
+  it('asks the server which account this customer has, and shows their position', async () => {
+    const db = await counter();
     const asked: string[] = [];
     renderScreen(db, holding([CAPABILITY.creditView]), {
       endpoint: ENDPOINT,
       fetchFn: router(answering(), asked),
     });
     await pickCustomer();
-
-    const field = await screen.findByLabelText('Account reference');
-    expect(screen.getByText(/It never remembers a balance/)).toBeDefined();
-    // Nothing has been asked of the server yet — there is nothing to ask about.
-    expect(asked).toEqual([]);
-
-    fireEvent.change(field, { target: { value: ACCOUNT } });
-    fireEvent.click(screen.getByRole('button', { name: 'Look this account up' }));
 
     expect(await screen.findByText(`${SIGN}4944.00`)).toBeDefined();
-    // Remembered — the identifier, and nothing else.
-    expect(await readCreditAccountRef(db, CUSTOMER)).toBe(ACCOUNT);
+    // The device asked; it did not remember, and it did not make anybody type.
+    expect(asked).toContain('credit.accountForCustomer');
+    expect(screen.queryByLabelText('Account reference')).toBeNull();
   });
 
-  it('refuses text that is not an account reference, without asking the server', async () => {
-    const db = await counter({ withRef: false });
-    const asked: string[] = [];
-    renderScreen(db, holding([CAPABILITY.creditView]), {
-      endpoint: ENDPOINT,
-      fetchFn: router(answering(), asked),
-    });
-    await pickCustomer();
-
-    fireEvent.change(await screen.findByLabelText('Account reference'), {
-      target: { value: 'CU-001' },
-    });
-    fireEvent.click(screen.getByRole('button', { name: 'Look this account up' }));
-
-    expect((await screen.findByRole('alert')).textContent).toContain('not an account reference');
-    expect(asked).toEqual([]);
-  });
-
-  it('lets somebody replace a reference this device noted, so a wrong one is not a dead end', async () => {
+  it('says the customer buys for cash when the server ANSWERS that they have none', async () => {
     const db = await counter();
     renderScreen(db, holding([CAPABILITY.creditView]), {
       endpoint: ENDPOINT,
-      fetchFn: router(answering()),
+      fetchFn: router(
+        answering({
+          'credit.accountForCustomer': {
+            ok: false,
+            status: 404,
+            message: 'NO_CREDIT_ACCOUNT: this customer has no credit account.',
+          },
+        }),
+      ),
     });
     await pickCustomer();
-    await screen.findByText(`${SIGN}4944.00`);
 
-    fireEvent.click(screen.getByRole('button', { name: 'Use a different account reference' }));
-
-    // The note is gone and the screen is asking for the reference again —
-    // never stuck on a refusal it cannot correct.
-    await waitFor(() => expect(screen.getByLabelText('Account reference')).toBeDefined());
-    expect(await readCreditAccountRef(db, CUSTOMER)).toBeNull();
+    expect(await screen.findByText(/buys for cash/)).toBeDefined();
+    // No balance, no zero, no ageing table — there is nothing to owe.
+    expect(screen.queryByText('Balance')).toBeNull();
+    expect(screen.queryByRole('table')).toBeNull();
   });
 
-  it('shows the server’s refusal when the reference names no account', async () => {
+  it('OFFLINE it does NOT say "no account" — silence is not an answer', async () => {
+    // The distinction that costs money: "this customer has no account" is the
+    // only state in which opening one is offered, and reading it out of a dead
+    // radio opens a second book for somebody who already has one.
+    const db = await counter();
+    renderScreen(db, holding([CAPABILITY.creditView, CAPABILITY.creditAccountManage]), {
+      endpoint: ENDPOINT,
+      fetchFn: () => Promise.reject(new Error('down')),
+    });
+    await pickCustomer();
+
+    expect(await screen.findByText(/Not available offline\./)).toBeDefined();
+    expect(screen.queryByText(/buys for cash/)).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Open a credit account' })).toBeNull();
+  });
+
+  it('shows the server’s refusal when the account read fails', async () => {
     const db = await counter();
     renderScreen(db, holding([CAPABILITY.creditView]), {
       endpoint: ENDPOINT,
@@ -539,10 +547,340 @@ describe('addressing an account', () => {
     });
     await pickCustomer();
 
-    // A wrong IDENTIFIER fails loudly; that is exactly why an identifier may be
-    // remembered on the device and a figure may not.
     expect(await screen.findByText(/The server would not answer this request\./)).toBeDefined();
     expect(screen.getByText(/credit account not found/)).toBeDefined();
     expect(screen.queryByText('Balance')).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Who is offered what — permission-driven rendering, never a role name
+// ---------------------------------------------------------------------------
+
+const ACCOUNTS_CODES = [
+  CAPABILITY.creditView,
+  CAPABILITY.creditAccountManage,
+  CAPABILITY.creditLimitChange,
+  CAPABILITY.creditEntryRecord,
+];
+
+/** The outlet manager's real credit holding, per the template: the read only. */
+const MANAGER_CODES = [CAPABILITY.creditView];
+
+describe('what each session is offered', () => {
+  it('ACCOUNTS is offered the limit change and the payment form', async () => {
+    const db = await counter();
+    renderScreen(db, holding(ACCOUNTS_CODES), {
+      endpoint: ENDPOINT,
+      fetchFn: router(answering()),
+    });
+    await pickCustomer();
+
+    expect(await screen.findByRole('button', { name: 'Change the limit' })).toBeDefined();
+    expect(screen.getByLabelText('Amount received')).toBeDefined();
+  });
+
+  it('AN OUTLET MANAGER sees the account and cannot create or amend it', async () => {
+    const db = await counter();
+    renderScreen(db, holding(MANAGER_CODES), {
+      endpoint: ENDPOINT,
+      fetchFn: router(answering()),
+    });
+    await pickCustomer();
+
+    // Sees the money.
+    expect(await screen.findByText(`${SIGN}4944.00`)).toBeDefined();
+    // Cannot change what they may owe, and is told whose decision it is.
+    expect(screen.queryByRole('button', { name: 'Change the limit' })).toBeNull();
+    expect(screen.getByText(/decided at the office/)).toBeDefined();
+    // Cannot take a payment either — that is `credit.entry.record`.
+    expect(screen.queryByLabelText('Amount received')).toBeNull();
+  });
+
+  it('AN OUTLET MANAGER is not offered to open an account for a cash customer', async () => {
+    const db = await counter();
+    renderScreen(db, holding(MANAGER_CODES), {
+      endpoint: ENDPOINT,
+      fetchFn: router(
+        answering({
+          'credit.accountForCustomer': {
+            ok: false,
+            status: 404,
+            message: 'NO_CREDIT_ACCOUNT: this customer has no credit account.',
+          },
+        }),
+      ),
+    });
+    await pickCustomer();
+
+    expect(await screen.findByText(/buys for cash/)).toBeDefined();
+    expect(screen.queryByRole('button', { name: 'Open a credit account' })).toBeNull();
+    expect(screen.getByText(/decided at the office/)).toBeDefined();
+  });
+
+  it('ACCOUNTS is offered to open one, and the form sets the limit and the terms', async () => {
+    const db = await counter();
+    const asked: string[] = [];
+    renderScreen(db, holding(ACCOUNTS_CODES), {
+      endpoint: ENDPOINT,
+      fetchFn: router(
+        answering({
+          'credit.accountForCustomer': {
+            ok: false,
+            status: 404,
+            message: 'NO_CREDIT_ACCOUNT: this customer has no credit account.',
+          },
+          'credit.openAccount': {
+            ok: true,
+            json: {
+              accountId: ACCOUNT,
+              customerId: CUSTOMER,
+              termsDays: 30,
+              feeRateBpPerMonth: 200,
+              creditLimitMinor: '5000000',
+            },
+          },
+        }),
+        asked,
+      ),
+    });
+    await pickCustomer();
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Open a credit account' }));
+    fireEvent.change(screen.getByLabelText('Credit limit'), { target: { value: '50000' } });
+    fireEvent.change(screen.getByLabelText('Terms in days'), { target: { value: '30' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Open the account' }));
+
+    await waitFor(() => expect(asked).toContain('credit.openAccount'));
+  });
+
+  it('somebody who may open an account but NOT set a limit is stopped at a non-zero one', async () => {
+    // The constitution's hardest credit prohibition, as the SERVER states it:
+    // `credit.limit.change` is required in addition, and only when the limit is
+    // non-zero. The server checks it again; this saves a wasted round trip.
+    const db = await counter();
+    const asked: string[] = [];
+    renderScreen(db, holding([CAPABILITY.creditView, CAPABILITY.creditAccountManage]), {
+      endpoint: ENDPOINT,
+      fetchFn: router(
+        answering({
+          'credit.accountForCustomer': {
+            ok: false,
+            status: 404,
+            message: 'NO_CREDIT_ACCOUNT: this customer has no credit account.',
+          },
+        }),
+        asked,
+      ),
+    });
+    await pickCustomer();
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Open a credit account' }));
+    fireEvent.change(screen.getByLabelText('Credit limit'), { target: { value: '50000' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Open the account' }));
+
+    expect((await screen.findByRole('alert')).textContent).toContain('separate permission');
+    expect(asked).not.toContain('credit.openAccount');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The limit change — the compare-and-set, and the refusal that is not an error
+// ---------------------------------------------------------------------------
+
+function limitChangedPayload(): unknown {
+  return {
+    accountId: ACCOUNT,
+    versionId: '018f3a1e-0000-7000-8000-0000000000a2',
+    supersedesId: VERSION,
+    previousLimitMinor: '5000000',
+    creditLimitMinor: '8000000',
+    previousTermsDays: 30,
+    termsDays: 30,
+    feeRateBpPerMonth: 200,
+    effectiveFrom: '2026-08-22',
+  };
+}
+
+async function openLimitForm(answers: Readonly<Record<string, Answer>>, asked: string[] = []) {
+  const db = await counter();
+  renderScreen(db, holding(ACCOUNTS_CODES), {
+    endpoint: ENDPOINT,
+    fetchFn: router(answers, asked),
+  });
+  await pickCustomer();
+  fireEvent.click(await screen.findByRole('button', { name: 'Change the limit' }));
+}
+
+describe('changing the limit', () => {
+  it('sends the version the person was looking at — the compare-and-set', async () => {
+    const bodies: string[] = [];
+    const capturing: ApiFetch = (url, init) => {
+      if (new URL(url).pathname.endsWith('credit.setLimit')) bodies.push(init.body ?? '');
+      return router(answering({ 'credit.setLimit': { ok: true, json: limitChangedPayload() } }))(
+        url,
+        init,
+      );
+    };
+    const db = await counter();
+    renderScreen(db, holding(ACCOUNTS_CODES), { endpoint: ENDPOINT, fetchFn: capturing });
+    await pickCustomer();
+    fireEvent.click(await screen.findByRole('button', { name: 'Change the limit' }));
+
+    fireEvent.change(screen.getByLabelText('New credit limit'), { target: { value: '80000' } });
+    fireEvent.change(screen.getByLabelText('Why the limit is changing'), {
+      target: { value: 'deposit cleared' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Change the limit' }));
+
+    await waitFor(() => expect(bodies).toHaveLength(1));
+    const sent = JSON.parse(bodies[0]!) as { json: Record<string, unknown> };
+    // The claim, without which the write is last-write-wins wearing a contract.
+    expect(sent.json['supersedesId']).toBe(VERSION);
+    // Money as a decimal string of MINOR units, never a JS number.
+    expect(sent.json['creditLimitMinor']).toBe('8000000');
+    expect(sent.json['reason']).toBe('deposit cleared');
+  });
+
+  it('will not send without a reason', async () => {
+    const asked: string[] = [];
+    await openLimitForm(answering(), asked);
+    fireEvent.change(screen.getByLabelText('New credit limit'), { target: { value: '80000' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Change the limit' }));
+
+    expect((await screen.findByRole('alert')).textContent).toContain('Say why');
+    expect(asked).not.toContain('credit.setLimit');
+  });
+
+  it('renders a LOST compare-and-set as somebody else’s decision, with nothing to re-send', async () => {
+    await openLimitForm(
+      answering({
+        'credit.setLimit': {
+          ok: false,
+          status: 409,
+          message:
+            "LIMIT_VERSION_STALE: this account's limit was decided by somebody else while you " +
+            'were deciding. Nothing has been changed. The limit in force is 8000000 minor units.',
+        },
+      }),
+    );
+    fireEvent.change(screen.getByLabelText('New credit limit'), { target: { value: '30000' } });
+    fireEvent.change(screen.getByLabelText('Why the limit is changing'), {
+      target: { value: 'heard they are slow paying' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Change the limit' }));
+
+    expect(await screen.findByText(/Somebody else decided this limit first\./)).toBeDefined();
+    // NOT AN ERROR AND NOT RETRYABLE. There is no way to push the same figure
+    // over the top of theirs — 06 §6.6.3 deletes last-write-wins by name.
+    expect(screen.queryByRole('button', { name: /Try again/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Change the limit' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Look at the account again' })).toBeDefined();
+  });
+
+  it('OFFLINE it says nothing was saved and nothing was queued', async () => {
+    const db = await counter();
+    // The position loads, then the radio dies before the decision is sent.
+    let alive = true;
+    const flaky: ApiFetch = (url, init) => {
+      if (!alive && new URL(url).pathname.endsWith('credit.setLimit')) {
+        return Promise.reject(new Error('down'));
+      }
+      return router(answering())(url, init);
+    };
+    renderScreen(db, holding(ACCOUNTS_CODES), { endpoint: ENDPOINT, fetchFn: flaky });
+    await pickCustomer();
+    fireEvent.click(await screen.findByRole('button', { name: 'Change the limit' }));
+    alive = false;
+
+    fireEvent.change(screen.getByLabelText('New credit limit'), { target: { value: '80000' } });
+    fireEvent.change(screen.getByLabelText('Why the limit is changing'), {
+      target: { value: 'raised while the radio was down' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Change the limit' }));
+
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toContain('Nothing was queued');
+    // Nothing entered the outbox: a limit is not a queued write, ever.
+    expect(await readPendingOps(db)).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Taking a payment — queued, honest, and never a client-side balance
+// ---------------------------------------------------------------------------
+
+describe('recording a repayment', () => {
+  async function takePayment(amount: string): Promise<LocalDb> {
+    const db = await counter();
+    renderScreen(db, holding(ACCOUNTS_CODES), {
+      endpoint: ENDPOINT,
+      fetchFn: router(answering()),
+    });
+    await pickCustomer();
+    fireEvent.change(await screen.findByLabelText('Amount received'), {
+      target: { value: amount },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Record the payment' }));
+    return db;
+  }
+
+  it('queues it locally, SIGNED, without waiting on a socket', async () => {
+    const db = await takePayment('1000');
+    await waitFor(async () => expect(await readPendingOps(db)).toHaveLength(1));
+
+    const [op] = await readPendingOps(db);
+    expect(op!.kind).toBe('credit_payment');
+    const payload = JSON.parse(op!.payloadJson) as Record<string, unknown>;
+    expect(payload['kind']).toBe('PAYMENT');
+    // The person typed a positive figure; the sign convention is applied by
+    // the builder, matching the database's own `ce_sign` CHECK.
+    expect(payload['amountMinor']).toBe('-100000');
+    expect(payload['accountId']).toBe(ACCOUNT);
+  });
+
+  it('says it is on this device and NOT YET SENT', async () => {
+    await takePayment('1000');
+    const receipt = await screen.findByText(/Recorded on this device/);
+    expect(receipt.textContent).toContain('will be sent when there is a connection');
+  });
+
+  it('DOES NOT CHANGE THE BALANCE ON SCREEN, and says the balance excludes it', async () => {
+    // The rule this whole feature turns on. The device does not hold the credit
+    // ledger, so any "new balance" it produced would be a subtraction against a
+    // base it cannot see. Balance stays behind a server answer.
+    await takePayment('1000');
+    await screen.findByText(/Recorded on this device/);
+
+    expect(screen.getByText(`${SIGN}4944.00`)).toBeDefined();
+    // 4944.00 − 1000.00 would be 3944.00. It must appear nowhere.
+    expect(screen.queryByText(`${SIGN}3944.00`)).toBeNull();
+    expect(screen.getByText(/does not include it/)).toBeDefined();
+  });
+
+  it('refuses a zero payment on the device, queueing nothing', async () => {
+    const db = await takePayment('0');
+    expect((await screen.findByRole('alert')).textContent).toContain('some amount');
+    expect(await readPendingOps(db)).toHaveLength(0);
+  });
+
+  it('is not offered when the capability could not be checked — a queued write is strict', async () => {
+    // `holdsCapability` answers TRUE for `unknown`, on purpose, for READS. A
+    // QUEUED write is asked the other way: a FORBIDDEN ack is retried for ever
+    // at the head of an ordered queue and every sale behind it stops draining.
+    const db = await counter();
+    renderScreen(
+      db,
+      {
+        status: 'unknown',
+        failure: { kind: 'offline', message: 'no', detail: null, status: null },
+      },
+      { endpoint: ENDPOINT, fetchFn: router(answering()) },
+    );
+    await pickCustomer();
+    await screen.findByText(`${SIGN}4944.00`);
+
+    expect(screen.queryByLabelText('Amount received')).toBeNull();
+    expect(screen.getByText(/not part of what this device may do/)).toBeDefined();
   });
 });

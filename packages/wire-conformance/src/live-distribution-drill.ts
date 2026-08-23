@@ -1024,8 +1024,8 @@ async function main(): Promise<void> {
     measure(
       'period basis across every delivery in the tenant: ' +
         basis.map((b) => `${b.basis}=${b.n}`).join(' · ') +
-        ' — every ASSERTED row was written by a drill or a raw call; no apps/web screen ' +
-        'sends businessDate on planDelivery today (see phase2-status §5)',
+        ' — ASSERTED is now the PRODUCT path too: features/deliveries/Deliveries.tsx:416 ' +
+        'sends businessDate on every planDelivery (ledger row 15, closed).',
     );
   } finally {
     await sql.end();

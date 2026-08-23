@@ -324,6 +324,35 @@ export const creditEntry = tenantTable(
   (t) => [index('credit_entry_account_ix').on(t.tenantId, t.accountId, t.businessDate)],
 );
 
+/**
+ * The credit limit's append-only decision log (migration 0011, 06 §6.6.1).
+ *
+ * `customer_account.credit_limit_minor` above is a PROJECTION of the accepted
+ * head of this chain, written only by `app.apply_credit_limit_version()`;
+ * `supersedes_id` is the compare-and-set, and `credit_limit_one_head` is what
+ * makes two concurrent decisions impossible rather than merely unlikely.
+ */
+export const creditLimitVersion = tenantTable(
+  'credit_limit_version',
+  {
+    creditAccountId: uuid('credit_account_id').notNull(),
+    limitMinor: bigint('limit_minor', { mode: 'bigint' }).notNull(),
+    termsDays: smallint('terms_days').notNull(),
+    feeRateBp: integer('fee_rate_bp').notNull(),
+    reasonCode: text('reason_code').notNull(),
+    note: text('note'),
+    /** The version its author believed was current. NULL only for genesis. */
+    supersedesId: uuid('supersedes_id'),
+    state: text('state').notNull(),
+    decidedBy: uuid('decided_by').notNull(),
+    decidedAtLocation: uuid('decided_at_location'),
+    effectiveFrom: date('effective_from').notNull(),
+  },
+  (t) => [
+    index('credit_limit_version_account_ix').on(t.tenantId, t.creditAccountId, t.effectiveFrom),
+  ],
+);
+
 export const sale = tenantTable(
   'sale',
   {

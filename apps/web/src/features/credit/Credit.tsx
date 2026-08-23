@@ -21,9 +21,11 @@
  * reached this screen shows the reason and NOTHING ELSE — not an old figure,
  * not a zero, not an empty ageing table (`features/shell/ServerAnswer.tsx`).
  *
- * The one thing the device is allowed to remember is an IDENTIFIER, and that
- * rule is written down where the remembering happens
- * (`data/session/credit-account-ref.ts`).
+ * The device remembers NOTHING about credit — not a figure, and no longer even
+ * an identifier. It used to keep an account reference in `local_config`
+ * because no route mapped a customer to their account and a person had to type
+ * a UUID; `credit.accountForCustomer` now answers that question, so the note
+ * and the module that held it are gone. One less thing that can be wrong.
  *
  * ---------------------------------------------------------------------------
  * 2. THE BREAKDOWN HAS TO ADD UP TO THE HEADLINE, AND IT IS CHECKED
@@ -47,13 +49,30 @@
  * again is not what is missing.
  *
  * ---------------------------------------------------------------------------
- * 4. WHAT THIS SCREEN DELIBERATELY DOES NOT DO
+ * 4. THE THREE WRITES, AND WHY THEY ARE NOT ALL THE SAME KIND OF WRITE
  * ---------------------------------------------------------------------------
- * It does not offer to record a payment or an adjustment against the account.
- * Both are real device-uploadable ops, but they belong with the Accounts
- * receipting flow rather than beside a read; adding a write here that a
- * partitioned device could queue against a balance it could not see would
- * invite exactly the confusion the rest of this file is built to avoid.
+ * This screen now opens an account, changes a limit and takes a payment
+ * (`features/credit/CreditForms.tsx`), because until it did, a customer could
+ * be put INTO debt from a screen and taken out of it from nowhere at all.
+ *
+ * Two of the three are refused offline and one is queued, and the split is the
+ * whole design. Opening an account and changing a limit both SET A CREDIT
+ * LIMIT — a risk judgement 06 §6.6.3(7) requires connectivity for, and a
+ * partitioned device cannot even see the version it would be superseding. A
+ * repayment is trade: the money is in the drawer either way, `credit_entry` is
+ * append-only signed integers so two offline batches commute (§6.2), and a
+ * payment only ever reduces exposure.
+ *
+ * **The queued payment shows its receipt and NEVER a resulting balance.** The
+ * balance stays behind a server answer, always. Nothing on this screen
+ * subtracts a payment from a figure — `drill:credit` proved balance = Σ(entries)
+ * and Σ(buckets) = balance, and a second computation on the device is a second
+ * thing that can disagree.
+ *
+ * WHAT THIS SCREEN STILL DOES NOT DO: it does not offer an ADJUSTMENT or a
+ * WRITE_OFF. Both are real device-uploadable kinds and both are accounting
+ * judgements somebody signs for, not trade — an ordered upload queue on a
+ * tablet is not where a bad debt gets authorised.
  *
  * It also does not put remaining headroom on the counter's tender panel. The
  * counter has no credit-sale path today (it rings cash), and even when it
@@ -66,31 +85,40 @@
  * Money is `bigint` minor units and reaches the screen only through `<Money>`
  * against the tenant's CurrencySpec (ADR-0004, §8.9).
  */
-import { useCallback, useMemo, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
 import type { ApiCallOptions } from '../../data/api/client';
 import {
   accrueFacilityFee,
+  fetchAccountForCustomer,
   fetchCreditPosition,
-  isAccountRef,
   type CreditPosition,
   type FeePreview,
 } from '../../data/api/credit';
-import { CAPABILITY, holdsCapability, type PermissionsState } from '../../data/api/session';
+import {
+  CAPABILITY,
+  holdsCapability,
+  holdsCapabilityForQueuedWrite,
+  type PermissionsState,
+} from '../../data/api/session';
 import { useApiQuery } from '../../data/api/use-api-query';
 import type { LocalDb } from '../../data/db';
+import { getOrCreateDeviceNode } from '../../data/queries/config';
 import { loadCreditCustomers, type CreditCustomer } from '../../data/queries/customers';
 import { readDeviceLocation } from '../../data/queries/session';
-import {
-  clearCreditAccountRef,
-  readCreditAccountRef,
-  writeCreditAccountRef,
-} from '../../data/session/credit-account-ref';
 import { useLiveQuery } from '../../data/use-live-query';
 import { businessDateFor } from '../../lib/business-date';
+import { createClaimedHlcClock, type ClaimedHlcClock } from '../../lib/hlc';
 import { uuidv7 } from '../../lib/uuidv7';
 import { Money } from '../../money/Money';
 import { Icon } from '../../ui/Icon';
 import { FetchedAt, ServerPending, ServerUnavailable } from '../shell/ServerAnswer';
+import {
+  LimitForm,
+  OpenAccountForm,
+  QueuedRepaymentReceipt,
+  RepaymentForm,
+  type QueuedRepayment,
+} from './CreditForms';
 
 const WHAT = 'A customer’s credit position';
 
@@ -129,73 +157,6 @@ function CustomerPicker({
         ))}
       </select>
     </label>
-  );
-}
-
-/**
- * The account reference, entered once and remembered on this device.
- *
- * Stated on the screen rather than hidden behind it: there is no route that
- * maps a customer to their account and no bucket that syncs one, so the device
- * cannot work this out. A wrong reference fails loudly on the next read.
- */
-function AccountRefForm({
-  customer,
-  onSet,
-}: {
-  readonly customer: CreditCustomer;
-  readonly onSet: (accountId: string) => void;
-}): ReactNode {
-  const [text, setText] = useState('');
-  const [problem, setProblem] = useState<string | null>(null);
-  return (
-    <form
-      className="threshold-form"
-      onSubmit={(e) => {
-        e.preventDefault();
-        const trimmed = text.trim();
-        if (!isAccountRef(trimmed)) {
-          setProblem('That is not an account reference. It is the long reference from the office.');
-          return;
-        }
-        setProblem(null);
-        onSet(trimmed);
-      }}
-    >
-      <p className="threshold-form-product">
-        <span className="report-loc-name">{customer.name}</span>
-        <span className="report-loc-code tabular">{customer.code}</span>
-      </p>
-      <label className="threshold-form-field">
-        <span>Account reference</span>
-        <span className="threshold-form-input">
-          <input
-            type="text"
-            autoComplete="off"
-            spellCheck={false}
-            value={text}
-            aria-label="Account reference"
-            onChange={(e) => setText(e.currentTarget.value)}
-          />
-        </span>
-      </label>
-      <p className="adjust-kind-note">
-        This device holds no credit book, and nothing here tells it which account belongs to which
-        customer. Enter the reference once and this device will remember it — the reference only.
-        It never remembers a balance.
-      </p>
-      {problem === null ? null : (
-        <p className="device-gate-error" role="alert">
-          <Icon name="alert" size={20} />
-          <span>{problem}</span>
-        </p>
-      )}
-      <div className="threshold-form-actions">
-        <button type="submit" className="primary-action pressable">
-          Look this account up
-        </button>
-      </div>
-    </form>
   );
 }
 
@@ -516,31 +477,6 @@ export function Credit({ db, permissions, apiOptions }: CreditProps): ReactNode 
   const defaultAsOf = businessDateFor(new Date().toISOString(), location?.timeZone ?? null);
   const asOf = asOfOverride ?? defaultAsOf;
 
-  const accountRef = useLiveQuery(
-    db,
-    (d) => (customerId === '' ? Promise.resolve(null) : readCreditAccountRef(d, customerId)),
-    [customerId],
-  );
-
-  const onSetRef = useCallback(
-    (accountId: string) => {
-      void writeCreditAccountRef(db, customerId, accountId);
-    },
-    [customerId, db],
-  );
-
-  /**
-   * Forget the reference this device noted for this customer.
-   *
-   * The loop has to close: a remembered identifier that turns out to be wrong
-   * would otherwise strand somebody on the same refusal for ever, and the one
-   * safe property of remembering an identifier — that a wrong one fails
-   * loudly — is only worth anything if there is a way to correct it.
-   */
-  const onForgetRef = useCallback(() => {
-    void clearCreditAccountRef(db, customerId);
-  }, [customerId, db]);
-
   const customer = (customers ?? []).find((c) => c.id === customerId) ?? null;
 
   return (
@@ -576,45 +512,63 @@ export function Credit({ db, permissions, apiOptions }: CreditProps): ReactNode 
         </form>
       )}
 
-      {customer === null ? null : accountRef === undefined ? null : accountRef === null ? (
-        <AccountRefForm customer={customer} onSet={onSetRef} />
-      ) : (
-        <CreditPositionFor
-          accountId={accountRef}
+      {customer === null ? null : (
+        <CreditForCustomer
+          // Remounted per customer, so nothing about one person's account —
+          // a half-typed limit, a queued receipt — survives into another's.
+          key={customer.id}
+          db={db}
+          customer={customer}
           asOf={asOf}
+          today={defaultAsOf}
           permissions={permissions}
           apiOptions={options}
-          onForget={onForgetRef}
         />
       )}
     </div>
   );
 }
 
-function CreditPositionFor({
-  accountId,
+/**
+ * Which account, then what it says.
+ *
+ * The lookup is a SERVER read, and its three answers are three different
+ * facts that this screen keeps apart:
+ *
+ *   ready + an account  — show the position.
+ *   ready + null        — the server said this customer has no account. This
+ *                         is the ONLY state in which opening one is offered.
+ *   failed              — this device could not ask. It says so, and offers
+ *                         nothing, because "no account" and "could not check"
+ *                         look identical on a screen and are not the same.
+ */
+function CreditForCustomer({
+  db,
+  customer,
   asOf,
+  today,
   permissions,
   apiOptions,
-  onForget,
 }: {
-  readonly accountId: string;
+  readonly db: LocalDb;
+  readonly customer: CreditCustomer;
   readonly asOf: string;
+  readonly today: string;
   readonly permissions: PermissionsState;
   readonly apiOptions: ApiCallOptions;
-  readonly onForget: () => void;
 }): ReactNode {
   const { state, refresh } = useApiQuery(
-    () => fetchCreditPosition(accountId, asOf, apiOptions),
-    [accountId, asOf, apiOptions],
+    () => fetchAccountForCustomer(customer.id, apiOptions),
+    [customer.id, apiOptions],
   );
+  const [opening, setOpening] = useState(false);
 
-  // A courtesy over-approximation, and named as one: the server requires this
-  // capability at the ROOT of the tenant's location tree, which is stricter
-  // than "held somewhere". Offering the control to somebody the server will
-  // refuse costs them one tap; hiding it from somebody who holds it would cost
-  // them the feature.
-  const canAccrue = holdsCapability(permissions, CAPABILITY.creditFeeAccrue);
+  // A courtesy over-approximation, and named as one: the server requires both
+  // of these at the ROOT of the tenant's location tree, which is stricter than
+  // "held somewhere". An outlet manager holds neither and sees the account
+  // without the forms; Accounts holds both. Nothing here reads a role name.
+  const canManage = holdsCapability(permissions, CAPABILITY.creditAccountManage);
+  const canSetLimit = holdsCapability(permissions, CAPABILITY.creditLimitChange);
 
   return (
     <>
@@ -627,18 +581,201 @@ function CreditPositionFor({
         <ServerUnavailable what={WHAT} failure={state.failure} onRetry={refresh} />
       ) : null}
 
-      {/* Always offered, not only after a refusal: the reference is a note this
-          device made, and the person holding the tablet is the only one who
-          can tell it that the note is wrong. */}
-      <div className="threshold-form-actions">
-        <button type="button" className="secondary-action pressable" onClick={onForget}>
-          Use a different account reference
-        </button>
+      {state.status === 'ready' && state.data === null ? (
+        opening ? (
+          <OpenAccountForm
+            customerId={customer.id}
+            customerName={customer.name}
+            apiOptions={apiOptions}
+            canSetLimit={canSetLimit}
+            onOpened={() => {
+              setOpening(false);
+              refresh();
+            }}
+            onCancel={() => setOpening(false)}
+          />
+        ) : (
+          <div className="empty-state">
+            <Icon name="tag" size={40} />
+            <span className="empty-title">{customer.name} buys for cash</span>
+            <p className="empty-body">
+              There is no credit account for this customer, so there is nothing to owe and nothing
+              to age.{' '}
+              {canManage
+                ? 'Opening one sets what they may owe and how long they have to pay.'
+                : 'Opening one is decided at the office, by somebody who sets credit terms.'}
+            </p>
+            {canManage ? (
+              <div className="threshold-form-actions">
+                <button
+                  type="button"
+                  className="primary-action pressable"
+                  onClick={() => setOpening(true)}
+                >
+                  Open a credit account
+                </button>
+              </div>
+            ) : null}
+          </div>
+        )
+      ) : null}
+
+      {state.status === 'ready' && state.data !== null ? (
+        <CreditPositionFor
+          db={db}
+          accountId={state.data.accountId}
+          asOf={asOf}
+          today={today}
+          permissions={permissions}
+          apiOptions={apiOptions}
+        />
+      ) : null}
+    </>
+  );
+}
+
+function CreditPositionFor({
+  db,
+  accountId,
+  asOf,
+  today,
+  permissions,
+  apiOptions,
+}: {
+  readonly db: LocalDb;
+  readonly accountId: string;
+  readonly asOf: string;
+  /** The LOCATION's trading day. A limit decision applies from this, not `asOf`. */
+  readonly today: string;
+  readonly permissions: PermissionsState;
+  readonly apiOptions: ApiCallOptions;
+}): ReactNode {
+  const { state, refresh } = useApiQuery(
+    () => fetchCreditPosition(accountId, asOf, apiOptions),
+    [accountId, asOf, apiOptions],
+  );
+  const [changingLimit, setChangingLimit] = useState(false);
+  const [queued, setQueued] = useState<QueuedRepayment | null>(null);
+  const [hlc, setHlc] = useState<ClaimedHlcClock | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    void getOrCreateDeviceNode(db).then((node) => {
+      if (alive) setHlc(createClaimedHlcClock(node));
+    });
+    return () => {
+      alive = false;
+    };
+  }, [db]);
+
+  // A courtesy over-approximation, and named as one: the server requires this
+  // capability at the ROOT of the tenant's location tree, which is stricter
+  // than "held somewhere". Offering the control to somebody the server will
+  // refuse costs them one tap; hiding it from somebody who holds it would cost
+  // them the feature.
+  const canAccrue = holdsCapability(permissions, CAPABILITY.creditFeeAccrue);
+  const canManage = holdsCapability(permissions, CAPABILITY.creditAccountManage);
+  const canSetLimit = holdsCapability(permissions, CAPABILITY.creditLimitChange);
+
+  /**
+   * A repayment is the ONE control on this screen that is asked the strict
+   * way, and the asymmetry is the point.
+   *
+   * Every other control here reads `holdsCapability`, which answers TRUE when
+   * the device could not ask — hiding a read from somebody who holds it costs
+   * them the feature, and offering one they do not hold costs them a refusal
+   * they can read. A repayment is QUEUED, and a queued write the server
+   * answers `FORBIDDEN` to is retried for ever at the head of an ORDERED
+   * queue, so every sale behind it stops draining and the till merely looks
+   * "stuck" (data/api/session.ts states this at length).
+   */
+  const canRecordPayment = holdsCapabilityForQueuedWrite(
+    permissions,
+    CAPABILITY.creditEntryRecord,
+  );
+
+  return (
+    <>
+      <div className="report-panel-head">
+        {state.status === 'ready' ? <FetchedAt atMs={state.fetchedAtMs} /> : null}
       </div>
+
+      {state.status === 'loading' ? <ServerPending what={WHAT} slow={state.slow} rows={3} /> : null}
+      {state.status === 'failed' ? (
+        <ServerUnavailable what={WHAT} failure={state.failure} onRetry={refresh} />
+      ) : null}
 
       {state.status === 'ready' ? (
         <>
           <BalancePanel position={state.data} />
+
+          {/* ── What this customer may owe ─────────────────────────────── */}
+          <section className="report-panel">
+            <header className="report-panel-head">
+              <h3>What they may owe</h3>
+            </header>
+            {changingLimit && canManage && canSetLimit ? (
+              <LimitForm
+                exposure={state.data.exposure}
+                apiOptions={apiOptions}
+                today={today}
+                onChanged={() => {
+                  setChangingLimit(false);
+                  refresh();
+                }}
+                onCancel={() => setChangingLimit(false)}
+              />
+            ) : (
+              <>
+                <p className="report-note">
+                  The limit is <Money amount={state.data.exposure.creditLimitMinor} /> and they
+                  have <span className="tabular">{String(state.data.exposure.termsDays)}</span>{' '}
+                  days to pay. Every change to it is kept, with who decided and why.
+                </p>
+                {canManage && canSetLimit ? (
+                  <div className="threshold-form-actions">
+                    <button
+                      type="button"
+                      className="secondary-action pressable"
+                      onClick={() => setChangingLimit(true)}
+                    >
+                      Change the limit
+                    </button>
+                  </div>
+                ) : (
+                  <p className="adjust-kind-note">
+                    What a customer may owe is decided at the office. You can see it here; changing
+                    it is somebody else&rsquo;s decision.
+                  </p>
+                )}
+              </>
+            )}
+          </section>
+
+          {/* ── Taking a payment ───────────────────────────────────────── */}
+          <section className="report-panel">
+            <header className="report-panel-head">
+              <h3>Take a payment</h3>
+            </header>
+            {queued === null ? null : <QueuedRepaymentReceipt queued={queued} />}
+            {canRecordPayment ? (
+              hlc === null ? null : (
+                <RepaymentForm
+                  db={db}
+                  accountId={accountId}
+                  invoices={state.data.ageing.invoices}
+                  hlc={hlc}
+                  onQueued={(q) => setQueued(q)}
+                />
+              )
+            ) : (
+              <p className="adjust-kind-note">
+                Taking a payment against an account is not part of what this device may do. The
+                balance above is what the office holds.
+              </p>
+            )}
+          </section>
+
           <AgeingPanel position={state.data} />
           {state.data.fee !== null ? (
             <FeePanel

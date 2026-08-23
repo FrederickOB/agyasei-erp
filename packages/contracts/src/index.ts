@@ -75,13 +75,18 @@ export {
 
 export {
   CREDIT_ENTRY_KINDS,
+  accountForCustomerInput,
   openAccountInput,
   recordEntryInput,
+  setLimitInput,
+  type AccountForCustomerInput,
   type CreditEntryKind,
   type OpenAccountInput,
   type OpenAccountParsed,
   type RecordEntryInput,
   type RecordEntryParsed,
+  type SetLimitInput,
+  type SetLimitParsed,
 } from './credit.js';
 
 export {
