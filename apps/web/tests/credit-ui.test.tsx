@@ -884,3 +884,202 @@ describe('recording a repayment', () => {
     expect(screen.getByText(/not part of what this device may do/)).toBeDefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Cutting a customer off — the switch behind a check that already existed
+// ---------------------------------------------------------------------------
+
+/**
+ * The till has always refused a credit sale on an account that is not ACTIVE.
+ * Nothing could move an account off ACTIVE, so a customer who stopped paying
+ * could not be cut off from a screen at all.
+ *
+ * What this group holds the screen to:
+ *  · the STATUS is visible to everybody who can read the account, and the
+ *    control is offered only to whoever holds `credit.account.manage`;
+ *  · the decision carries the status the person was looking at, so it cannot
+ *    be applied over the top of somebody else's;
+ *  · a refusal to CLOSE an account that still owes money names the thing that
+ *    would work — suspend it — rather than an error code;
+ *  · the screen never claims a reach it does not have: a till that is dark now
+ *    keeps selling on credit until it syncs, and it says so.
+ */
+function statusPayload(over: Record<string, unknown> = {}): unknown {
+  return {
+    accountId: ACCOUNT,
+    changed: true,
+    fromStatus: 'ACTIVE',
+    status: 'SUSPENDED',
+    changeId: '018f3a1e-0000-7000-8000-0000000000d1',
+    exposureMinor: '494400',
+    ...over,
+  };
+}
+
+async function openStatusForm(
+  answers: Readonly<Record<string, Answer>>,
+  asked: string[] = [],
+): Promise<LocalDb> {
+  const db = await counter();
+  renderScreen(db, holding(ACCOUNTS_CODES), { endpoint: ENDPOINT, fetchFn: router(answers, asked) });
+  await pickCustomer();
+  fireEvent.click(await screen.findByRole('button', { name: 'Stop this account' }));
+  return db;
+}
+
+describe('stopping and reopening an account', () => {
+  it('the holder is offered the control; the outlet manager SEES the status and is not', async () => {
+    const db = await counter();
+    renderScreen(db, holding(ACCOUNTS_CODES), { endpoint: ENDPOINT, fetchFn: router(answering()) });
+    await pickCustomer();
+    expect(await screen.findByRole('button', { name: 'Stop this account' })).toBeDefined();
+    cleanup();
+
+    const db2 = await counter();
+    renderScreen(db2, holding(MANAGER_CODES), { endpoint: ENDPOINT, fetchFn: router(answering()) });
+    await pickCustomer();
+    // The STATUS is not hidden from them — it is on the balance panel and said
+    // again in words. Only the decision is somebody else's.
+    expect(await screen.findByText(/Whether they may buy on account at all/)).toBeDefined();
+    expect(screen.getAllByText(/ACTIVE/).length).toBeGreaterThan(0);
+    expect(screen.queryByRole('button', { name: 'Stop this account' })).toBeNull();
+    expect(screen.getByText(/Stopping or reopening this account/)).toBeDefined();
+  });
+
+  it('sends the status the person was looking at — the compare-and-set', async () => {
+    const bodies: string[] = [];
+    const capturing: ApiFetch = (url, init) => {
+      if (new URL(url).pathname.endsWith('credit.setStatus')) bodies.push(init.body ?? '');
+      return router(answering({ 'credit.setStatus': { ok: true, json: statusPayload() } }))(
+        url,
+        init,
+      );
+    };
+    const db = await counter();
+    renderScreen(db, holding(ACCOUNTS_CODES), { endpoint: ENDPOINT, fetchFn: capturing });
+    await pickCustomer();
+    fireEvent.click(await screen.findByRole('button', { name: 'Stop this account' }));
+
+    fireEvent.change(screen.getByLabelText('Why the status is changing'), {
+      target: { value: 'cheque returned unpaid' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Save this decision' }));
+
+    await waitFor(() => expect(bodies).toHaveLength(1));
+    const sent = JSON.parse(bodies[0]!) as { json: Record<string, unknown> };
+    expect(sent.json['status']).toBe('SUSPENDED');
+    expect(sent.json['expectedStatus']).toBe('ACTIVE');
+    expect(sent.json['reason']).toBe('cheque returned unpaid');
+  });
+
+  it('says what suspending actually does — credit stops, cash does not', async () => {
+    await openStatusForm(answering());
+    const note = screen.getByText(/No new credit sales/);
+    expect(note.textContent).toContain('still buy for cash');
+    expect(note.textContent).toContain('still owe what they owe');
+  });
+
+  it('will not send without a reason', async () => {
+    const asked: string[] = [];
+    await openStatusForm(answering(), asked);
+    fireEvent.click(screen.getByRole('button', { name: 'Save this decision' }));
+    expect((await screen.findByRole('alert')).textContent).toContain('Say why');
+    expect(asked).not.toContain('credit.setStatus');
+  });
+
+  it('renders a LOST compare-and-set as somebody else’s decision, with nothing to re-send', async () => {
+    await openStatusForm(
+      answering({
+        'credit.setStatus': {
+          ok: false,
+          status: 409,
+          message:
+            'CREDIT_STATUS_STALE: you decided against an account you believed was ACTIVE, and ' +
+            'it is SUSPENDED. Nothing has been changed.',
+        },
+      }),
+    );
+    fireEvent.change(screen.getByLabelText('Why the status is changing'), {
+      target: { value: 'heard they are slow paying' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Save this decision' }));
+
+    expect(await screen.findByText(/This account moved while you were deciding\./)).toBeDefined();
+    expect(screen.queryByRole('button', { name: /Try again/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Save this decision' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Look at the account again' })).toBeDefined();
+  });
+
+  it('a refused CLOSE names the thing that would work, instead of an error code', async () => {
+    await openStatusForm(
+      answering({
+        'credit.setStatus': {
+          ok: false,
+          status: 412,
+          message:
+            'CREDIT_STATUS_CLOSE_BLOCKED: this account still stands at 494400 minor units.',
+        },
+      }),
+    );
+    fireEvent.change(screen.getByLabelText('New account status'), { target: { value: 'CLOSED' } });
+    fireEvent.change(screen.getByLabelText('Why the status is changing'), {
+      target: { value: 'tidying the ledger' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Save this decision' }));
+
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toContain('Suspend it instead');
+    expect(alert.textContent).toContain('leaves the debt exactly where it is');
+    expect(alert.textContent).not.toContain('CREDIT_STATUS_CLOSE_BLOCKED');
+  });
+
+  it('a SUSPENDED account offers reopening, not stopping, and says the till refuses it', async () => {
+    const db = await counter();
+    renderScreen(db, holding(ACCOUNTS_CODES), {
+      endpoint: ENDPOINT,
+      fetchFn: router(
+        answering({
+          'credit.exposure': { ok: true, json: exposurePayload({ status: 'SUSPENDED' }) },
+        }),
+      ),
+    });
+    await pickCustomer();
+    expect(
+      await screen.findByRole('button', { name: 'Change the account status' }),
+    ).toBeDefined();
+    expect(screen.queryByRole('button', { name: 'Stop this account' })).toBeNull();
+    expect(screen.getByText(/The till will refuse a credit sale on it/)).toBeDefined();
+  });
+
+  it('OFFLINE it says nothing was saved, and nothing enters the outbox', async () => {
+    const db = await counter();
+    let alive = true;
+    const flaky: ApiFetch = (url, init) => {
+      if (!alive && new URL(url).pathname.endsWith('credit.setStatus')) {
+        return Promise.reject(new Error('down'));
+      }
+      return router(answering())(url, init);
+    };
+    renderScreen(db, holding(ACCOUNTS_CODES), { endpoint: ENDPOINT, fetchFn: flaky });
+    await pickCustomer();
+    fireEvent.click(await screen.findByRole('button', { name: 'Stop this account' }));
+    alive = false;
+
+    fireEvent.change(screen.getByLabelText('Why the status is changing'), {
+      target: { value: 'decided while the radio was down' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Save this decision' }));
+
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toContain('Nothing was queued');
+    // A suspension is NEVER a queued write: it would sit in an ordered outbox
+    // behind the very credit sales it was written to stop.
+    expect(await readPendingOps(db)).toHaveLength(0);
+  });
+
+  it('does not claim a reach it has not got — a dark till keeps selling until it syncs', async () => {
+    await openStatusForm(answering());
+    const note = screen.getByText(/A till that is offline right now/);
+    expect(note.textContent).toContain('can keep selling on account until then');
+  });
+});

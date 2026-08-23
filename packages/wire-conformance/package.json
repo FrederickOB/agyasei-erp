@@ -15,7 +15,8 @@
     "drill:procure": "tsx src/live-procurement-drill.ts",
     "drill:q1": "tsx src/live-distribution-drill.ts",
     "drill:counter": "tsx src/live-counter-clients-drill.ts",
-    "drill:credit-verify": "tsx src/live-credit-verify-drill.ts"
+    "drill:credit-verify": "tsx src/live-credit-verify-drill.ts",
+    "drill:credit-offline": "tsx src/live-credit-offline-drill.ts"
   },
   "dependencies": {
     "@erp/api": "workspace:*",

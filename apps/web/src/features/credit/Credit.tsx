@@ -8,24 +8,35 @@
  * figures are the ones `drill:credit` proved over real HTTP.
  *
  * ---------------------------------------------------------------------------
- * 1. THIS SCREEN IS ONLINE-ONLY AND SAYS SO. NO EXCEPTIONS, NO CACHE.
+ * 1. TWO PROVENANCES, NEVER MIXED — AND STILL NO CACHE
  * ---------------------------------------------------------------------------
- * `app.customer_account` and `app.credit_entry` are in no sync bucket — the
- * sync rules chose no bucket over an ungated one, deliberately and
- * fail-closed. A partitioned device therefore does not know what a customer
- * owes, and the only honest thing it can do is say that.
+ * This screen used to be online-only, because `app.customer_account` and
+ * `app.credit_entry` were in no sync bucket. Migration 0013 and the
+ * `tenant_credit` bucket changed the input, not the rule: a device whose
+ * holder has `credit.view` now receives a bounded, SERVER-DERIVED position,
+ * and criterion 3's "visible and correct" is answerable with the radio off.
  *
- * There is no last-known balance anywhere in this feature. **A stale credit
- * balance is how a counter extends credit that is not there**, and it is
- * indistinguishable on screen from a live one. So when the server cannot be
- * reached this screen shows the reason and NOTHING ELSE — not an old figure,
+ * The rule that did not change is the important one. **A stale credit balance
+ * is how a counter extends credit that is not there**, and it is
+ * indistinguishable on screen from a live one — so it is never allowed to look
+ * like one. There are exactly two provenances and they never share a rendering:
+ *
+ *   `verified_online` — `useApiQuery` + `BalancePanel`. Says "Balance". Still
+ *                       DISCARDS its previous answer before every re-run; there
+ *                       is still no cache of any figure in this feature.
+ *   `synced_as_of`    — `SyncedPositionPanel`, a different component taking a
+ *                       DIFFERENT TYPE, whose every label carries its own age
+ *                       ("Balance as at 06:40 today"). It appears only when the
+ *                       server could not be reached, and never in place of a
+ *                       verified figure.
+ *
+ * A device holding no snapshot — a counter till, or anyone without
+ * `credit.view` — still sees the reason and NOTHING ELSE: not an old figure,
  * not a zero, not an empty ageing table (`features/shell/ServerAnswer.tsx`).
  *
- * The device remembers NOTHING about credit — not a figure, and no longer even
- * an identifier. It used to keep an account reference in `local_config`
- * because no route mapped a customer to their account and a person had to type
- * a UUID; `credit.accountForCustomer` now answers that question, so the note
- * and the module that held it are gone. One less thing that can be wrong.
+ * Nothing on this device computes a credit balance or an ageing bucket. The
+ * synced entry log is WINDOWED, so Σ(local entries) ≠ balance by construction
+ * (`data/queries/credit-position.ts` sets out the arithmetic).
  *
  * ---------------------------------------------------------------------------
  * 2. THE BREAKDOWN HAS TO ADD UP TO THE HEADLINE, AND IT IS CHECKED
@@ -63,11 +74,12 @@
  * append-only signed integers so two offline batches commute (§6.2), and a
  * payment only ever reduces exposure.
  *
- * **The queued payment shows its receipt and NEVER a resulting balance.** The
- * balance stays behind a server answer, always. Nothing on this screen
- * subtracts a payment from a figure — `drill:credit` proved balance = Σ(entries)
- * and Σ(buckets) = balance, and a second computation on the device is a second
- * thing that can disagree.
+ * **The queued payment shows its receipt and NEVER a resulting balance.**
+ * Nothing on this screen subtracts a payment from a figure — not from a server
+ * answer and not from a synced one. `drill:credit` proved balance = Σ(entries)
+ * and Σ(buckets) = balance on the SERVER; a second computation on the device is
+ * a second thing that can disagree, and a payment recorded after the snapshot
+ * was taken is LISTED beside the figure rather than folded into it.
  *
  * WHAT THIS SCREEN STILL DOES NOT DO: it does not offer an ADJUSTMENT or a
  * WRITE_OFF. Both are real device-uploadable kinds and both are accounting
@@ -103,6 +115,10 @@ import {
 import { useApiQuery } from '../../data/api/use-api-query';
 import type { LocalDb } from '../../data/db';
 import { getOrCreateDeviceNode } from '../../data/queries/config';
+import {
+  loadAccountIdForCustomer,
+  loadSyncedCreditPosition,
+} from '../../data/queries/credit-position';
 import { loadCreditCustomers, type CreditCustomer } from '../../data/queries/customers';
 import { readDeviceLocation } from '../../data/queries/session';
 import { useLiveQuery } from '../../data/use-live-query';
@@ -117,8 +133,10 @@ import {
   OpenAccountForm,
   QueuedRepaymentReceipt,
   RepaymentForm,
+  StatusForm,
   type QueuedRepayment,
 } from './CreditForms';
+import { SyncedPositionPanel } from './SyncedPosition';
 
 const WHAT = 'A customer’s credit position';
 
@@ -561,6 +579,27 @@ function CreditForCustomer({
     () => fetchAccountForCustomer(customer.id, apiOptions),
     [customer.id, apiOptions],
   );
+  /**
+   * Which account this customer's is, as far as THIS DEVICE knows.
+   *
+   * `credit.accountForCustomer` is the authority and it needs the radio. The
+   * `tenant_credit` bucket now also puts `customer_account` on devices whose
+   * holder has `credit.view`, so when the office cannot be reached and this
+   * device happens to hold the row, the screen can still find the account and
+   * show the position it received — clearly labelled with its age.
+   *
+   * `undefined` = the local read has not finished. `null` = this device holds
+   * no account for this customer, which is the answer for a counter till and
+   * for anyone without `credit.view`: they see the refusal and no figures, as
+   * they did before this existed.
+   */
+  const localAccountId = useLiveQuery(
+    db,
+    (d) => loadAccountIdForCustomer(d, customer.id),
+    [customer.id],
+  );
+  const offlineAccountId =
+    state.status === 'failed' && typeof localAccountId === 'string' ? localAccountId : null;
   const [opening, setOpening] = useState(false);
 
   // A courtesy over-approximation, and named as one: the server requires both
@@ -577,8 +616,21 @@ function CreditForCustomer({
       </div>
 
       {state.status === 'loading' ? <ServerPending what={WHAT} slow={state.slow} rows={3} /> : null}
-      {state.status === 'failed' ? (
+      {/* One refusal per screen: when the fallback below takes over, IT states
+          the refusal, alongside the figures it is entitled to show. */}
+      {state.status === 'failed' && offlineAccountId === null ? (
         <ServerUnavailable what={WHAT} failure={state.failure} onRetry={refresh} />
+      ) : null}
+
+      {offlineAccountId !== null ? (
+        <CreditPositionFor
+          db={db}
+          accountId={offlineAccountId}
+          asOf={asOf}
+          today={today}
+          permissions={permissions}
+          apiOptions={apiOptions}
+        />
       ) : null}
 
       {state.status === 'ready' && state.data === null ? (
@@ -654,7 +706,20 @@ function CreditPositionFor({
     () => fetchCreditPosition(accountId, asOf, apiOptions),
     [accountId, asOf, apiOptions],
   );
+  /**
+   * What this device already holds, from the `tenant_credit` bucket.
+   *
+   * It is read UNCONDITIONALLY and rendered ONLY when the server could not be
+   * reached, and the asymmetry is deliberate. `useApiQuery` still discards its
+   * previous answer on every re-run — nothing here weakens that — so what
+   * replaces the vanished figures is not the old answer kept alive, it is a
+   * DIFFERENT, server-derived one that says its own age in every label. A
+   * device holding no snapshot (a counter till, or one that has never synced
+   * the book) gets `unavailable` and sees only the refusal, exactly as before.
+   */
+  const synced = useLiveQuery(db, (d) => loadSyncedCreditPosition(d, accountId), [accountId]);
   const [changingLimit, setChangingLimit] = useState(false);
+  const [changingStatus, setChangingStatus] = useState(false);
   const [queued, setQueued] = useState<QueuedRepayment | null>(null);
   const [hlc, setHlc] = useState<ClaimedHlcClock | null>(null);
 
@@ -704,6 +769,9 @@ function CreditPositionFor({
       {state.status === 'failed' ? (
         <ServerUnavailable what={WHAT} failure={state.failure} onRetry={refresh} />
       ) : null}
+      {state.status === 'failed' && synced !== undefined && synced.kind === 'synced_as_of' ? (
+        <SyncedPositionPanel position={synced.position} />
+      ) : null}
 
       {state.status === 'ready' ? (
         <>
@@ -746,6 +814,62 @@ function CreditPositionFor({
                   <p className="adjust-kind-note">
                     What a customer may owe is decided at the office. You can see it here; changing
                     it is somebody else&rsquo;s decision.
+                  </p>
+                )}
+              </>
+            )}
+          </section>
+
+          {/* ── Stopping the account ───────────────────────────────────── */}
+          {/*
+            The switch behind a check that already existed: the till has always
+            refused a credit sale on an account that is not ACTIVE, and until
+            `credit.setStatus` nothing could move an account off ACTIVE.
+
+            Whoever does not hold the capability still SEES the status — it is
+            on the balance panel above and repeated here in words — and is told
+            plainly whose decision it is. Hiding a control is a courtesy; the
+            server re-authorises tenant-wide and refuses either way.
+          */}
+          <section className="report-panel">
+            <header className="report-panel-head">
+              <h3>Whether they may buy on account at all</h3>
+            </header>
+            {changingStatus && canManage ? (
+              <StatusForm
+                exposure={state.data.exposure}
+                apiOptions={apiOptions}
+                onChanged={() => {
+                  setChangingStatus(false);
+                  refresh();
+                }}
+                onCancel={() => setChangingStatus(false)}
+              />
+            ) : (
+              <>
+                <p className="report-note">
+                  This account is{' '}
+                  <span className="credit-status tabular">{state.data.exposure.status}</span>.{' '}
+                  {state.data.exposure.status === 'ACTIVE'
+                    ? 'Credit sales go through at the till.'
+                    : 'The till will refuse a credit sale on it. Cash sales are unaffected, and the balance above is still owed.'}
+                </p>
+                {canManage ? (
+                  <div className="threshold-form-actions">
+                    <button
+                      type="button"
+                      className="secondary-action pressable"
+                      onClick={() => setChangingStatus(true)}
+                    >
+                      {state.data.exposure.status === 'ACTIVE'
+                        ? 'Stop this account'
+                        : 'Change the account status'}
+                    </button>
+                  </div>
+                ) : (
+                  <p className="adjust-kind-note">
+                    Stopping or reopening this account is somebody else&rsquo;s decision. You can
+                    see where it stands here, and the till reads the same thing.
                   </p>
                 )}
               </>

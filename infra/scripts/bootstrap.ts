@@ -77,6 +77,17 @@ const PUBLICATION_TABLES = [
   'app.price_list_item',
   'app.movement_reason',
   'app.customer',
+  // Credit (migration 0013). The two *_scope tables are PARAMETER-query
+  // sources — the gate itself — and must replicate or every credit bucket
+  // fails closed to zero rows. The rest are the data queries.
+  'app.credit_sync_book_scope',
+  'app.credit_sync_location_scope',
+  'app.customer_account',
+  'app.credit_limit_version',
+  'app.credit_entry',
+  'app.credit_position_snapshot',
+  'app.credit_position_bucket',
+  'app.credit_allowance',
   'app.stock_movement',
   'app.sale',
   'app.sale_line',

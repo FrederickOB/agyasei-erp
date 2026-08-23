@@ -2,7 +2,7 @@
  * ═══════════════════════════════════════════════════════════════════════════
  * THE THREE THINGS A PERSON CAN DO TO A CUSTOMER'S CREDIT ACCOUNT
  * ═══════════════════════════════════════════════════════════════════════════
- * Open one · change what it is worth · take a payment against it.
+ * Open one · change what it is worth · stop it · take a payment against it.
  *
  * Until these forms existed the platform could put a customer INTO debt from a
  * screen — a credit sale writes a CHARGE server-side — and could not open the
@@ -42,6 +42,7 @@ import type { ApiCallOptions } from '../../data/api/client';
 import {
   openCreditAccount,
   setCreditLimit,
+  setCreditStatus,
   type CreditExposure,
 } from '../../data/api/credit';
 import type { LocalDb } from '../../data/db';
@@ -467,6 +468,212 @@ export function LimitForm({
         </button>
         <button type="submit" className="primary-action pressable" disabled={saving}>
           {saving ? 'Saving…' : 'Change the limit'}
+        </button>
+      </div>
+    </form>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 2b. Cutting a customer off — the account lifecycle
+// ---------------------------------------------------------------------------
+
+export interface StatusFormProps {
+  /** The position this person is deciding against. Its status IS the CAS. */
+  readonly exposure: CreditExposure;
+  readonly apiOptions: ApiCallOptions;
+  readonly onChanged: () => void;
+  readonly onCancel: () => void;
+}
+
+/**
+ * What each status means, in the words of the person who has to act on it.
+ * Nothing here is a role name and nothing branches on a tenant (§2.9); these
+ * are the three values `sales.createSale` reads, described.
+ */
+const STATUS_MEANING: Record<string, string> = {
+  ACTIVE: 'Open. They can buy on account, up to the limit.',
+  SUSPENDED: 'Stopped. No new credit sales — they can still buy for cash, and they still owe what they owe.',
+  CLOSED: 'Finished. Settled and put away. Nothing further goes on this account.',
+};
+
+/**
+ * Suspend a customer, put them back on, or close the account.
+ *
+ * ═══ THIS IS THE SWITCH BEHIND A CHECK THAT ALREADY EXISTED ═══
+ * The till has always refused a credit sale on an account that is not ACTIVE.
+ * Nothing could move an account off ACTIVE, so a customer who stopped paying
+ * could not be cut off from a screen at all.
+ *
+ * Three things this form is careful about:
+ *
+ *  1. IT SAYS WHAT EACH CHOICE DOES before it is made — particularly that
+ *     suspending stops credit and NOT cash. A person who thinks they are
+ *     banning a customer will not suspend the ones they should.
+ *  2. IT DOES NOT OFFER TO RESEND after a stale refusal. Somebody else's
+ *     decision is now the one in force; the honest next step is to look at it.
+ *  3. IT NAMES THE ALTERNATIVE when closing is refused. An account that still
+ *     owes money cannot be closed, and the useful answer is "suspend it" —
+ *     not an error code.
+ *
+ * The reason is required and short-answers are rejected, because "why was this
+ * customer cut off" is the question somebody asks three months later, and the
+ * log behind this form is append-only precisely so the answer survives.
+ */
+export function StatusForm({
+  exposure,
+  apiOptions,
+  onChanged,
+  onCancel,
+}: StatusFormProps): ReactNode {
+  const current = exposure.status;
+  const [choice, setChoice] = useState<string>(current === 'ACTIVE' ? 'SUSPENDED' : 'ACTIVE');
+  const [reason, setReason] = useState('');
+  const [problem, setProblem] = useState<string | null>(null);
+  const [stale, setStale] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [attempt, setAttempt] = useState<Attempt>(newAttempt);
+
+  /**
+   * The moves this account can make from where it is. The server holds the
+   * same table and refuses anything else; offering a choice the server would
+   * refuse costs somebody a wasted decision, so the list is narrowed here too.
+   *
+   * CLOSED is offered even when the account owes money — and refused by the
+   * server with the balance named. Hiding it would leave a person guessing why
+   * the option is missing; refusing it explains, and points at suspension.
+   */
+  const options =
+    current === 'ACTIVE'
+      ? ['SUSPENDED', 'CLOSED']
+      : current === 'SUSPENDED'
+        ? ['ACTIVE', 'CLOSED']
+        : ['ACTIVE'];
+
+  const submit = useCallback(() => {
+    if (reason.trim().length < 3) {
+      setProblem('Say why. Somebody will ask in three months, and this is the only record of it.');
+      return;
+    }
+    setProblem(null);
+    setStale(null);
+    setSaving(true);
+    void setCreditStatus(
+      {
+        ...attempt,
+        accountId: exposure.accountId,
+        status: choice as 'ACTIVE' | 'SUSPENDED' | 'CLOSED',
+        // THE COMPARE-AND-SET: the status this person had in front of them.
+        expectedStatus: current as 'ACTIVE' | 'SUSPENDED' | 'CLOSED',
+        reason: reason.trim(),
+      },
+      apiOptions,
+    ).then((outcome) => {
+      setSaving(false);
+      switch (outcome.kind) {
+        case 'changed':
+          setAttempt(newAttempt());
+          onChanged();
+          return;
+        case 'stale':
+          setStale(outcome.detail);
+          return;
+        case 'still-owing':
+          setProblem(
+            'Not saved. This account still owes money, and an account is only closed once it is settled or written off. Suspend it instead — that stops any new credit and leaves the debt exactly where it is.',
+          );
+          return;
+        case 'refused':
+          setProblem(
+            refusalText(
+              outcome.failure.kind,
+              outcome.failure.detail,
+              outcome.failure.message,
+              'Stopping or reopening an account',
+            ),
+          );
+      }
+    });
+  }, [apiOptions, attempt, choice, current, exposure, onChanged, reason]);
+
+  if (stale !== null) {
+    return (
+      <section className="server-answer server-answer-calm credit-gate" role="status">
+        <Icon name="alert" size={28} />
+        <div className="server-answer-body">
+          <h4 className="server-answer-title">This account moved while you were deciding.</h4>
+          <p className="server-answer-text">
+            Nothing you typed has been saved and nothing has been changed. Somebody else has
+            already decided something about this account. Look at it again and decide against what
+            it says now — this screen will not send your decision over the top of theirs.
+          </p>
+          <p className="server-answer-detail">
+            <span className="server-answer-detail-label">If you call someone, tell them:</span>{' '}
+            <span className="tabular">{stale}</span>
+          </p>
+          <div className="threshold-form-actions">
+            <button type="button" className="primary-action pressable" onClick={onChanged}>
+              Look at the account again
+            </button>
+          </div>
+        </div>
+      </section>
+    );
+  }
+
+  return (
+    <form
+      className="threshold-form"
+      aria-label="Change the account status"
+      onSubmit={(e) => {
+        e.preventDefault();
+        submit();
+      }}
+    >
+      <p className="threshold-form-product">
+        <span className="report-loc-name">Status now</span>
+        <span className="report-loc-code tabular">{current}</span>
+      </p>
+      <label className="threshold-form-field">
+        <span>Change it to</span>
+        <select
+          value={choice}
+          aria-label="New account status"
+          onChange={(e) => setChoice(e.currentTarget.value)}
+        >
+          {options.map((option) => (
+            <option key={option} value={option}>
+              {option}
+            </option>
+          ))}
+        </select>
+      </label>
+      <p className="adjust-kind-note">{STATUS_MEANING[choice] ?? ''}</p>
+      <label className="threshold-form-field">
+        <span>Why</span>
+        <input
+          type="text"
+          autoComplete="off"
+          value={reason}
+          aria-label="Why the status is changing"
+          onChange={(e) => setReason(e.currentTarget.value)}
+        />
+      </label>
+      <p className="adjust-kind-note">
+        Every decision about this account is kept, with who made it and why — nothing here is
+        overwritten and nothing can be deleted afterwards.
+      </p>
+      <p className="adjust-kind-note">
+        This needs a connection and nothing is queued. A till that is offline right now will not
+        learn about it until it syncs, and can keep selling on account until then.
+      </p>
+      {problem === null ? null : <Problem text={problem} />}
+      <div className="threshold-form-actions">
+        <button type="button" className="secondary-action pressable" onClick={onCancel}>
+          Leave it as it is
+        </button>
+        <button type="submit" className="primary-action pressable" disabled={saving}>
+          {saving ? 'Saving…' : 'Save this decision'}
         </button>
       </div>
     </form>

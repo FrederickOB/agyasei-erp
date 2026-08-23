@@ -70,6 +70,45 @@ export const SYNCED_TABLES: Record<string, Table> = {
     base_kind: t, base_includes: t, rounding_level: t, rounding_mode: t,
     base_minor: t, tax_minor: t, tax_rate_id: t, deleted_at: t,
   }),
+  // ---- The credit slices (sync_rules.yaml tenant_credit / -------------------
+  // location_credit_allowance, added by migration 0013). Column lists here
+  // mirror the rules' explicit SELECTs EXACTLY: a column the rules do not
+  // ship must not be declarable on a device, and a column they do ship that
+  // is missing here would be silently dropped into ps_untyped — which is why
+  // D5 counts the physical tables rather than the schema's.
+  //
+  // Every money column is TEXT. `column.integer` is a float64 in the client
+  // SDK and a bigint pesewa balance would silently round (CLAUDE.md §2.3).
+  customer_account: new Table({
+    tenant_id: t, customer_id: t, credit_limit_minor: t, terms_days: i,
+    facility_fee_bp_per_month: i, status: t, hlc: t, created_at: t, updated_at: t,
+  }),
+  credit_limit_version: new Table({
+    tenant_id: t, credit_account_id: t, limit_minor: t, terms_days: i,
+    fee_rate_bp: i, reason_code: t, note: t, supersedes_id: t, state: t,
+    decided_by: t, decided_at_location: t, effective_from: t, hlc: t,
+    created_at: t, updated_at: t,
+  }),
+  credit_entry: new Table({
+    tenant_id: t, account_id: t, kind: t, amount_minor: t, business_date: t,
+    due_date: t, source_kind: t, source_id: t, applies_to_id: t, hlc: t, created_at: t,
+  }),
+  credit_position_snapshot: new Table({
+    tenant_id: t, account_id: t, customer_id: t, status: t, terms_days: i,
+    credit_limit_minor: t, limit_version_id: t, balance_minor: t,
+    trade_exposure_minor: t, available_minor: t, on_account_credit_minor: t,
+    fee_outstanding_minor: t, opening_before_window_minor: t, aged_by: t,
+    fee_confirmed_at: t, entry_window_days: i, as_of: t, as_of_hlc: t, computed_at: t,
+  }),
+  credit_position_bucket: new Table({
+    tenant_id: t, account_id: t, seq: i, label: t, from_dpd: i, to_dpd: i,
+    amount_minor: t, as_of: t, as_of_hlc: t,
+  }),
+  credit_allowance: new Table({
+    tenant_id: t, location_id: t, customer_id: t, cap_minor: t,
+    headroom_minor: t, offline_ceiling_minor: t, credit_hold: i,
+    cap_valid_until: t, cap_version_id: t, snapshot_as_of: t, snapshot_as_of_hlc: t,
+  }),
   // platform.* jurisdiction pack (explicit column lists in the rules).
   jurisdiction: new Table({
     code: t, name: t, currency_code: t, currency_symbol: t,

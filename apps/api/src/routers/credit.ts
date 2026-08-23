@@ -28,6 +28,7 @@ import {
   openAccountInput,
   recordEntryInput,
   setLimitInput,
+  setStatusInput,
 } from '@erp/contracts';
 import { deterministicUuid } from '@erp/db';
 import { mulDiv } from '@erp/money';
@@ -52,6 +53,23 @@ import {
  * `packages/contracts/src/device-ops.ts` for why that rule exists). The
  * query and accrual inputs below stay local: they are not device writes.
  */
+
+/**
+ * What `setStatus` answers with, declared rather than inferred: the no-op
+ * branch and the transition branch return the same shape, and TypeScript would
+ * otherwise narrow `changed` to the literal of whichever branch it saw first.
+ */
+type StatusDecision = {
+  accountId: string;
+  /** False when the account was already in the status asked for. */
+  changed: boolean;
+  fromStatus: string;
+  status: string;
+  /** The log row this wrote, or null for a no-op. */
+  changeId: string | null;
+  /** Σ(entries) at the moment the decision was taken. Minor units, on the wire. */
+  exposureMinor: string;
+};
 
 interface EntryRow {
   id: string;
@@ -494,6 +512,193 @@ export const creditRouter = router({
             // `app.customer_account.credit_limit_minor` is NOT written here.
             // The projection trigger owns it and is the only thing the
             // database permits to write it (migration 0011 §5).
+          },
+        };
+      },
+    );
+    return result.response;
+  }),
+
+
+  /**
+   * ═════════════════════════════════════════════════════════════════════════
+   * CUTTING A CUSTOMER OFF — the write side of a check that already existed
+   * ═════════════════════════════════════════════════════════════════════════
+   *
+   * `sales.createSale` has refused credit tender on any account that is not
+   * `ACTIVE` since the sale path existed. Nothing could move an account off
+   * `ACTIVE`. The enforcement was real and the switch was missing, so a
+   * customer who stopped paying could not be cut off through the app at all.
+   *
+   * THREE STATUSES AND FIVE LEGAL MOVES (credit-offline-plan R4):
+   *
+   *   ACTIVE     -> SUSPENDED   reason required
+   *   SUSPENDED  -> ACTIVE      reason required
+   *   ACTIVE     -> CLOSED      only at exposure = 0
+   *   SUSPENDED  -> CLOSED      only at exposure = 0
+   *   CLOSED     -> ACTIVE      a reopen, audited as one
+   *   X          -> X           a no-op, not an error
+   *
+   * `CLOSED -> SUSPENDED` is the one remaining pair and it is refused: an
+   * account with no exposure and no trade has nothing to suspend, and allowing
+   * it would make "closed" mean two different things.
+   *
+   * WHAT SUSPENDED MEANS, EXACTLY (R4). No new `CHARGE` entries — the sale
+   * path refuses credit tender, and CASH SALES ARE UNAFFECTED, because
+   * suspending credit must not stop the customer buying. `PAYMENT`,
+   * `ADJUSTMENT`, `WRITE_OFF` and fee accrual all continue: a suspended
+   * customer still owes what they owe, and stopping the ledger would quietly
+   * forgive it.
+   *
+   * THE COMPARE-AND-SET, in the shape `setLimit` already uses. `expectedStatus`
+   * names the status the author had in front of them. A claim that no longer
+   * matches is refused with the status that won, because a suspension decided
+   * against a stale picture is exactly the case 02 §2.5's
+   * `requires_fresh_authorization` flag exists for — and migration 0012 flips
+   * that flag on `credit.account.manage`.
+   *
+   * WHAT THIS CANNOT DO, said plainly: it cannot reach a device that is dark.
+   * A partitioned outlet keeps selling on credit until it syncs, and no
+   * mechanism here changes that (R4's offline case). The answers to it —
+   * revoking the cap leases a dark device runs out of, and conflict class #20
+   * for sales that arrive after a suspension — belong to the counter allowance
+   * surface, which is not built. This route does not pretend otherwise.
+   *
+   * The history is APPEND-ONLY at the database, with no whitelist at all:
+   * `app.credit_status_change` refuses UPDATE and DELETE outright, and
+   * `app.customer_account.status` is a projection only a trigger may write. A
+   * suspension cannot be tidied away afterwards, which is the whole reason to
+   * record who, when and why.
+   */
+  setStatus: permissionProcedure({
+    code: 'credit.account.manage',
+    at: 'tenant',
+  }).input(setStatusInput).mutation(async ({ ctx, input }) => {
+    const tenantId = ctx.identity.tenantId;
+    const decidedBy = ctx.identity.userId;
+    const key = input.idempotencyKey;
+    const result = await runIdempotent(
+      { runner: ctx.deps.runner, clock: ctx.deps.clock },
+      ctx.identity,
+      {
+        op: 'credit.set_status',
+        idempotencyKey: key,
+        claimedHlc: input.claimedHlc,
+        clientWallAt: input.clientWallAt,
+      },
+      input,
+      async (tx) => {
+        const account = await requireAccount(tx, input.accountId);
+        const current = account.status;
+
+        // Exposure is Σ(entries), read here rather than recomputed later: the
+        // CLOSE rule is applied to this figure and the log records it, so an
+        // auditor sees the number the decision was actually taken against.
+        const sum = await tx.query<{ exposure: string }>(
+          `select coalesce(sum(amount_minor), 0)::bigint::text as exposure
+           from app.credit_entry where account_id = $1`,
+          [input.accountId],
+        );
+        const exposure = BigInt(sum.rows[0]!.exposure);
+
+        // ---- X -> X. A no-op, not an error, and checked FIRST -------------
+        // Whatever the author believed, the account already is what they asked
+        // for; nothing changes and the response says which status is in force.
+        // Answering CONFLICT here would make a retry of a request that already
+        // succeeded look like somebody else's decision.
+        if (current === input.status) {
+          const noop: StatusDecision = {
+            accountId: input.accountId,
+            changed: false,
+            fromStatus: current,
+            status: current,
+            changeId: null,
+            exposureMinor: wire(exposure),
+          };
+          return {
+            response: noop,
+            apply: async () => {
+              /* nothing to write */
+            },
+          };
+        }
+
+        // ---- the compare-and-set ------------------------------------------
+        if (input.expectedStatus !== current) {
+          throw new TRPCError({
+            code: 'CONFLICT',
+            message:
+              `CREDIT_STATUS_STALE: you decided against an account you believed was ` +
+              `${input.expectedStatus}, and it is ${current}. Nothing has been changed. ` +
+              `Read the account again and decide against what it says now.`,
+          });
+        }
+
+        // ---- the transition table -----------------------------------------
+        const legal =
+          (current === 'ACTIVE' && input.status === 'SUSPENDED') ||
+          (current === 'SUSPENDED' && input.status === 'ACTIVE') ||
+          (current === 'CLOSED' && input.status === 'ACTIVE') ||
+          ((current === 'ACTIVE' || current === 'SUSPENDED') && input.status === 'CLOSED');
+        if (!legal) {
+          throw new TRPCError({
+            code: 'BAD_REQUEST',
+            message:
+              `CREDIT_STATUS_TRANSITION_REFUSED: ${current} to ${input.status} is not a move ` +
+              `this account can make. Nothing has been changed.`,
+          });
+        }
+
+        // ---- closing needs a settled account ------------------------------
+        // Closing at a non-zero balance would take the account out of every
+        // "who owes us money" read while the money is still owed. Settle it,
+        // write it off, or SUSPEND instead — suspension stops new credit and
+        // leaves the debt exactly where it is.
+        if (input.status === 'CLOSED' && exposure !== 0n) {
+          throw new TRPCError({
+            code: 'PRECONDITION_FAILED',
+            message:
+              `CREDIT_STATUS_CLOSE_BLOCKED: this account still stands at ` +
+              `${wire(exposure)} minor units. An account is closed once it is settled or ` +
+              `written off. To stop further credit now, suspend it — the debt stays where ` +
+              `it is and the account stays visible.`,
+          });
+        }
+
+        const changeId = deterministicUuid(key, 'credit_status_change');
+        const decided: StatusDecision = {
+          accountId: input.accountId,
+          changed: true,
+          fromStatus: current,
+          status: input.status,
+          changeId,
+          exposureMinor: wire(exposure),
+        };
+        return {
+          response: decided,
+          apply: async (atx) => {
+            await atx.query(
+              `insert into app.credit_status_change
+                 (tenant_id, id, write_id, hlc, credit_account_id, from_status,
+                  to_status, reason_code, note, exposure_at_decision_minor,
+                  decided_by, decided_at_location)
+               values ($1,$2,$3,$4,$5,$6,$7,'MANUAL',$8,$9,$10,null)`,
+              [
+                tenantId,
+                changeId,
+                key,
+                ctx.deps.clock.next(),
+                input.accountId,
+                current,
+                input.status,
+                input.reason,
+                wire(exposure),
+                decidedBy,
+              ],
+            );
+            // `app.customer_account.status` is NOT written here. The
+            // projection trigger owns it and is the only thing the database
+            // permits to write it (migration 0012 §4).
           },
         };
       },

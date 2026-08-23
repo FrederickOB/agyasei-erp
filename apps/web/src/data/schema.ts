@@ -249,6 +249,153 @@ export const LOCAL_TABLES: readonly LocalTableDef[] = [
       t('updated_at'),
     ],
   },
+  // -- bucket: tenant_credit (holders of `credit.view`, gated in the DATABASE) --
+  //
+  // THE CREDIT BOOK, BOUNDED — and every money figure on it is SYNCED AND
+  // AUTHORITATIVE. Nothing on this device sums `credit_entry` into a balance
+  // or sorts it into an ageing band, and that is arithmetic rather than taste:
+  // the entry log here is WINDOWED, so Σ(local entries) ≠ balance by
+  // construction, and the gap grows with the age of the account. A device that
+  // summed its own log would produce a confidently wrong number at exactly the
+  // moment nobody can check it (docs/credit-offline-plan.md R2).
+  //
+  // `credit_position_snapshot` is what makes the window safe: it carries the
+  // balance AND `opening_before_window_minor`, so
+  //   opening_before_window_minor + Σ(local live entries) = balance_minor
+  // holds exactly, in bigint, no matter how much has archived out.
+  {
+    // NAMED FOR THE SERVER TABLE, NOT FOR THE CONCEPT. PowerSync derives a
+    // client table's name from the source table in the bucket's data query
+    // (`FROM "app"."customer_account"`), so a client table called
+    // `credit_account` receives NOTHING: the rows arrive with type
+    // `customer_account`, find no declared table, and land in `ps_untyped`
+    // where no query in this app can see them. That is exactly what happened
+    // — 0 rows here, 80 in `ps_untyped` — and it made the entire offline
+    // credit position silently unavailable while 16 unit tests passed, because
+    // the node test adapter builds its DDL from THIS list and the tests seeded
+    // the wrong name too. `packages/wire-conformance/test/sync-rules-to-device.test.ts`
+    // now fails if a synced table here is not a table the rules can deliver.
+    name: 'customer_account',
+    localOnly: false,
+    columns: [
+      t('tenant_id'),
+      t('customer_id'),
+      i('credit_limit_minor'),
+      i('terms_days'),
+      i('facility_fee_bp_per_month'),
+      t('status'),
+      t('hlc'),
+      t('created_at'),
+      t('updated_at'),
+    ],
+  },
+  {
+    name: 'credit_limit_version',
+    localOnly: false,
+    columns: [
+      t('tenant_id'),
+      t('credit_account_id'),
+      i('limit_minor'),
+      i('terms_days'),
+      i('fee_rate_bp'),
+      t('reason_code'),
+      t('note'),
+      t('supersedes_id'),
+      t('state'),
+      t('decided_by'),
+      t('decided_at_location'),
+      t('effective_from'),
+      t('hlc'),
+      t('created_at'),
+      t('updated_at'),
+    ],
+  },
+  {
+    // Statement lines. DISPLAY ONLY — listed, never totalled (R2).
+    name: 'credit_entry',
+    localOnly: false,
+    columns: [
+      t('tenant_id'),
+      t('account_id'),
+      t('kind'),
+      i('amount_minor'), // SIGNED — CAST AS TEXT on read
+      t('business_date'),
+      t('due_date'),
+      t('source_kind'),
+      t('source_id'),
+      t('applies_to_id'),
+      t('hlc'),
+      t('created_at'),
+    ],
+  },
+  {
+    name: 'credit_position_snapshot',
+    localOnly: false,
+    columns: [
+      t('tenant_id'),
+      t('account_id'),
+      t('customer_id'),
+      t('status'),
+      i('terms_days'),
+      i('credit_limit_minor'),
+      t('limit_version_id'),
+      i('balance_minor'),
+      i('trade_exposure_minor'),
+      i('available_minor'),
+      i('on_account_credit_minor'),
+      i('fee_outstanding_minor'),
+      i('opening_before_window_minor'),
+      t('aged_by'),
+      t('fee_confirmed_at'),
+      i('entry_window_days'),
+      t('as_of'),
+      // The server HLC this position was evaluated through. The till's causal
+      // `local_deduction` compares its own server-stamped `ack_hlc` against
+      // THIS — two server clocks, never a device clock against a server one.
+      t('as_of_hlc'),
+      t('computed_at'),
+    ],
+  },
+  {
+    // The ageing vector, rendered SERVER-SIDE against the tenant's own bands.
+    // The band edges are policy and policy is not on this device, so there is
+    // no way to recompute this here even if somebody wanted to.
+    name: 'credit_position_bucket',
+    localOnly: false,
+    columns: [
+      t('tenant_id'),
+      t('account_id'),
+      i('seq'),
+      t('label'),
+      i('from_dpd'),
+      i('to_dpd'),
+      i('amount_minor'),
+      t('as_of'),
+      t('as_of_hlc'),
+    ],
+  },
+  // -- bucket: location_credit_allowance (holders of `sale.record.credit`) --
+  // What THIS outlet may lend TODAY, and a hold flag. No limit, no balance, no
+  // ageing, no entry, no history — a stolen counter tablet discloses this
+  // outlet's lending room for the customers who trade here and nothing else
+  // (06 §6.5). Empty until §6.7's cap leases exist.
+  {
+    name: 'credit_allowance',
+    localOnly: false,
+    columns: [
+      t('tenant_id'),
+      t('location_id'),
+      t('customer_id'),
+      i('cap_minor'),
+      i('headroom_minor'),
+      i('offline_ceiling_minor'),
+      i('credit_hold'),
+      t('cap_valid_until'),
+      t('cap_version_id'),
+      t('snapshot_as_of'),
+      t('snapshot_as_of_hlc'),
+    ],
+  },
   // -- bucket: location_ops --
   {
     name: 'stock_movement',
@@ -495,6 +642,20 @@ export function localSchemaDdl(): string[] {
   );
   stmts.push(
     'CREATE INDEX idx_sequence_block_range ON sequence_block (sequence_key, location_id, block_start)',
+  );
+  // The credit read path is always "one account", so every credit table is
+  // keyed by it. The snapshot is one row per account and the bucket vector is
+  // read in `seq` order, which is the order the server rendered the bands in.
+  stmts.push('CREATE INDEX idx_credit_entry_account ON credit_entry (account_id, business_date)');
+  stmts.push(
+    'CREATE UNIQUE INDEX idx_credit_position_snapshot_account ON credit_position_snapshot (account_id)',
+  );
+  stmts.push(
+    'CREATE UNIQUE INDEX idx_credit_position_bucket_account ON credit_position_bucket (account_id, seq)',
+  );
+  stmts.push('CREATE INDEX idx_customer_account_customer ON customer_account (customer_id)');
+  stmts.push(
+    'CREATE UNIQUE INDEX idx_credit_allowance_scope ON credit_allowance (location_id, customer_id)',
   );
   return stmts;
 }

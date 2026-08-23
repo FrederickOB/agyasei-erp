@@ -18,7 +18,7 @@ import { PowerSyncDatabase } from '@powersync/node';
 import type { PowerSyncBackendConnector } from '@powersync/node';
 import { uuidv7 } from '@erp/db';
 import { blockEnd, nextNumber, renderNumber } from '@erp/sequence';
-import { API_URL, DEV_JWT_SECRET, DRILL_DATA_DIR } from './env.js';
+import { API_URL, DEV_JWT_SECRET, DRILL_DATA_DIR, POWERSYNC_URL } from './env.js';
 import { buildDrillSchema } from './schema.js';
 
 const encoder = new TextEncoder();
@@ -52,6 +52,19 @@ export class DrillDevice {
   private db: PowerSyncDatabase | null = null;
   private apiToken: string | null = null;
   private hlcCounter = 0;
+
+  /**
+   * Replaces GET /sync/token for THE FORGED-CLAIM CHECK ONLY (D8).
+   *
+   * `/sync/token` derives `tid` from the verified session and there is no
+   * input that can influence it, so a forged tenant claim cannot be produced
+   * through the API at all — which means testing it through the API tests
+   * nothing. The attack being modelled is a token minted elsewhere (a leaked
+   * signing secret, an altered claim) presented straight to the PowerSync
+   * service. That is what this hook lets a drill do, and the sync rules must
+   * still return zero rows.
+   */
+  syncTokenOverride: (() => Promise<string>) | null = null;
 
   constructor(name: string, tenantId: string, locationId: string) {
     this.name = name;
@@ -101,6 +114,12 @@ export class DrillDevice {
   private connector(): PowerSyncBackendConnector {
     return {
       fetchCredentials: async () => {
+        if (this.syncTokenOverride) {
+          return {
+            endpoint: POWERSYNC_URL,
+            token: await this.syncTokenOverride(),
+          };
+        }
         const apiToken = await this.getApiToken();
         const res = await fetch(`${API_URL}/sync/token`, {
           headers: { authorization: `Bearer ${apiToken}` },

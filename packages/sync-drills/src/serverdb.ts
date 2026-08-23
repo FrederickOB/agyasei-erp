@@ -240,7 +240,11 @@ export class ServerDb {
    * client table — tenant-scoped queries mirroring each bucket definition in
    * infra/powersync/sync_rules.yaml exactly (including its interim notes).
    */
-  async predictDeviceRows(tenantId: string, locationId: string): Promise<Record<string, number>> {
+  async predictDeviceRows(
+    tenantId: string,
+    locationId: string,
+    userId?: string,
+  ): Promise<Record<string, number>> {
     const refTables = [
       'location', 'location_type', 'unit_of_measure', 'product_category',
       'product', 'product_uom', 'price_list', 'price_list_item', 'movement_reason',
@@ -295,7 +299,258 @@ export class ServerDb {
     out['jurisdiction'] = jur.j;
     out['tax_code'] = jur.tc;
     out['tax_rate'] = jur.tr;
+
+    // ---- The credit slices (migration 0013) --------------------------------
+    // The prediction is derived from THE SAME GATE TABLES the parameter
+    // queries read, never from "this device probably has the owner role".
+    // No userId supplied => predict the fail-closed state (zero), because a
+    // device whose user is unknown to the gate receives no bucket at all.
+    const creditTables = [
+      'customer_account', 'credit_limit_version', 'credit_entry',
+      'credit_position_snapshot', 'credit_position_bucket',
+    ];
+    const inBook =
+      userId === undefined
+        ? 0
+        : await this.countScoped(
+            tenantId,
+            `select count(*)::text as n from app.credit_sync_book_scope where user_id = $1`,
+            [userId],
+          );
+    if (inBook > 0) {
+      out['customer_account'] = await this.countScoped(
+        tenantId,
+        `select count(*)::text as n from app.customer_account
+          where deleted_at is null and archived_at is null`,
+      );
+      out['credit_limit_version'] = await this.countScoped(
+        tenantId,
+        `select count(*)::text as n from app.credit_limit_version`,
+      );
+      out['credit_entry'] = await this.countScoped(
+        tenantId,
+        `select count(*)::text as n from app.credit_entry where archived_at is null`,
+      );
+      out['credit_position_snapshot'] = await this.countScoped(
+        tenantId,
+        `select count(*)::text as n from app.credit_position_snapshot`,
+      );
+      out['credit_position_bucket'] = await this.countScoped(
+        tenantId,
+        `select count(*)::text as n from app.credit_position_bucket`,
+      );
+    } else {
+      for (const t of creditTables) out[t] = 0;
+    }
+
+    // The counter's slice is keyed (tenant, location) and gated on
+    // sale.record.credit AT THAT LOCATION, intersected with location scope.
+    const locScope =
+      userId === undefined
+        ? []
+        : await this.locationScopeFor(tenantId, userId);
+    if (locScope.length === 0) {
+      out['credit_allowance'] = 0;
+    } else {
+      out['credit_allowance'] = await this.countScoped(
+        tenantId,
+        `select count(*)::text as n from app.credit_allowance where location_id = any($1::uuid[])`,
+        [locScope],
+      );
+    }
     return out;
+  }
+
+  /** The (tenant, user) rows of the location-scope gate the
+   *  `location_credit_allowance` parameter query reads. */
+  async locationScopeFor(tenantId: string, userId: string): Promise<string[]> {
+    return this.withTenant(tenantId, async (tx) => {
+      const r = await tx.query<{ location_id: string }>(
+        `select location_id from app.credit_sync_location_scope where user_id = $1`,
+        [userId],
+      );
+      return r.rows.map((x) => x.location_id);
+    });
+  }
+
+  // ══════════════════════════════════════════════════════════════════════
+  // D8 helpers — the credit sync surface (migration 0013)
+  // ══════════════════════════════════════════════════════════════════════
+
+  /**
+   * Provision a device principal holding ONE NAMED TEMPLATE ROLE at ONE scope
+   * node — the opposite of `provisionDevicePrincipal`, which grants owner.
+   *
+   * D8 is about WHO RECEIVES WHAT, so the role and the scope are the variables
+   * under test and cannot be widened for convenience. Resolved by template
+   * provenance (`app.role.origin_ref`), never by `app.role.name`.
+   */
+  async provisionRoledPrincipal(
+    tenantId: string,
+    userId: string,
+    name: string,
+    roleRef: string,
+    scopeLocationId?: string,
+  ): Promise<string[]> {
+    return this.withTenant(tenantId, async (tx) => {
+      const p = await provisionPrincipal(asDbQueryable(tx), tenantId, {
+        userId,
+        username: `drill-${name}-${userId}`,
+        displayName: `Drill device ${name}`,
+        roleRef,
+        ...(scopeLocationId !== undefined ? { scopeLocationId } : {}),
+      });
+      return p.locationIds;
+    });
+  }
+
+  /** Add a second role grant to an existing principal (the R5.3 "grant it in
+   *  the same run and the rows appear" step). Returns the assignment id. */
+  async grantRole(
+    tenantId: string,
+    userId: string,
+    roleRef: string,
+    scopeLocationId?: string,
+  ): Promise<void> {
+    await this.withTenant(tenantId, async (tx) => {
+      await provisionPrincipal(asDbQueryable(tx), tenantId, {
+        userId,
+        roleRef,
+        ...(scopeLocationId !== undefined ? { scopeLocationId } : {}),
+      });
+    });
+  }
+
+  /** Revoke EVERY role assignment a user holds that carries `credit.view`,
+   *  by soft-deleting it — the shape a real revocation takes. */
+  async revokeCreditView(tenantId: string, userId: string): Promise<number> {
+    return this.withTenant(tenantId, async (tx) => {
+      const r = await tx.query(
+        `update app.user_role_assignment ura
+            set deleted_at = now()
+          where ura.user_id = $1
+            and ura.deleted_at is null
+            and exists (
+              select 1 from app.role_permission rp
+               where rp.tenant_id = ura.tenant_id and rp.role_id = ura.role_id
+                 and rp.permission_code = 'credit.view')`,
+        [userId],
+      );
+      return r.rows.length;
+    });
+  }
+
+  /** Force the projections to recompute (the triggers already do; this is the
+   *  nightly sweep, called by hand so a drill never races one). */
+  async refreshCreditScope(tenantId: string): Promise<void> {
+    await this.withTenant(tenantId, async (tx) => {
+      await tx.query(`select app.refresh_credit_sync_scope($1)`, [tenantId]);
+    });
+  }
+
+  async inBookScope(tenantId: string, userId: string): Promise<boolean> {
+    const n = await this.countScoped(
+      tenantId,
+      `select count(*)::text as n from app.credit_sync_book_scope where user_id = $1`,
+      [userId],
+    );
+    return n > 0;
+  }
+
+  /**
+   * Seed one `credit_allowance` row.
+   *
+   * The derivation that WOULD produce these lands with 06 §6.7's cap leases
+   * (migration 0013 §5 says so, and leaves the table empty on purpose). The
+   * channel and its gate exist now, so the drill supplies the rows itself —
+   * otherwise "the OUT-01 device holds zero OUT-03 allowances" is the vacuous
+   * assertion R5's non-vacuity rule exists to forbid.
+   */
+  async seedAllowance(
+    tenantId: string,
+    locationId: string,
+    customerId: string,
+    capMinor: bigint,
+    headroomMinor: bigint,
+  ): Promise<string> {
+    return this.withTenant(tenantId, async (tx) => {
+      const id = uuidv7();
+      await tx.query(
+        `insert into app.credit_allowance
+           (tenant_id, id, location_id, customer_id, cap_minor, headroom_minor,
+            offline_ceiling_minor, credit_hold, cap_valid_until, cap_version_id,
+            snapshot_as_of, snapshot_as_of_hlc)
+         values ($1, $2, $3, $4, $5, $6, $7, false,
+                 now() + interval '7 days', $8, now(), $9)
+         on conflict (tenant_id, location_id, customer_id) do update
+            set cap_minor = excluded.cap_minor,
+                headroom_minor = excluded.headroom_minor`,
+        [
+          tenantId, id, locationId, customerId,
+          capMinor.toString(10), headroomMinor.toString(10),
+          headroomMinor.toString(10), uuidv7(), this.clock.next(),
+        ],
+      );
+      return id;
+    });
+  }
+
+  /** The account row for a customer code, with its server-derived position. */
+  async creditPosition(
+    tenantId: string,
+    customerCode: string,
+  ): Promise<{
+    accountId: string;
+    customerId: string;
+    status: string;
+    balanceMinor: bigint;
+    tradeExposureMinor: bigint;
+    feeOutstandingMinor: bigint;
+    openingBeforeWindowMinor: bigint;
+    buckets: { seq: number; label: string; amountMinor: bigint }[];
+  }> {
+    return this.withTenant(tenantId, async (tx) => {
+      const r = await tx.query<{
+        account_id: string; customer_id: string; status: string;
+        balance_minor: string; trade_exposure_minor: string;
+        fee_outstanding_minor: string; opening_before_window_minor: string;
+      }>(
+        `select s.account_id, s.customer_id, s.status, s.balance_minor::text,
+                s.trade_exposure_minor::text, s.fee_outstanding_minor::text,
+                s.opening_before_window_minor::text
+           from app.credit_position_snapshot s
+           join app.customer c on c.tenant_id = s.tenant_id and c.id = s.customer_id
+          where c.code = $1`,
+        [customerCode],
+      );
+      const row = r.rows[0];
+      if (!row) throw new Error(`no credit position for customer ${customerCode}`);
+      const b = await tx.query<{ seq: number; label: string; amount_minor: string }>(
+        `select seq, label, amount_minor::text from app.credit_position_bucket
+          where account_id = $1 order by seq`,
+        [row.account_id],
+      );
+      return {
+        accountId: row.account_id,
+        customerId: row.customer_id,
+        status: row.status,
+        balanceMinor: BigInt(row.balance_minor),
+        tradeExposureMinor: BigInt(row.trade_exposure_minor),
+        feeOutstandingMinor: BigInt(row.fee_outstanding_minor),
+        openingBeforeWindowMinor: BigInt(row.opening_before_window_minor),
+        buckets: b.rows.map((x) => ({
+          seq: x.seq, label: x.label, amountMinor: BigInt(x.amount_minor),
+        })),
+      };
+    });
+  }
+
+  /** Σ of a tenant's live credit entries — the non-vacuity yardstick. */
+  async creditEntryCount(tenantId: string): Promise<number> {
+    return this.countScoped(
+      tenantId,
+      `select count(*)::text as n from app.credit_entry where archived_at is null`,
+    );
   }
 
   async close(): Promise<void> {

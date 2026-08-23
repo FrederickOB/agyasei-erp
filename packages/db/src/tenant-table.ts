@@ -44,11 +44,30 @@ const tenantTableRegistry = new Map<string, unknown>();
 
 /**
  * App tables that legitimately have NO write_id column, per-assertion
- * exemptions in the sense of 04 §4.2.5. write_log is the referent of the
- * write-spine FK, so it cannot also carry one. NOTHING is ever exempt from
+ * exemptions in the sense of 04 §4.2.5. NOTHING is ever exempt from
  * tenant_id or forced RLS — the conformance suite hard-codes that refusal.
+ *
+ * Two kinds of exemption, and no third:
+ *
+ *  1. `write_log` is the referent of the write-spine FK, so it cannot also
+ *     carry one.
+ *  2. SERVER-DERIVED rows (04 §4.17.3, migration 0013). No client write
+ *     creates them — a trigger recomputes them from rows that DO carry a
+ *     write spine, and the spine of the derived row is the spine of its
+ *     source. Giving them a nullable `write_id` would be a column that means
+ *     nothing, which is worse than a named exemption: `credit_allowance` and
+ *     `credit_position_*` are precisely the rows a device must never be able
+ *     to author, and an always-null write column would invite one to try.
  */
-export const WRITE_ID_EXEMPT: readonly string[] = ['write_log'];
+export const WRITE_ID_EXEMPT: readonly string[] = [
+  'write_log',
+  'credit_sync_book_scope',
+  'credit_sync_location_scope',
+  'credit_ageing_band',
+  'credit_position_snapshot',
+  'credit_position_bucket',
+  'credit_allowance',
+];
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type ExtraBuilder = (t: any) => any[];

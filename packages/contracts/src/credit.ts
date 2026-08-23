@@ -110,11 +110,63 @@ export const setLimitInput = z
   .strict();
 
 /**
+ * ═══════════════════════════════════════════════════════════════════════════
+ * CUTTING A CUSTOMER OFF — the account lifecycle, and nothing else
+ * ═══════════════════════════════════════════════════════════════════════════
+ *
+ * `customer_account.status` has been ENFORCED by `sales.createSale` since the
+ * sale path existed (it refuses credit tender on any account that is not
+ * `ACTIVE`) and SET BY NOTHING. This is the write side of that check.
+ *
+ * THREE STATUSES, and the list is closed (credit-offline-plan R4). `ON_HOLD`
+ * is retired by migration 0012: a fast, reversible "stop this customer now"
+ * switch is a SEPARATE thing under a separate authority, because three flags
+ * all meaning "stopped" is how a suspended customer keeps transacting.
+ *
+ * NOT DEVICE-UPLOADABLE, for the same reason `setLimit` is not. This is a risk
+ * judgement taken against the account's current position, and a partitioned
+ * device does not hold that position — `app.credit_entry` is in no sync
+ * bucket. Worse, a queued suspension would sit in an ordered outbox behind the
+ * very credit sales it was meant to stop. It goes over tRPC and is refused out
+ * loud when the device cannot reach the office.
+ *
+ * `reason` is MANDATORY and short-answers are rejected. "Why was this customer
+ * cut off" is the question somebody asks three months later, and the log this
+ * writes is append-only precisely so that answer survives.
+ */
+export const CREDIT_ACCOUNT_STATUSES = ['ACTIVE', 'SUSPENDED', 'CLOSED'] as const;
+export type CreditAccountStatus = (typeof CREDIT_ACCOUNT_STATUSES)[number];
+
+export const setStatusInput = z
+  .object({
+    ...mutationEnvelope,
+    accountId: zUuid,
+    /** The status to move TO. Moving to the status it already has is a no-op. */
+    status: z.enum(CREDIT_ACCOUNT_STATUSES),
+    /**
+     * The status the author believed the account was in. The compare-and-set,
+     * in the shape `setLimit` already uses: a suspension decided against a
+     * view that has since changed is refused with the status that won, rather
+     * than applied over the top of somebody else's decision.
+     */
+    expectedStatus: z.enum(CREDIT_ACCOUNT_STATUSES),
+    /** Mandatory. A status that changed for no recorded reason is unauditable. */
+    reason: z.string().trim().min(3).max(500),
+  })
+  .strict();
+
+export type SetStatusInput = z.input<typeof setStatusInput>;
+export type SetStatusParsed = z.output<typeof setStatusInput>;
+
+/**
  * Which credit account belongs to this customer?
  *
  * Every credit route is addressed by ACCOUNT; everything a device holds is
- * addressed by CUSTOMER, and `app.customer_account` is in no sync bucket — so
- * without this a screen has to make a person type a UUID.
+ * addressed by CUSTOMER. Migration 0013 put `app.customer_account` into the
+ * `tenant_credit` bucket, so a `credit.view` holder's device can now answer
+ * this locally (`loadAccountIdForCustomer`) — but only that audience can, and
+ * only after a sync, so the ONLINE route stays the general answer and is what
+ * stops a screen making a person type a UUID.
  */
 export const accountForCustomerInput = z.object({ customerId: zUuid }).strict();
 

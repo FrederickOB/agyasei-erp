@@ -353,6 +353,38 @@ export const creditLimitVersion = tenantTable(
   ],
 );
 
+/**
+ * The credit account's append-only lifecycle log (migration 0012,
+ * credit-offline-plan R4).
+ *
+ * `customer_account.status` is a PROJECTION of the latest row here, written
+ * only by `app.apply_credit_status_change()`; the guard on
+ * `app.customer_account` refuses any other write to the column, and this table
+ * refuses UPDATE and DELETE outright — a suspension is undone by recording the
+ * reinstatement, never by editing or deleting the decision.
+ *
+ * `note` is NOT NULL because "why was this customer cut off" is the question
+ * somebody asks three months later.
+ */
+export const creditStatusChange = tenantTable(
+  'credit_status_change',
+  {
+    creditAccountId: uuid('credit_account_id').notNull(),
+    fromStatus: text('from_status').notNull(),
+    toStatus: text('to_status').notNull(),
+    reasonCode: text('reason_code').notNull(),
+    note: text('note').notNull(),
+    exposureAtDecisionMinor: bigint('exposure_at_decision_minor', {
+      mode: 'bigint',
+    }).notNull(),
+    decidedBy: uuid('decided_by').notNull(),
+    decidedAtLocation: uuid('decided_at_location'),
+  },
+  (t) => [
+    index('credit_status_change_account_ix').on(t.tenantId, t.creditAccountId, t.createdAt),
+  ],
+);
+
 export const sale = tenantTable(
   'sale',
   {
@@ -947,3 +979,119 @@ export const delivery = tenantTable(
     index('delivery_business_date_ix').on(t.tenantId, t.businessDate, t.carrierSupplierId),
   ],
 );
+
+// ---------------------------------------------------------------------------
+// Migration 0013 — the credit book becomes syncable.
+//
+// Every table below is SERVER-DERIVED (04 §4.17.3): no client write creates
+// one, so none carries a `write_id` and none goes through `tenantTable()`,
+// whose factory injects the write spine. They are registered by hand and named
+// on `WRITE_ID_EXEMPT` for exactly that reason. The structural pattern that is
+// never exempt — tenant_id, forced RLS, the canonical policy, a tenant-leading
+// index — holds for all of them and is asserted by the conformance suite.
+// ---------------------------------------------------------------------------
+
+/** Projection of app.effective_permission for `credit.view`. The
+ *  `tenant_credit` sync bucket's parameter query reads this: a view cannot be
+ *  published to logical replication, and a token claim cannot be revoked. */
+export const creditSyncBookScope = appSchema.table('credit_sync_book_scope', {
+  tenantId: uuid('tenant_id').notNull(),
+  id: uuid('id').notNull(),
+  userId: uuid('user_id').notNull(),
+  refreshedAt: timestamp('refreshed_at', { withTimezone: true }).notNull(),
+});
+registerAppTable('credit_sync_book_scope', creditSyncBookScope);
+
+/** app.user_location_scope ∩ app.effective_permission for
+ *  `sale.record.credit` AT THAT LOCATION. The `location_credit_allowance`
+ *  bucket's parameter query reads this. */
+export const creditSyncLocationScope = appSchema.table('credit_sync_location_scope', {
+  tenantId: uuid('tenant_id').notNull(),
+  id: uuid('id').notNull(),
+  userId: uuid('user_id').notNull(),
+  locationId: uuid('location_id').notNull(),
+  refreshedAt: timestamp('refreshed_at', { withTimezone: true }).notNull(),
+});
+registerAppTable('credit_sync_location_scope', creditSyncLocationScope);
+
+/** The tenant's ageing boundaries, in days past due. Configuration, never a
+ *  branch (CLAUDE.md §2.9); no rows = the template default {30, 60, 90}. */
+export const creditAgeingBand = appSchema.table('credit_ageing_band', {
+  tenantId: uuid('tenant_id').notNull(),
+  id: uuid('id').notNull(),
+  upperDays: smallint('upper_days').notNull(),
+});
+registerAppTable('credit_ageing_band', creditAgeingBand);
+
+/**
+ * One row per account: the balance and its composition, computed server-side.
+ *
+ * This is what makes a WINDOWED entry log safe to put on a device.
+ * Σ(entries the device holds) ≠ balance by construction once anything has been
+ * archived, so `openingBeforeWindowMinor` carries the archived remainder and
+ * `opening + Σ(local live entries) = balance` holds exactly, in bigint.
+ */
+export const creditPositionSnapshot = appSchema.table('credit_position_snapshot', {
+  tenantId: uuid('tenant_id').notNull(),
+  id: uuid('id').notNull(),
+  accountId: uuid('account_id').notNull(),
+  customerId: uuid('customer_id').notNull(),
+  status: text('status').notNull(),
+  termsDays: smallint('terms_days').notNull(),
+  creditLimitMinor: bigint('credit_limit_minor', { mode: 'bigint' }).notNull(),
+  limitVersionId: uuid('limit_version_id'),
+  balanceMinor: bigint('balance_minor', { mode: 'bigint' }).notNull(),
+  tradeExposureMinor: bigint('trade_exposure_minor', { mode: 'bigint' }).notNull(),
+  availableMinor: bigint('available_minor', { mode: 'bigint' }).notNull(),
+  onAccountCreditMinor: bigint('on_account_credit_minor', { mode: 'bigint' }).notNull(),
+  feeOutstandingMinor: bigint('fee_outstanding_minor', { mode: 'bigint' }).notNull(),
+  openingBeforeWindowMinor: bigint('opening_before_window_minor', { mode: 'bigint' }).notNull(),
+  agedBy: text('aged_by').notNull(),
+  feeConfirmedAt: timestamp('fee_confirmed_at', { withTimezone: true }),
+  entryWindowDays: integer('entry_window_days').notNull(),
+  asOf: date('as_of').notNull(),
+  /** The greatest server-stamped HLC among the entries included — the value a
+   *  till's causal `local_deduction` compares its own `ack_hlc` against. */
+  asOfHlc: text('as_of_hlc').notNull(),
+  computedAt: timestamp('computed_at', { withTimezone: true }).notNull(),
+});
+registerAppTable('credit_position_snapshot', creditPositionSnapshot);
+
+/** The ageing vector, rendered server-side against the tenant's own bands. A
+ *  device may not compute this: the band edges are policy, and policy is not
+ *  on the device. */
+export const creditPositionBucket = appSchema.table('credit_position_bucket', {
+  tenantId: uuid('tenant_id').notNull(),
+  id: uuid('id').notNull(),
+  accountId: uuid('account_id').notNull(),
+  seq: smallint('seq').notNull(),
+  label: text('label').notNull(),
+  fromDpd: integer('from_dpd'),
+  toDpd: integer('to_dpd'),
+  amountMinor: bigint('amount_minor', { mode: 'bigint' }).notNull(),
+  asOf: date('as_of').notNull(),
+  asOfHlc: text('as_of_hlc').notNull(),
+});
+registerAppTable('credit_position_bucket', creditPositionBucket);
+
+/**
+ * What ONE OUTLET may lend ONE CUSTOMER today (06 §6.5) — never the account.
+ * No limit, no balance, no ageing, no entry, no history: a stolen counter
+ * tablet discloses this outlet's lending room for the customers who trade
+ * here, and nothing about customers who trade elsewhere.
+ */
+export const creditAllowance = appSchema.table('credit_allowance', {
+  tenantId: uuid('tenant_id').notNull(),
+  id: uuid('id').notNull(),
+  locationId: uuid('location_id').notNull(),
+  customerId: uuid('customer_id').notNull(),
+  capMinor: bigint('cap_minor', { mode: 'bigint' }).notNull(),
+  headroomMinor: bigint('headroom_minor', { mode: 'bigint' }).notNull(),
+  offlineCeilingMinor: bigint('offline_ceiling_minor', { mode: 'bigint' }),
+  creditHold: boolean('credit_hold').notNull(),
+  capValidUntil: timestamp('cap_valid_until', { withTimezone: true }).notNull(),
+  capVersionId: uuid('cap_version_id').notNull(),
+  snapshotAsOf: timestamp('snapshot_as_of', { withTimezone: true }).notNull(),
+  snapshotAsOfHlc: text('snapshot_as_of_hlc').notNull(),
+});
+registerAppTable('credit_allowance', creditAllowance);

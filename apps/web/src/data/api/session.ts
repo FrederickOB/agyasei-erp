@@ -75,9 +75,12 @@ export const CAPABILITY = {
   /** Look a customer's credit position up. Held at any location. */
   creditView: 'credit.view',
   /**
-   * Open a customer's credit account, and amend its terms. TENANT-WIDE on the
-   * server (`at: 'tenant'` — held at every root of the tenant's location
-   * tree), which is stricter than anything this file can check: `holdsCapability`
+   * Open a customer's credit account, amend its terms, and MOVE IT BETWEEN
+   * ACTIVE, SUSPENDED AND CLOSED — the switch behind the check
+   * `sales.createSale` has always made and nothing could satisfy. TENANT-WIDE
+   * on the server (`at: 'tenant'` — held at every root of the tenant's
+   * location tree), which is stricter than anything this file can check:
+   * `holdsCapability`
    * answers "somewhere". An outlet manager does not hold it and Accounts does,
    * so the screen shows a manager the account and not the form. The server
    * refuses either way; hiding the form spares somebody filling it in.

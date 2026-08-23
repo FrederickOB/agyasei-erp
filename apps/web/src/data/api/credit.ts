@@ -57,11 +57,13 @@ import {
   mutationEnvelopeSchema,
   openAccountInput,
   setLimitInput,
+  setStatusInput,
   zBusinessDate,
   zUuid,
   type MutationEnvelope,
   type OpenAccountInput,
   type SetLimitInput,
+  type SetStatusInput,
 } from '@erp/contracts';
 import { add, sub, type MinorUnits } from '@erp/money';
 import {
@@ -716,5 +718,91 @@ export async function setCreditLimit(
 
   const detail = result.failure.detail ?? '';
   if (detail.includes(LIMIT_VERSION_STALE)) return { kind: 'superseded', detail };
+  return { kind: 'refused', failure: result.failure };
+}
+
+// ---------------------------------------------------------------------------
+// Cutting a customer off — the account lifecycle
+// ---------------------------------------------------------------------------
+
+/**
+ * The server's token for "this account has moved since you looked at it".
+ * A PLATFORM code, like `LIMIT_VERSION_STALE`.
+ *
+ * And, like that one, it must never become a silent retry. Somebody suspended
+ * or reopened the account while this person was deciding; re-sending under a
+ * fresh claim would apply a decision taken against a picture that no longer
+ * exists. The person reads what the account says now and decides again.
+ */
+export const CREDIT_STATUS_STALE = 'CREDIT_STATUS_STALE';
+
+/**
+ * The server's token for "an account that still owes money is not closed".
+ * The refusal names the alternative — suspend it — and the screen repeats it,
+ * because a person who cannot close an account needs to know what they CAN do.
+ */
+export const CREDIT_STATUS_CLOSE_BLOCKED = 'CREDIT_STATUS_CLOSE_BLOCKED';
+
+export interface StatusChanged {
+  readonly accountId: string;
+  /** False when the account was already in the status asked for. */
+  readonly changed: boolean;
+  readonly fromStatus: string;
+  readonly status: string;
+  /** The audit row this wrote, or null for a no-op. */
+  readonly changeId: string | null;
+  readonly exposureMinor: MinorUnits;
+}
+
+export type SetStatusOutcome =
+  | { readonly kind: 'changed'; readonly result: StatusChanged }
+  /** The account moved while this person was deciding. Nothing was changed. */
+  | { readonly kind: 'stale'; readonly detail: string }
+  /** Closing was refused because the account still owes money. */
+  | { readonly kind: 'still-owing'; readonly detail: string }
+  | { readonly kind: 'refused'; readonly failure: ApiFailure };
+
+/**
+ * Suspend a customer, put them back on, or close the account.
+ *
+ * ONLINE ONLY, and for a sharper reason than the limit form's. A suspension is
+ * decided against the account's CURRENT position, and this device does not
+ * hold that position — `app.credit_entry` is in no sync bucket, so there is no
+ * balance here to decide against. Worse, a queued suspension would sit in an
+ * ORDERED outbox behind the very credit sales it was meant to stop, arriving
+ * after the damage it was written to prevent.
+ *
+ * So it goes over the API, it is refused out loud when the device cannot
+ * reach the office, and NOTHING is queued. What this cannot do — reach a
+ * tablet that is already dark — it does not pretend to do.
+ */
+export async function setCreditStatus(
+  input: SetStatusInput,
+  options: ApiCallOptions = {},
+): Promise<SetStatusOutcome> {
+  const bad = guard(setStatusInput, 'credit.setStatus', input);
+  if (bad !== null && !bad.ok) return { kind: 'refused', failure: bad.failure };
+
+  const result = await apiMutate(
+    'credit.setStatus',
+    input,
+    (json): StatusChanged => {
+      const row = asRecord(json, 'credit.setStatus');
+      return {
+        accountId: asString(row['accountId'], 'accountId'),
+        changed: asBoolean(row['changed'], 'changed'),
+        fromStatus: asString(row['fromStatus'], 'fromStatus'),
+        status: asString(row['status'], 'status'),
+        changeId: asOptionalString(row['changeId'], 'changeId'),
+        exposureMinor: asScaled(row['exposureMinor'], 'exposureMinor'),
+      };
+    },
+    options,
+  );
+  if (result.ok) return { kind: 'changed', result: result.data };
+
+  const detail = result.failure.detail ?? '';
+  if (detail.includes(CREDIT_STATUS_STALE)) return { kind: 'stale', detail };
+  if (detail.includes(CREDIT_STATUS_CLOSE_BLOCKED)) return { kind: 'still-owing', detail };
   return { kind: 'refused', failure: result.failure };
 }

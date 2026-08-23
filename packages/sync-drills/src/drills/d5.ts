@@ -29,7 +29,10 @@ async function settleDevice(
 ): Promise<void> {
   // Convergence gate: the client VIEW counts must reach the predictions for
   // the operationally active tables before we freeze and inspect the file.
-  for (const table of ['product', 'sale', 'sale_line', 'sale_tax_line', 'stock_movement', 'customer', 'price_list_item']) {
+  for (const table of [
+    'product', 'sale', 'sale_line', 'sale_tax_line', 'stock_movement', 'customer',
+    'price_list_item', 'customer_account', 'credit_entry', 'credit_position_snapshot',
+  ]) {
     const want = predicted[table] ?? 0;
     await pollUntil(`${dev.name}: ${table} = ${want} rows`, async () => {
       const rows = await dev.getAll<{ n: number }>(`select count(*) as n from "${table}"`);
@@ -106,8 +109,11 @@ export async function runD5(cx: DrillContext): Promise<DrillResult> {
   const tenantB = cx.tenants.tenantB.id;
 
   // Tenant-scoped server predictions of what the sync rules deliver.
-  const predictA = await cx.server.predictDeviceRows(tenantA, cx.locA1);
-  const predictB = await cx.server.predictDeviceRows(tenantB, cx.locB);
+  // Predictions are per (tenant, location, USER): the credit buckets are gated
+  // on the gate tables keyed by user_id, so a prediction that ignored the user
+  // would be predicting a different device's slice.
+  const predictA = await cx.server.predictDeviceRows(tenantA, cx.locA1, cx.a1.userId);
+  const predictB = await cx.server.predictDeviceRows(tenantB, cx.locB, cx.b1.userId);
 
   // Non-vacuity: both tenants must actually HAVE operational data.
   for (const [label, p] of [

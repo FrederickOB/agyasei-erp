@@ -102,11 +102,19 @@ valid dev token (HS256, aud `powersync`, `tid` claim) it streams checkpoints.
    `tenant_membership`) don't exist yet (phase1-status §3). Until they land,
    `location_id` is a signed token claim minted server-side. No claim → no
    bucket → no rows.
-2. **Credit book not synced at all.** §3.2.2's `tenant_credit` and
-   `location_credit_allowance` buckets are permission-gated and the permission
-   tables don't exist; the fail-closed choice is *no* bucket rather than an
-   ungated one. Credit reads stay online via the API. (`credit_allowance`
-   projection table also doesn't exist yet.)
+2. **Credit book: RESOLVED, with one part still empty.** §3.2.2's
+   `tenant_credit` and `location_credit_allowance` buckets now exist and are
+   gated on the DATABASE, not on a claim. The permission tables landed in 0005
+   as VIEWS, and a view cannot be published to logical replication — so
+   migration 0013 adds two trigger-maintained projections of them
+   (`app.credit_sync_book_scope` for `credit.view`,
+   `app.credit_sync_location_scope` for `sale.record.credit` ∩ location scope)
+   and the parameter queries read those. Revoking a grant empties the device on
+   the next sync. Still empty: `app.credit_allowance` itself — a row exists only
+   where a §6.7 cap LEASE exists, and the lease machinery is not built, so the
+   counter bucket ships gated and carrying nothing. Remaining hole: a grant
+   whose `effective_to` is a future instant lapses with no DML, so
+   `app.refresh_credit_sync_scope_all()` must run on the nightly job.
 3. **`sale_line`/`sale_tax_line` are tenant-scoped, not location-scoped.**
    §3.11.10 requires denormalised `(tenant_id, location_id)` on both tables so
    they can join `location_ops` (a sync-rules data query cannot join). That

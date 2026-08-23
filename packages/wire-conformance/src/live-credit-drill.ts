@@ -486,8 +486,11 @@ async function main(): Promise<void> {
       ageing: 'DEMONSTRATED',
       facilityFee: 'GATED — Q4 unconfirmed; visible and provisional, refuses to post',
       caveat:
-        'These reads are ONLINE. app.credit_entry is deliberately absent from every sync bucket ' +
-        '(fail-closed) until the sync-rule swap lands, so a partitioned outlet cannot see a balance.',
+        'These reads are ONLINE. Migration 0013 added the tenant_credit bucket, so a credit.view ' +
+        'holder now ALSO has a synced, server-derived position offline (drill:credit-offline, D16 ' +
+        'A1-A8; sync-drills D8 for who receives it). A counter device still does not: it gets a ' +
+        'bounded credit_allowance and no balance at all, and that table is unpopulated until 06 ' +
+        'section 6.7 cap leases exist — so a partitioned OUTLET still cannot see a balance.',
     },
     checks,
   };

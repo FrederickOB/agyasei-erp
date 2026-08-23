@@ -74,12 +74,15 @@ export {
 } from './reports.js';
 
 export {
+  CREDIT_ACCOUNT_STATUSES,
   CREDIT_ENTRY_KINDS,
   accountForCustomerInput,
   openAccountInput,
   recordEntryInput,
   setLimitInput,
+  setStatusInput,
   type AccountForCustomerInput,
+  type CreditAccountStatus,
   type CreditEntryKind,
   type OpenAccountInput,
   type OpenAccountParsed,
@@ -87,6 +90,8 @@ export {
   type RecordEntryParsed,
   type SetLimitInput,
   type SetLimitParsed,
+  type SetStatusInput,
+  type SetStatusParsed,
 } from './credit.js';
 
 export {
