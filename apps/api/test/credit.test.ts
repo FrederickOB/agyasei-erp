@@ -530,16 +530,28 @@ describe('who may change a limit', () => {
     return res.accountId;
   }
 
-  it('an outlet manager may READ the account and may NOT change the limit', async () => {
+  it('an outlet manager may NOT read the account and may NOT change the limit', async () => {
     const accounts = await accountsCaller();
     const accountId = await openOn('CR-RBAC', '500000');
     const head = await accounts.credit.exposure({ accountId });
     const manager = h.callerFor(await h.principal(roleTenantId, { roleRef: 'outlet_manager' }));
 
-    // The positive control on the same route family with the same principal:
-    // "refused" here must not be able to mean "the route is broken".
-    const seen = await manager.credit.exposure({ accountId });
-    expect(seen.creditLimitMinor).toBe('500000');
+    // THE POSITIVE CONTROL ON THE PRINCIPAL, moved off the credit routes.
+    // It used to be `manager.credit.exposure(...)` succeeding — which stopped
+    // being true when the residency rule took `credit.view` out of the
+    // outlet-manager template role (packages/db/src/seed/roles.ts, "THE
+    // RESIDENCY RULE"; docs/credit-offline-plan.md R1.b). The control is still
+    // needed for the same reason — "refused" below must not be able to mean
+    // "this caller is broken" — so it now runs on a route the manager DOES
+    // hold (`stock.view`), which proves the caller resolves permissions and
+    // reaches a router before the refusals are believed.
+    const control = await manager.inventory.lowStock({});
+    expect(control.scope.locationCount).toBeGreaterThan(0);
+
+    // The read is now refused too, and the refusal names the capability.
+    await expect(manager.credit.exposure({ accountId })).rejects.toThrow(
+      /PERMISSION_DENIED: credit\.view/,
+    );
 
     await expect(
       manager.credit.setLimit({
@@ -919,7 +931,7 @@ describe('the account lifecycle: ACTIVE / SUSPENDED / CLOSED', () => {
 });
 
 describe('who may cut a customer off', () => {
-  it('an outlet manager SEES the status and may NOT change it; accounts may', async () => {
+  it('an outlet manager may NOT see the status and may NOT change it; accounts may both', async () => {
     const accounts = h.callerFor(await h.principal(roleTenantId, { roleRef: 'accounts' }));
     const opened = await accounts.credit.openAccount({
       idempotencyKey: uuidv7(),
@@ -930,10 +942,14 @@ describe('who may cut a customer off', () => {
     });
     const manager = h.callerFor(await h.principal(roleTenantId, { roleRef: 'outlet_manager' }));
 
-    // The positive control, on the same route family with the same principal:
-    // "refused" below must not be able to mean "the route is broken".
-    const seen = await manager.credit.exposure({ accountId: opened.accountId });
-    expect(seen.status).toBe('ACTIVE');
+    // The positive control on the principal, on a route it holds — see the
+    // note in "who may change a limit". The manager no longer holds
+    // `credit.view`, so it cannot see the status either.
+    const control = await manager.inventory.lowStock({});
+    expect(control.scope.locationCount).toBeGreaterThan(0);
+    await expect(manager.credit.exposure({ accountId: opened.accountId })).rejects.toThrow(
+      /PERMISSION_DENIED: credit\.view/,
+    );
 
     await expect(
       manager.credit.setStatus({
@@ -954,7 +970,7 @@ describe('who may cut a customer off', () => {
       expectedStatus: 'ACTIVE',
       reason: 'accounts has reviewed the ageing and stopped the account',
     });
-    expect((await manager.credit.exposure({ accountId: opened.accountId })).status).toBe(
+    expect((await accounts.credit.exposure({ accountId: opened.accountId })).status).toBe(
       'SUSPENDED',
     );
   });

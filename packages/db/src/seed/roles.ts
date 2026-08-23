@@ -26,6 +26,46 @@
  * another country with a completely different hierarchy.
  *
  * ---------------------------------------------------------------------------
+ * THE RESIDENCY RULE — `credit.view` IS NOT A READ ANY MORE
+ * ---------------------------------------------------------------------------
+ * Migration 0013 gave `credit.view` a second meaning. It still authorises the
+ * ONLINE read the server answers one account at a time and can refuse the next
+ * second; it ALSO decides membership of `app.credit_sync_book_scope`, and
+ * therefore whether a device downloads ~400 days of every credit customer's
+ * balance, ageing and payment history — and KEEPS it, on hardware whose threat
+ * model is physical possession.
+ *
+ * `02-security-and-access-control` §2.5: THE RIGHT TO SEE SOMETHING IS NOT THE
+ * RIGHT TO HAVE IT ON YOUR DEVICE. `docs/credit-offline-plan.md` R1.b names the
+ * consequence — "`credit.view` must never be in the counter-staff or
+ * outlet-manager template role" — and §2's own template table gives `credit.read`
+ * (this catalogue's `credit.view`) to Accounts and to nobody else.
+ *
+ * So in this template `credit.view` sits in ACCOUNTS only, plus the owner role,
+ * which holds the whole catalogue by construction and is the audited escalation
+ * path. A counter or outlet device asks the server; a back-office device holds
+ * the book.
+ *
+ * WHAT AN OUTLET MANAGER GETS INSTEAD, and the honest gap: at the till the
+ * question is never "what is this customer's balance", it is "what may I lend
+ * this customer here, now" — which is `credit_allowance` / the
+ * `location_credit_allowance` bucket, gated on `sale.record.credit` at that
+ * location (R1.a), a strictly narrower disclosure with no limit, balance,
+ * ageing or history in it. That table is deliberately unpopulated until
+ * 06 §6.7's cap leases exist. Until it is, an outlet manager rings a credit
+ * sale without a headroom figure in front of them and learns the answer from
+ * the server's refusal, which names the bound. That is a usability cost, not a
+ * correctness one — `sales.createSale` has always enforced the bound and the
+ * account status server-side — and it is the right side to be wrong on while
+ * the narrower read is built.
+ *
+ * NOTE FOR ANYONE EDITING THIS FILE: nothing in the database stops a tenant
+ * granting `credit.view` to whatever role it likes, and nothing should — the
+ * platform does not police a tenant's org chart (CLAUDE.md §2.9). What is
+ * guarded is THIS FILE, by `rbac-template.test.ts`: re-adding the code to the
+ * counter-staff or outlet-manager role turns that suite red and says why.
+ *
+ * ---------------------------------------------------------------------------
  * BOUNDS
  * ---------------------------------------------------------------------------
  * "Credit sales up to a set limit" is a BOUND on `sale.record.credit`, not a
@@ -113,7 +153,6 @@ const OUTLET_MANAGER: TemplateRole = {
     { code: 'catalogue.view' },
     { code: 'customer.view' },
     { code: 'customer.manage' },
-    { code: 'credit.view' },
     { code: 'report.view.location' },
     { code: 'admin.device.enrol' },
     // Procurement, from the yard's side: raise the order for what their
@@ -125,7 +164,9 @@ const OUTLET_MANAGER: TemplateRole = {
     { code: 'goods.receive' },
     { code: 'logistics.delivery.view' },
     { code: 'logistics.dispatch.manage' },
-    // DELIBERATELY ABSENT: credit.limit.change (the brief), sale.override_price,
+    // DELIBERATELY ABSENT: credit.view — see THE RESIDENCY RULE in the header.
+    // The manager sells on credit up to the bound above; they do not hold the
+    // book. Also absent: credit.limit.change (the brief), sale.override_price,
     // and — new with Phase 2 — purchase.order.approve. The person who raises
     // an order and signs for its goods must not also be the person who
     // authorises the spend; that separation is the standard control against a
@@ -165,7 +206,12 @@ const REGIONAL_MANAGER: TemplateRole = {
     // Bounded exactly like a credit sale is: approval is a commitment, and
     // the ceiling is a decimal STRING in minor units (ADR-0004).
     { code: 'purchase.order.approve', bound: { max_order_value_minor: '5000000' } }, // GH₵50,000
-    // DELIBERATELY ABSENT: credit.limit.change, sale.override_price, goods.receive.
+    // DELIBERATELY ABSENT: credit.view — inherited by the filter above, and
+    // stated here so nobody re-adds it thinking the omission was an accident
+    // of the spread. A regional manager carries a tablet across six regions;
+    // that is a field device, not a back office, and the residency rule in the
+    // header applies to it at least as strongly as to an outlet. Also absent:
+    // credit.limit.change, sale.override_price, goods.receive.
   ],
 };
 

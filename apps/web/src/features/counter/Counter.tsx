@@ -12,8 +12,13 @@ import {
   setCartLineQty,
   startFreshCart,
 } from '../../data/mutations/cart';
+import { readCartPricingBasis } from '../../data/pricing/cart-basis';
 import {
-  cartTotalMinor,
+  priceCart,
+  UNTAXED_BASIS,
+  type CartPricingBasis,
+} from '../../data/pricing/cart-pricing';
+import {
   checkout,
   DuplicateSaleError,
   SaleContextIncompleteError,
@@ -108,6 +113,20 @@ export function Counter({ db }: { readonly db: LocalDb }): ReactNode {
   );
   const cartBlocked = saleable !== undefined && saleable !== null && blocksSale(saleable);
 
+  // WHAT THE CUSTOMER HANDS OVER depends on the list's own convention and on
+  // the tax components in force on the trading day, both of which are rows on
+  // this device. Read live, because both can arrive or change while a till is
+  // switched on. Until they resolve the neutral basis stands: the extension of
+  // the lines, which is the same figure this screen has always shown.
+  const basis = useLiveQuery(
+    db,
+    (d) =>
+      pinnedPriceListId === undefined
+        ? Promise.resolve<CartPricingBasis | null>(null)
+        : readCartPricingBasis(d, pinnedPriceListId),
+    [pinnedPriceListId],
+  );
+
   // The cart — and with it the sale's idempotency key — exists BEFORE the
   // first line is added (§8.2).
   useEffect(() => {
@@ -193,7 +212,13 @@ export function Counter({ db }: { readonly db: LocalDb }): ReactNode {
       .then(() => db.changes.notify());
   }, [db, removed, cartId]);
 
-  const totalMinor = useMemo(() => cartTotalMinor(lines ?? []), [lines]);
+  // ONE pricing, shared by the cart footer, the amount due and the payload:
+  // three places that must never show three numbers.
+  const pricing = useMemo(
+    () => priceCart(lines ?? [], basis ?? UNTAXED_BASIS),
+    [lines, basis],
+  );
+  const totalMinor = pricing.grossMinor;
 
   const onCompleteSale = useCallback(
     (tenderedMinor: bigint) => {
@@ -282,6 +307,7 @@ export function Counter({ db }: { readonly db: LocalDb }): ReactNode {
     onUndoRemove,
     removed,
     onTakePayment: takePayment,
+    pricing,
     // Preventing the tap beats refusing it: walking someone to the tender
     // screen only to turn them back is a worse way to say the same thing.
     sellable: !cartBlocked,
@@ -293,7 +319,7 @@ export function Counter({ db }: { readonly db: LocalDb }): ReactNode {
         {refusalBanner}
         {stuckBanner}
         <TenderPanel
-          totalMinor={totalMinor}
+          pricing={pricing}
           onBack={() => setMode({ step: 'cart' })}
           onComplete={onCompleteSale}
         />

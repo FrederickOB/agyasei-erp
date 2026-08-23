@@ -22,11 +22,24 @@ import { DrillResult } from '../report.js';
 import { openAccountOp } from '../context.js';
 import {
   CREDIT_BOOK_TABLES, CREDIT_TILL_TABLE, bringUp, creditCounts, distinctOnDisk,
-  forgedSyncToken, proveTenantAbsence, type CreditMarkers,
+  forgedSyncToken, nonEmptyDataTables, proveTenantAbsence, type CreditMarkers,
 } from './d8-support.js';
 import { grepDeviceFiles } from '../rawdb.js';
 
 /** Distinguishable, unusual amounts — each doubles as a byte-grep marker. */
+/**
+ * The credit limit every D8 account opens at, and it is NOT a round number on
+ * purpose. It was `99000000`, and as a byte-grep marker that was worthless:
+ * dev prices are `minor units × 10⁴`, so every `unit_price_e4` in the catalogue
+ * ends in four zeros and a round limit collides with one. It did — the
+ * outlet-manager device below reported `hits=2` for `99000000` while holding
+ * zero rows of the credit book, and Postgres confirmed exactly two
+ * `price_list_item` rows at that price. A marker ending in a non-zero digit
+ * cannot be a dev price at all, which is what makes the absence claim mean
+ * something. Comfortably above the fixture's charges, so no entry is refused
+ * against the limit.
+ */
+const A_CREDIT_LIMIT = '96431907';
 const A_CHARGE_1 = 7_733_101n;
 const A_CHARGE_2 = 2_900_077n;
 const B_CHARGE_1 = 4_411_909n;
@@ -43,7 +56,7 @@ async function seedAccount(
   name: string,
   charges: { amount: bigint; dueDate: string }[],
 ): Promise<{ accountId: string; customerId: string }> {
-  await dev.recordToOutbox('credit.open_account', openAccountOp(code, name, '99000000'));
+  await dev.recordToOutbox('credit.open_account', openAccountOp(code, name, A_CREDIT_LIMIT));
   let acks = await dev.flushOutbox();
   if (acks.some((a) => a.status === 'rejected')) {
     throw new Error(`D8 seed openAccount rejected: ${JSON.stringify(acks)}`);
@@ -129,9 +142,20 @@ export async function runD8(cx: DrillContext): Promise<DrillResult> {
   const tillA1 = new DrillDevice('d8-till-a-out01', tenantA, cx.locA1);
   const tillA3 = new DrillDevice('d8-till-a-out03', tenantA, cx.locA3);
   const acctB = new DrillDevice('d8-accounts-b', tenantB, cx.locB);
+  // R1.b's device, in the configuration that was ACTUALLY exposed. The gap was
+  // never "a scoped outlet manager": migration 0013 already narrows the gate to
+  // `credit.view` AT THE TENANT ROOT, so an outlet-scoped grant confers nothing.
+  // What put the book on an outlet tablet was the TEMPLATE granting
+  // `credit.view` to the outlet-manager role, combined with a ROOT assignment —
+  // which is what most principals get. So this device is provisioned with NO
+  // location argument: outlet manager, at the root, the worst case the template
+  // could produce. If `credit.view` ever returns to that role, this device
+  // fills up and every check below turns red.
+  const mgrA = new DrillDevice('d8-outlet-manager-a-root', tenantA, cx.locA1);
   await cx.server.provisionRoledPrincipal(tenantA, acctA.userId, acctA.name, 'accounts');
   await cx.server.provisionRoledPrincipal(tenantA, tillA1.userId, tillA1.name, 'counter_staff', cx.locA1);
   await cx.server.provisionRoledPrincipal(tenantA, tillA3.userId, tillA3.name, 'counter_staff', cx.locA3);
+  await cx.server.provisionRoledPrincipal(tenantA, mgrA.userId, mgrA.name, 'outlet_manager');
   await cx.server.provisionRoledPrincipal(tenantB, acctB.userId, acctB.name, 'accounts');
   await cx.server.refreshCreditScope(tenantA);
   await cx.server.refreshCreditScope(tenantB);
@@ -144,8 +168,16 @@ export async function runD8(cx: DrillContext): Promise<DrillResult> {
       !(await cx.server.inBookScope(tenantA, tillA3.userId)),
     'credit.view at the tenant root gates the book; counter_staff holds sale.record.credit and no credit.view',
   );
+  // GAP 20. Before the template correction this was TRUE and the device below
+  // downloaded the whole book.
+  r.check(
+    'R1.b gate: an OUTLET MANAGER assigned AT THE ROOT is NOT in credit_sync_book_scope',
+    !(await cx.server.inBookScope(tenantA, mgrA.userId)),
+    'the template no longer grants credit.view to the outlet-manager role, so the root ' +
+      'assignment confers nothing — the strongest form of the R1.b claim',
+  );
 
-  const devices = [acctA, tillA1, tillA3, acctB];
+  const devices = [acctA, tillA1, tillA3, mgrA, acctB];
   const predict = new Map<string, Record<string, number>>();
   for (const d of devices) {
     predict.set(
@@ -235,6 +267,64 @@ export async function runD8(cx: DrillContext): Promise<DrillResult> {
     'the accounts device holds NO allowance rows — credit.view is not sale.record.credit',
     (acctCounts[CREDIT_TILL_TABLE] ?? 0) === 0,
     `${CREDIT_TILL_TABLE}=${acctCounts[CREDIT_TILL_TABLE]}`,
+  );
+
+  // ── GAP 20 / R1.b: THE OUTLET MANAGER'S DEVICE, READ AS A FILE ─────────
+  //
+  // The claim is an ABSENCE, so it is asserted with exact counts against a
+  // live positive control in the same run, and then again with a byte grep
+  // over the sqlite file AND its -wal sidecar — a row can be committed to the
+  // write-ahead log and be invisible to `select count(*)`.
+  const mgrCounts = creditCounts(mgrA.dbPath);
+  const mgrTables = nonEmptyDataTables(mgrA.dbPath);
+  r.check(
+    'GAP 20: a ROOT-scoped OUTLET MANAGER device holds ZERO rows of the credit book, per table, on disk',
+    CREDIT_BOOK_TABLES.every((t) => (mgrCounts[t] ?? 0) === 0),
+    CREDIT_BOOK_TABLES.map((t) => `${t}=${mgrCounts[t] ?? 0}`).join(' '),
+  );
+  r.check(
+    'GAP 20 non-vacuity: the SAME tables on the accounts device in the SAME run are non-empty',
+    CREDIT_BOOK_TABLES.every((t) => (acctCounts[t] ?? 0) > 0),
+    CREDIT_BOOK_TABLES.map((t) => `accounts ${t}=${acctCounts[t] ?? 0} vs manager ${mgrCounts[t] ?? 0}`).join(' '),
+  );
+  // WHAT COUNTS AS "THE BOOK", stated before it is asserted. The customer's
+  // NAME is not the book: customer identity rides `tenant_customers` and an
+  // outlet manager holds `customer.view`, so the name is SUPPOSED to be on this
+  // device — that is how a manager looks a customer up at all. The book is the
+  // money: the balance, the charges that make it and the limit. This drill's
+  // first draft grepped the name too, and this device answered `hits=3`; the
+  // check was wrong, not the gate. Keeping the name here as the POSITIVE
+  // CONTROL is strictly stronger than dropping it — it proves in one file that
+  // the grep works, that the device really did sync this tenant's customers,
+  // and that what is missing is exactly the money and only the money.
+  const bookMarkers: { what: string; marker: string }[] = [
+    { what: 'balance', marker: posA.balanceMinor.toString(10) },
+    { what: 'charge 1', marker: A_CHARGE_1.toString(10) },
+    { what: 'charge 2', marker: A_CHARGE_2.toString(10) },
+    { what: 'credit limit', marker: A_CREDIT_LIMIT },
+  ];
+  const mgrHits = bookMarkers.map((m) => ({ ...m, hits: grepDeviceFiles(mgrA.dbPath, m.marker) }));
+  r.check(
+    'GAP 20: not one BOOK figure — balance, charge or limit — appears in the manager device file or its -wal',
+    mgrHits.every((m) => m.hits === 0),
+    mgrHits.map((m) => `${m.what} "${m.marker}" hits=${m.hits}`).join('; '),
+  );
+  const acctHits = bookMarkers.map((m) => ({ ...m, hits: grepDeviceFiles(acctA.dbPath, m.marker) }));
+  r.check(
+    'GAP 20 positive control: the SAME figures ARE in the accounts device file — the grep is not blind',
+    acctHits.every((m) => m.hits > 0),
+    acctHits.map((m) => `${m.what} hits=${m.hits}`).join('; '),
+  );
+  r.check(
+    'GAP 20: the manager device DOES hold the customer\'s NAME — identity is not the book (R1.a)',
+    grepDeviceFiles(mgrA.dbPath, nameA) > 0,
+    `name "${nameA}" hits=${grepDeviceFiles(mgrA.dbPath, nameA)} on the manager file, ` +
+      `while every money figure above is 0 — the right to see is not the right to hold`,
+  );
+  r.check(
+    'GAP 20: the manager device is NOT simply an empty file — it synced its tenant\'s other data',
+    mgrTables > 0,
+    `${mgrTables} synced data tables on disk, none of them a credit-book table`,
   );
 
   // ── R5.4: same-tenant location narrowing ───────────────────────────────

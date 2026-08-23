@@ -13,22 +13,34 @@
  */
 import { useMemo, useState, type ReactNode } from 'react';
 import { compare, format, parse, sub } from '@erp/money';
+import type { CartPricing } from '../../data/pricing/cart-pricing';
 import { useCurrencySpec } from '../../money/CurrencyContext';
 import { Money } from '../../money/Money';
 import { suggestedTenders } from '../../money/quick-cash';
 import { Icon } from '../../ui/Icon';
 
 export function TenderPanel({
-  totalMinor,
+  pricing,
   onComplete,
   onBack,
 }: {
-  readonly totalMinor: bigint;
+  /**
+   * What the customer hands over, and the tax split when this device can state
+   * one. The SAME object the cart footer rendered — the amount due is never
+   * recomputed here, because a tender screen that disagreed with the cart
+   * behind it is a disagreement nobody would notice until cash-up.
+   */
+  readonly pricing: CartPricing;
   readonly onComplete: (tenderedMinor: bigint) => void;
   readonly onBack: () => void;
 }): ReactNode {
   const spec = useCurrencySpec();
   const [text, setText] = useState('');
+  const totalMinor = pricing.grossMinor;
+  const taxNoted =
+    pricing.isTaxInclusive && pricing.breakdown !== null && pricing.breakdown.taxTotalMinor !== 0n
+      ? pricing.breakdown.taxTotalMinor
+      : null;
 
   const tendered = useMemo<bigint | null>(() => {
     const trimmed = text.trim();
@@ -50,6 +62,13 @@ export function TenderPanel({
       <div className="tender-due">
         <span className="total-label">Amount due</span>
         <Money amount={totalMinor} className="money total-value tender-total" />
+        {/* On an inclusive list the shelf price IS the amount due; saying so
+            here is what lets a cashier answer "is tax on top of that?". */}
+        {taxNoted !== null ? (
+          <p className="total-note">
+            Includes tax <Money amount={taxNoted} className="money tender-tax" />
+          </p>
+        ) : null}
       </div>
 
       <label className="tender-label" htmlFor="tender-input">

@@ -118,7 +118,12 @@ describe('the price list a cart was rung against', () => {
 
     const state = await resolveCartPriceList(db, listId, NOW);
 
-    expect(state).toEqual({ status: 'sellable', code: 'IN-FORCE', message: null });
+    expect(state).toEqual({
+      status: 'sellable',
+      code: 'IN-FORCE',
+      message: null,
+      isTaxInclusive: false,
+    });
   });
 
   it('refuses a list that lapsed overnight, at the counter', async () => {
@@ -152,19 +157,20 @@ describe('the price list a cart was rung against', () => {
     expect((await resolveCartPriceList(db, listId, NOW)).status).toBe('not-offered');
   });
 
-  it('refuses a list that turned tax-inclusive under an open cart', async () => {
-    // `is_tax_inclusive` is a synced column and can change under a cart that
-    // is already open. The device gate refuses to BIND such a list and the API
-    // refuses to PRICE one; a pinned cart was the path between them that
-    // checked neither.
+  it('sells a list that turned tax-inclusive under an open cart, and says so', async () => {
+    // `is_tax_inclusive` is a synced column and CAN change under a cart that is
+    // already open. It used to be a refusal — nothing could de-gross a shelf
+    // price. Now it is an input: the verdict carries the LIVE value, so the
+    // cart is priced in whichever direction the list currently declares rather
+    // than the one it declared when the cart was pinned.
     const db = openTestDb();
     await provisionDevice(db);
     const listId = await seedSyncedList(db, { taxInclusive: true });
 
     const state = await resolveCartPriceList(db, listId, NOW);
 
-    expect(blocksSale(state)).toBe(true);
-    expect(state.message).toContain('include tax');
+    expect(blocksSale(state)).toBe(false);
+    expect(state.isTaxInclusive).toBe(true);
   });
 
   it('derives the trading day in the LOCATION’s timezone, not the tablet’s', async () => {

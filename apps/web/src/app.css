@@ -779,6 +779,22 @@ button {
   font-weight: 800;
   letter-spacing: -0.02em;
 }
+/* Subtotal and tax sit UNDER the total in weight, never beside it: the figure
+   a customer hands over is the one thing on this panel that must be readable
+   across a counter in daylight. */
+.subtotal-row .money {
+  font-size: var(--t-md);
+  font-weight: 600;
+}
+.total-note {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--t-sm);
+  font-weight: 600;
+}
+.total-note .money {
+  font-weight: 700;
+}
 
 /* The bar a phone always sees: count, live total, and the one primary action,
    pinned in the thumb zone above the gesture bar. */

@@ -39,9 +39,13 @@
  * device four days offline holds a price list that may have moved; its
  * arithmetic is a claim, never a source.
  *
- * What the counter still does locally, because it must: compute the total, the
- * tax-exclusive line amounts and the change, with the radio off, in bigint —
- * the customer is standing there. That figure goes on the wire in exactly one
+ * What the counter still does locally, because it must: compute WHAT THE
+ * CUSTOMER HANDS OVER and the change, with the radio off, in bigint — the
+ * customer is standing there. On a tax-inclusive list that means de-grossing
+ * the shelf price against the pack's declared composition, and on a
+ * tax-exclusive one composing the tax onto it (../pricing/cart-pricing.ts);
+ * either way the total is the gross, which is the same figure the server's
+ * repricing produces. That figure goes on the wire in exactly one
  * place, `clientTotalMinor`, which the contract defines as the stale-price-list
  * DETECTOR: the server compares it against its own repriced total, records the
  * comparison, and writes its own figure regardless.
@@ -55,12 +59,14 @@
  * in SQL, where SUM() would come back as float64 (§8.3).
  */
 import { createSaleInput, type CreateSaleInput } from '@erp/contracts';
-import { add, compare, lineNetMinor, serializeMoney, sub } from '@erp/money';
+import { compare, serializeMoney, sub } from '@erp/money';
 import { assertBusinessDate, businessDateFor } from '../../lib/business-date';
 import { deviceNodeFromClaimedHlc, type ClaimedHlcClock } from '../../lib/hlc';
 import type { ReceiptNumberFormat } from '../../lib/receipt-number';
 import { uuidv7 } from '../../lib/uuidv7';
 import type { DbExecutor, LocalDb } from '../db';
+import { cartTotalMinor, UNTAXED_BASIS, type CartPricingBasis } from '../pricing/cart-pricing';
+import { readPricingBasis } from '../pricing/cart-basis';
 import { getCartLines, getOpenCart, type CartLineRow, type CartRow } from '../queries/cart';
 import { readDeviceLocation, readReceiptFormat } from '../queries/session';
 import { resolveCartPriceList } from '../session/device-price-list';
@@ -115,23 +121,20 @@ export class SalePayloadInvalidError extends Error {
   }
 }
 
-/** Extended line amount, rounded ONCE on the extended amount (§4.13 via @erp/money). */
-export function lineTotalMinor(line: CartLineRow): bigint {
-  return lineNetMinor(line.qtyScaled, line.qtyScale, line.unitPriceE4, 'half-up');
-}
-
 /**
- * Cart total: exact bigint sum of line totals.
- *
- * LOCAL DISPLAY AND THE OFFLINE RECEIPT — that is its whole job, plus the
- * `clientTotalMinor` claim the server compares against. It is not, and must
- * never become, the figure `app.sale.total_minor` is written from.
+ * The cart's money lives in `../pricing/cart-pricing.ts`, which owns the one
+ * rule that matters here: the total is what the CUSTOMER HANDS OVER, on a
+ * tax-inclusive list and a tax-exclusive one alike. Re-exported so the counter
+ * keeps importing its total from the module that also builds the payload.
  */
-export function cartTotalMinor(lines: readonly CartLineRow[]): bigint {
-  let sum = 0n;
-  for (const line of lines) sum = add(sum, lineTotalMinor(line));
-  return sum;
-}
+export {
+  cartTotalMinor,
+  lineTotalMinor,
+  priceCart,
+  UNTAXED_BASIS,
+  type CartPricing,
+  type CartPricingBasis,
+} from '../pricing/cart-pricing';
 
 /** Cash or credit. The contract's enum, spelled once. */
 export type TenderKind = CreateSaleInput['tender'];
@@ -154,6 +157,13 @@ export interface SalePayloadInput {
   readonly createdAt: string;
   readonly lines: readonly CartLineRow[];
   readonly tenderedMinor: bigint;
+  /**
+   * The list's tax convention and the pack rows in force on `businessDate`.
+   * Omitted means the neutral basis — a tax-exclusive list with no pack rows,
+   * which is local-only mode and is the behaviour every caller had before an
+   * inclusive list could be rung.
+   */
+  readonly pricingBasis?: CartPricingBasis;
 }
 
 export interface BuiltSalePayload {
@@ -180,7 +190,11 @@ export interface BuiltSalePayload {
 export function buildSalePayload(input: SalePayloadInput): BuiltSalePayload {
   if (input.lines.length === 0) throw new EmptyCartError();
 
-  const totalMinor = cartTotalMinor(input.lines);
+  // WHAT THE CUSTOMER HANDS OVER — gross, under the list's own convention.
+  // On a tax-inclusive list that is the shelf price extended by the quantity;
+  // on a tax-exclusive one it is the extension plus the composed tax. Both
+  // come from the same module and the same pack data (../pricing/).
+  const totalMinor = cartTotalMinor(input.lines, input.pricingBasis ?? UNTAXED_BASIS);
   // Cash is counted against the LOCAL total: the customer is standing there
   // and the server is not reachable. The server's repriced figure may differ,
   // which is precisely what `clientTotalMinor` exists to surface.
@@ -254,6 +268,14 @@ export interface SaleContext {
   readonly priceListCode: string;
   readonly businessDate: string;
   readonly receiptFormat: ReceiptNumberFormat;
+  /**
+   * The list's convention and the pack rows in force ON THIS SALE'S BUSINESS
+   * DATE — resolved together, from the same day, so a sale filed under one
+   * date can never be taxed against the rows of another. A device that holds
+   * no pack rows yet still sells: the total is the list's own extension, the
+   * split is reported as unavailable, and the server reprices (§4.13 row 6).
+   */
+  readonly pricingBasis: CartPricingBasis;
 }
 
 /**
@@ -303,6 +325,7 @@ export async function loadSaleContext(
     priceListCode: priceList.code,
     businessDate,
     receiptFormat: await readReceiptFormat(tx),
+    pricingBasis: await readPricingBasis(tx, priceList.isTaxInclusive, businessDate),
   };
 }
 
@@ -384,6 +407,7 @@ export async function checkout(db: LocalDb, input: CheckoutInput): Promise<Check
       createdAt: nowIso,
       lines,
       tenderedMinor: input.tenderedMinor,
+      pricingBasis: context.pricingBasis,
     });
 
     // The queue position, taken inside the SAME transaction that writes the

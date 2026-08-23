@@ -47,6 +47,7 @@ import {
   seedGhanaJurisdiction,
 } from '@erp/db/seed';
 import { applyDevPrices } from './dev-prices.js';
+import { applyDevPurchaseUnits } from './dev-purchase-units.js';
 
 const DATABASE_URL =
   process.env.DATABASE_URL ?? 'postgresql://erp:erp_dev@localhost:5433/erp';
@@ -327,13 +328,30 @@ async function main(): Promise<void> {
         `[bootstrap] tenant ${t.slug}: ${priced.items} dev prices across ` +
           `${priced.lists.join(', ')}`,
       );
-      if (priced.madeExclusive.length > 0) {
+      if (priced.inclusiveLists.length > 0) {
         console.log(
-          `[bootstrap] DEV FIXTURE: made ${priced.madeExclusive.join(', ')} tax-EXCLUSIVE so a ` +
-            'counter can ring them. Neither the client nor sales.createSale can price a ' +
-            'tax-inclusive list yet; the shipped template is unchanged.',
+          `[bootstrap] tenant ${t.slug}: ${priced.inclusiveLists.join(', ')} priced ` +
+            'tax-INCLUSIVE, exactly as the template ships them. The bootstrap no longer ' +
+            'flips them to exclusive; a shelf price is de-grossed at the till and on the ' +
+            'server, so the dev stack now runs the configuration a real tenant runs.',
         );
       }
+    }
+
+    // 6b — dev purchase units ---------------------------------------------
+    //
+    // The template marks every converting unit `can_sell` and never `can_buy`
+    // — the founder confirms the buying direction — so a stack built from
+    // nothing has no product bought in anything but its stocking unit, and the
+    // procurement, distribution-cost and counter drills abort at their first
+    // precondition. See infra/scripts/dev-purchase-units.ts for why this
+    // enables an existing row rather than authoring a factor.
+    for (const t of [TENANT_A, TENANT_B]) {
+      const units = await withTenant(t.id, (tx) => applyDevPurchaseUnits(tx, t.id));
+      console.log(
+        `[bootstrap] tenant ${t.slug}: ${units.enabled} converting unit(s) made buyable ` +
+          `(${units.buyable.length} buyable in total, e.g. ${units.buyable.slice(0, 3).join(', ')})`,
+      );
     }
 
     // 7 — record the dev tenant ids --------------------------------------

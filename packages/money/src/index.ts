@@ -36,5 +36,21 @@ export {
 export { divRound, floorDivRem } from './rounding.js';
 export { abs, add, compare, lineNetMinor, mulBps, mulDiv, mulRateE4, negate, sub } from './arith.js';
 export { allocate } from './allocate.js';
+export {
+  assertTaxComponents,
+  composeTaxFromNet,
+  taxRoundingLevel,
+  type TaxBaseKind,
+  type TaxComponent,
+  type TaxComposition,
+  type TaxLine,
+  type TaxRoundingLevel,
+} from './tax.js';
+export {
+  effectiveTaxFraction,
+  extractTaxFromGross,
+  type TaxExtraction,
+  type TaxGrossUpFraction,
+} from './tax-extract.js';
 export { format, formatWithSymbol, parse } from './format.js';
 export { deserializeMoney, serializeMoney } from './serialize.js';

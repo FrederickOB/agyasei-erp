@@ -20,6 +20,12 @@ here assumes 100. There is no built-in currency registry; the pack supplies the
 | `mulBps(amount, bps, mode)` | amount × basis points (tax components, facility fee, margins) |
 | `lineNetMinor(qtyScaled, qtyScale, unitPriceE4, mode)` | §4.13 row 3 verbatim: extended line amount, rounded once on the extension |
 | `allocate(total, weights)` | largest-remainder split that sums back exactly (rule below) |
+| `TaxComponent` | one pack row of §7.2.4: `{ code, rateBp, baseKind, baseIncludes, roundingLevel, roundingMode }` |
+| `assertTaxComponents(components)` | fail-closed validation of a component set (empty set, duplicate code, negative rate, cycle, forward reference) |
+| `taxRoundingLevel(components)` | the set's uniform `rounding_level` — chooses the CALL SITE (per line, or once per document) |
+| `composeTaxFromNet(netMinor, components)` | **forward**, §4.13 row 5: net → tax lines → gross |
+| `extractTaxFromGross(grossMinor, components, netRoundingMode)` | **inverse**, §4.13 row 6: a tax-INCLUSIVE shelf price → net + tax lines (rule below) |
+| `effectiveTaxFraction(components)` | the set's exact gross-up rational, derived from composition — never a constant |
 | `format / parse` | canonical decimal string ↔ minor units, exact and round-tripping; `parse` rejects floats, exponents, and precision beyond scale |
 | `serializeMoney / deserializeMoney` | JSON boundary: minor units as a decimal **string**, never a JSON number (a JSON number is a float64 in every consumer) |
 | `MoneyError` | the only failure type; nothing returns NaN/Infinity/silently-wrong |
@@ -43,6 +49,47 @@ digit counts and loop indices.
 Consequences, all tested: zero weights receive exactly `0n`; negative totals
 work unchanged; mixed-sign weights are proportional; `S = 0` and empty weight
 vectors throw.
+
+## The tax rule (normative)
+
+Rates and base composition are pack **data** (ADR-0002, ADR-0007). This module
+holds no rate, no code, no country and no date; it inverts whatever composition
+it is handed. Ghana's two regimes differ only in composition — levies and VAT on
+the same net (effective 20%) versus VAT on a base that already includes the
+levies (effective 21.9%), with **no rate changing** — and both arrive here as
+rows.
+
+**Forward** (`composeTaxFromNet`, tax-exclusive list) — for each component *c* in
+pack order: `base_c = net + Σ(tax_j : j ∈ base_includes_c)`, then
+`tax_c = ROUND(base_c × rate_bp_c / 10000)` at *c*'s own mode, rounded once.
+A `base_includes` member absent from the set contributes nothing (the dated
+`GH.COVID`-after-repeal case); a member the pack orders *later* throws.
+
+**Inverse** (`extractTaxFromGross`, tax-inclusive shelf price) — the invariant is
+`net + Σ tax === gross`, **exactly, for every input**:
+
+1. Candidate net `= ROUND(gross × D / (D + N))` at the caller's explicit
+   `netRoundingMode`, with `N/D` from `effectiveTaxFraction` — derived from the
+   component set and its base composition, never from a single rate.
+2. **The exact inverse wins.** The forward map is strictly increasing (rates are
+   ≥ 0), so a gross has at most one net that reproduces it. That net is found by
+   bracket-and-binary-search and returned, with tax lines bit-for-bit identical
+   to `composeTaxFromNet`'s. **The same sale priced from the net and from the
+   shelf gross therefore agree exactly.**
+3. **Residual placement**, only when the forward map *skips* the gross (with a
+   20% set, net 3 grosses to 3 and net 4 to 5 — a shelf price of 4 has no
+   preimage). The residual `gross − net − Σ tax_c` is handed out one minor unit
+   at a time by `allocate` across the components, weighted by
+   `|base_c| × rate_bp_c` — each component's exact pre-rounding claim. So it
+   lands on the **largest claim (in practice the highest-rate component, VAT)**,
+   ties to **pack order**.
+
+Consequences, all tested: a zero-**rate** component always reports exactly `0n`;
+the residual never re-enters a cascade base (`TaxLine` reports `computedMinor`
+and `residualMinor` separately, and a re-verifying server compares against
+`computedMinor`); `extractTaxFromGross(-g)` is the exact negation of
+`extractTaxFromGross(g)`, so a refund returns what the sale took; and the
+minor-unit scale is never read, at any scale 0–4.
 
 ## Q8 seam
 

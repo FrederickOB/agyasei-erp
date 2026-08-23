@@ -237,7 +237,26 @@ async function main(): Promise<void> {
     `outcome=${stale.kind} limit still ${after.rows[0]!.credit_limit_minor}`,
   );
 
-  // -- 5. The manager may READ and may NOT change --------------------------
+  // -- 5. The manager may NOT read and may NOT change ----------------------
+  //
+  // This block used to open with the manager READING the position, as the
+  // positive control on the refusal below. That stopped being the design: the
+  // template no longer grants `credit.view` to the outlet-manager role
+  // (packages/db/src/seed/roles.ts, "THE RESIDENCY RULE"; credit-offline-plan
+  // R1.b), because that code now decides DEVICE RESIDENCY as well as the
+  // online read — an outlet tablet must not carry 400 days of the book. So the
+  // manager is refused BOTH, and the positive control moves to a route the
+  // manager does hold, on the same socket with the same bearer, so "refused"
+  // still cannot mean "this principal cannot reach the API at all".
+  const managerControl = await fetch(
+    `${API_URL}/trpc/inventory.lowStock?input=${encodeURIComponent(JSON.stringify({ json: {} }))}`,
+    { headers: { authorization: `Bearer ${managerToken}`, origin: PWA_ORIGIN } },
+  );
+  check(
+    '5·0 the manager principal reaches the API on a capability it DOES hold (positive control)',
+    managerControl.ok,
+    `inventory.lowStock HTTP ${String(managerControl.status)} with the manager bearer`,
+  );
   const managerRead = await fetchCreditPosition(accountId, TODAY, managerOptions);
   const managerWrite = await setCreditLimit(
     {
@@ -252,9 +271,9 @@ async function main(): Promise<void> {
     managerOptions,
   );
   check(
-    '5a an outlet manager READS the position (the positive control)',
-    managerRead.ok,
-    managerRead.ok ? 'allowed' : `refused: ${managerRead.failure.detail ?? ''}`,
+    '5a an outlet manager is REFUSED the credit position — the book is not theirs to hold (R1.b)',
+    !managerRead.ok && (managerRead.failure.detail ?? '').includes('credit.view'),
+    managerRead.ok ? 'WRONG: allowed' : `refused: ${managerRead.failure.detail ?? ''}`,
   );
   check(
     '5b and is REFUSED the limit change, on the same socket',
