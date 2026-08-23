@@ -70,3 +70,18 @@ export function createClaimedHlcClock(
     },
   };
 }
+
+/**
+ * A fresh claim carrying the SAME device node, for a write already queued
+ * whose original assertion has aged past the server's tolerance (03 §3.4.1:
+ * beyond ±24h the server refuses `CLOCK_RESYNC_REQUIRED` and expects the
+ * client to resynchronise and retry the identical mutation). Counter resets
+ * to 0 — this value does not need to interlock with the live per-device
+ * clock's monotonic sequence, because the column is untrusted forensics,
+ * never ordering (see the header above); it only needs to be a plausible
+ * assertion of the device's current time.
+ */
+export function refreshClaimedHlc(oldClaimedHlc: string, now: () => number = Date.now): string {
+  const node = deviceNodeFromClaimedHlc(oldClaimedHlc);
+  return `${String(now()).padStart(13, '0')}-00000-${node}`;
+}

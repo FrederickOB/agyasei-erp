@@ -551,8 +551,19 @@ export const LOCAL_TABLES: readonly LocalTableDef[] = [
       // argument, including why a monotonic uuidv7 would not have fixed it.
       i('queue_seq'),
       t('server_ack_at'), // NULL until the server acks; drives the §8.5 badge
+      // DEAD-LETTERED, and why. Set only for a DEFINITIVE rejection: the op
+      // leaves the queue for the visible "Needs checking" state and is never
+      // retried again.
       t('rejected_at'),
       t('reject_reason'),
+      // REFUSED BUT STILL QUEUED, and why. The retryable case (§3.3.4) — the
+      // row stays pending and keeps retrying, exactly as before; these two
+      // columns only stop the server's sentence from being thrown away.
+      // Without them a write refused every 30 seconds for hours is completely
+      // mute: the §8.4 stuck state says a queue is not draining and nothing,
+      // anywhere, can say what the server actually objected to.
+      t('last_refusal_reason'),
+      t('last_refusal_at'),
     ],
   },
   {

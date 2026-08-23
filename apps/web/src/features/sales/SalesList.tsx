@@ -5,7 +5,7 @@
  */
 import type { ReactNode } from 'react';
 import type { LocalDb } from '../../data/db';
-import { recentSales } from '../../data/queries/sales';
+import { recentSales, type RecordedSale } from '../../data/queries/sales';
 import { useLiveQuery } from '../../data/use-live-query';
 import { recordBadgeLabel } from '../../lib/badges';
 import { Money } from '../../money/Money';
@@ -15,6 +15,51 @@ import { saleNumberLabel } from '../counter/ReceiptView';
 function timeOf(iso: string): string {
   const d = new Date(iso);
   return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+
+/**
+ * What the server said, on the record it said it about — the surface stock
+ * adjustments, goods receipts and delivery updates have always had and this
+ * list never did. Two different sentences, because they are two different
+ * situations for the person reading them:
+ *
+ * - DEAD-LETTERED: the sale is not going anywhere on its own; it is work.
+ * - REFUSED BUT STILL QUEUED: the till is still trying, so the copy must not
+ *   read as failure — but a sale that has been refused rather than merely
+ *   waiting for a signal is not the same thing as one that is waiting, and the
+ *   badge alone ("Waiting to send") cannot tell them apart.
+ */
+function ServerAnswer({ sale }: { readonly sale: RecordedSale }): ReactNode {
+  if (sale.syncState === 'attention') {
+    return (
+      <p className="sales-answer sales-answer-attn" role="status">
+        <Icon name="alert" size={18} />
+        <span>
+          The office refused this sale, so it has not been recorded there. Tell your manager.
+          {sale.rejectReason === null ? null : (
+            <>
+              {' '}
+              <span className="server-answer-detail-label">They will want to know:</span>{' '}
+              <span className="tabular">{sale.rejectReason}</span>
+            </>
+          )}
+        </span>
+      </p>
+    );
+  }
+  if (sale.syncState === 'pending' && sale.lastRefusalReason !== null) {
+    return (
+      <p className="sales-answer sales-answer-wait" role="status">
+        <Icon name="alert" size={18} />
+        <span>
+          The office has not accepted this sale yet and the till is still trying.{' '}
+          <span className="server-answer-detail-label">It last said:</span>{' '}
+          <span className="tabular">{sale.lastRefusalReason}</span>
+        </span>
+      </p>
+    );
+  }
+  return null;
 }
 
 export function SalesList({ db }: { readonly db: LocalDb }): ReactNode {
@@ -62,6 +107,7 @@ export function SalesList({ db }: { readonly db: LocalDb }): ReactNode {
               {recordBadgeLabel(sale.syncState)}
             </span>
           </span>
+          <ServerAnswer sale={sale} />
         </li>
       ))}
     </ul>

@@ -20,7 +20,7 @@ describe('<StatusBar>', () => {
       />,
     );
     const region = screen.getByRole('status');
-    expect(region.textContent).toContain('Offline · 14 sales waiting');
+    expect(region.textContent).toContain('Offline · 14 records waiting');
     expect(screen.queryByRole('alert')).toBeNull();
     expect(screen.queryByRole('dialog')).toBeNull();
   });

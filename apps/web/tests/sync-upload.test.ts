@@ -13,6 +13,7 @@ import type { LocalDb } from '../src/data/db';
 import {
   classifyRejection,
   drainOutbox,
+  NO_ACK_REASON,
   readPendingOps,
   type DrainProgress,
   type PendingOp,
@@ -24,6 +25,7 @@ import { readOutboxQueue, recentSales } from '../src/data/queries/sales';
 import { fixedHlc } from './helpers/fixtures';
 import { openTestDb } from './helpers/node-db';
 import { uuidv7 } from '../src/lib/uuidv7';
+import { CLAIMED_HLC_RE, deviceNodeFromClaimedHlc } from '../src/lib/hlc';
 
 // ---------------------------------------------------------------------------
 // helpers
@@ -58,19 +60,25 @@ interface RowMarks {
   readonly server_ack_at: string | null;
   readonly rejected_at: string | null;
   readonly reject_reason: string | null;
+  readonly last_refusal_reason: string | null;
+  readonly last_refusal_at: string | null;
 }
 
 async function marksOf(db: LocalDb, id: string): Promise<RowMarks> {
   const rows = await db.getAll(
-    'SELECT server_ack_at, rejected_at, reject_reason FROM outbox WHERE id = ?',
+    `SELECT server_ack_at, rejected_at, reject_reason, last_refusal_reason, last_refusal_at
+       FROM outbox WHERE id = ?`,
     [id],
   );
   const row = rows[0];
   if (row === undefined) throw new Error(`no outbox row ${id}`);
+  const text = (key: string): string | null => (row[key] === null ? null : String(row[key]));
   return {
-    server_ack_at: row['server_ack_at'] === null ? null : String(row['server_ack_at']),
-    rejected_at: row['rejected_at'] === null ? null : String(row['rejected_at']),
-    reject_reason: row['reject_reason'] === null ? null : String(row['reject_reason']),
+    server_ack_at: text('server_ack_at'),
+    rejected_at: text('rejected_at'),
+    reject_reason: text('reject_reason'),
+    last_refusal_reason: text('last_refusal_reason'),
+    last_refusal_at: text('last_refusal_at'),
   };
 }
 
@@ -120,6 +128,7 @@ describe('ack handling', () => {
       completed: 1,
       rejected: 0,
       deferred: 0,
+      deferredReasons: [],
       transportOk: true,
     });
     const marks = await marksOf(db, key);
@@ -347,5 +356,267 @@ describe('progress', () => {
       .map((p) => p.sentCount);
     expect([...counts].sort((a, b) => a - b)).toEqual(counts); // monotonic
     expect(counts[counts.length - 1]).toBe(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// what the server said — the sentence that used to be thrown away
+// ---------------------------------------------------------------------------
+
+/**
+ * A retryable refusal is the correct settlement (§3.3.4: dead-lettering a real
+ * sale is the loss path) and it used to be a MUTE one. `ack.reason` was read,
+ * classified, and dropped on the floor — so a write the server refused every
+ * 30 seconds for sixteen hours told its counter "tell your manager" and told
+ * the manager nothing.
+ *
+ * Every test here holds the settlement constant and asserts only that the
+ * sentence survives. If one of them ever starts passing because the op left
+ * the queue, the fix has become the bug.
+ */
+describe('a refusal that stays queued', () => {
+  const REASON = 'PRECONDITION_FAILED: no price list DEFAULT in force on 2026-08-21';
+
+  function refuses(key: string, reason: string): UploadResult {
+    return { ok: true, status: 200, acks: [{ key, status: 'rejected', reason }] };
+  }
+
+  it('keeps the server’s sentence AND leaves the op pending', async () => {
+    const db = openTestDb();
+    const key = await enqueue(db, { createdAt: T1 });
+    const transport = new MockTransport().script(refuses(key, REASON));
+
+    const report = await drainOutbox(db, transport);
+
+    const marks = await marksOf(db, key);
+    expect(marks.last_refusal_reason).toBe(REASON);
+    expect(marks.last_refusal_at).not.toBeNull();
+    // THE SETTLEMENT IS UNCHANGED: not acked, not dead-lettered, still queued,
+    // still going out on the next pass.
+    expect(marks.server_ack_at).toBeNull();
+    expect(marks.rejected_at).toBeNull();
+    expect(report.deferred).toBe(1);
+    expect(report.rejected).toBe(0);
+    expect((await readPendingOps(db)).map((o) => o.id)).toEqual([key]);
+    expect((await readOutboxQueue(db)).pendingCount).toBe(1);
+  });
+
+  it('reports it to the caller, which is what makes it loggable', async () => {
+    const db = openTestDb();
+    const key = await enqueue(db, { createdAt: T1, kind: 'sale' });
+    const transport = new MockTransport().script(refuses(key, REASON));
+
+    const report = await drainOutbox(db, transport);
+
+    expect(report.deferredReasons).toEqual([
+      { kind: 'sale', idempotencyKey: key, reason: REASON },
+    ]);
+  });
+
+  it('shows it on the record, which still reads as waiting rather than failed', async () => {
+    const db = openTestDb();
+    const key = await enqueue(db, { createdAt: T1 });
+
+    await drainOutbox(db, new MockTransport().script(refuses(key, REASON)));
+
+    const [sale] = await recentSales(db);
+    expect(sale?.lastRefusalReason).toBe(REASON);
+    expect(sale?.rejectReason).toBeNull();
+    expect(sale?.syncState).toBe('pending');
+  });
+
+  it('rings the change bus, or the sentence lands in the database and nowhere else', async () => {
+    const db = openTestDb();
+    const key = await enqueue(db, { createdAt: T1 });
+    let notified = 0;
+    db.changes.subscribe(() => {
+      notified += 1;
+    });
+
+    await drainOutbox(db, new MockTransport().script(refuses(key, REASON)));
+
+    expect(notified).toBeGreaterThan(0);
+  });
+
+  it('records the newest refusal, not the first — a reason can change', async () => {
+    const db = openTestDb();
+    const key = await enqueue(db, { createdAt: T1 });
+    const second = 'CONFLICT: this location is being re-scoped';
+    const transport = new MockTransport()
+      .script(refuses(key, REASON))
+      .script(refuses(key, second));
+
+    await drainOutbox(db, transport);
+    await drainOutbox(db, transport);
+
+    expect((await marksOf(db, key)).last_refusal_reason).toBe(second);
+  });
+
+  it('names the silence when the server answers the batch but not this key', async () => {
+    // The one settlement that has no sentence to quote, and would otherwise be
+    // the single case left mute. A key the server keeps ignoring is exactly as
+    // stuck as one it keeps refusing.
+    const db = openTestDb();
+    const key = await enqueue(db, { createdAt: T1 });
+    const transport = new MockTransport().script({ ok: true, status: 200, acks: [] });
+
+    const report = await drainOutbox(db, transport);
+
+    expect((await marksOf(db, key)).last_refusal_reason).toBe(NO_ACK_REASON);
+    expect(report.deferred).toBe(1);
+    expect((await readPendingOps(db))).toHaveLength(1);
+  });
+
+  it('does NOT overwrite a real reason when the next batch never arrives', async () => {
+    // THE REGRESSION THIS GUARDS. An undelivered batch is not a refusal, and
+    // offline is the expected condition for hours at a time — stamping "the
+    // network was down" over the server's diagnosis would erase it on the
+    // device's very next outage, which is guaranteed to come.
+    const db = openTestDb();
+    const key = await enqueue(db, { createdAt: T1 });
+    const transport = new MockTransport()
+      .script(refuses(key, REASON))
+      .script({ ok: false, status: 0, acks: [] });
+
+    await drainOutbox(db, transport);
+    const afterRefusal = await marksOf(db, key);
+    const report = await drainOutbox(db, transport);
+
+    expect((await marksOf(db, key)).last_refusal_reason).toBe(REASON);
+    expect((await marksOf(db, key)).last_refusal_at).toBe(afterRefusal.last_refusal_at);
+    expect(report.transportOk).toBe(false);
+    expect(report.deferredReasons).toEqual([]);
+  });
+
+  it('a definitive rejection still dead-letters, and is not confused with this', async () => {
+    // The two states have to stay distinguishable: one has stopped, one has
+    // not, and the badge is derived from which columns are set.
+    const db = openTestDb();
+    const key = await enqueue(db, { createdAt: T1 });
+    const fatal = 'BAD_REQUEST: lines must not be empty';
+
+    await drainOutbox(db, new MockTransport().script(refuses(key, fatal)));
+
+    const marks = await marksOf(db, key);
+    expect(marks.rejected_at).not.toBeNull();
+    expect(marks.reject_reason).toBe(fatal);
+    expect(marks.last_refusal_reason).toBeNull();
+    const [sale] = await recentSales(db);
+    expect(sale?.syncState).toBe('attention');
+    expect(sale?.rejectReason).toBe(fatal);
+  });
+
+  it('a refusal that later succeeds completes normally', async () => {
+    const db = openTestDb();
+    const key = await enqueue(db, { createdAt: T1 });
+    const transport = new MockTransport().script(refuses(key, REASON));
+
+    await drainOutbox(db, transport);
+    await drainOutbox(db, transport); // default script: applied
+
+    const marks = await marksOf(db, key);
+    expect(marks.server_ack_at).not.toBeNull();
+    expect((await readOutboxQueue(db)).pendingCount).toBe(0);
+    expect((await recentSales(db))[0]?.syncState).toBe('synced');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// the clock resync 03 §3.4.1 promises
+// ---------------------------------------------------------------------------
+
+/**
+ * `claimed_hlc` is stamped once, at enqueue, and never touched again — so a
+ * write that sits queued long enough (offline for "hours or days", CLAUDE.md
+ * §2.2) will inevitably age past the server's ±24h skew tolerance no matter
+ * how correct the device's clock is when it finally gets a signal. The
+ * server refuses it `CONFLICT: CLOCK_RESYNC_REQUIRED` and expects the client
+ * to resynchronise and retry the identical mutation (03 §3.4.1) — this is
+ * the client half of that sentence.
+ */
+describe('a clock-resync refusal', () => {
+  const SKEW_REASON =
+    'CONFLICT: CLOCK_RESYNC_REQUIRED: device clock skew exceeds ±24h — resync and retry (03 §3.4.1)';
+
+  function claimedHlcOf(db: LocalDb, id: string): Promise<string | null> {
+    return db
+      .getAll('SELECT claimed_hlc FROM outbox WHERE id = ?', [id])
+      .then((rows) => (rows[0]?.['claimed_hlc'] === null ? null : String(rows[0]?.['claimed_hlc'])));
+  }
+
+  function refuses(key: string, reason: string): UploadResult {
+    return { ok: true, status: 200, acks: [{ key, status: 'rejected', reason }] };
+  }
+
+  it('refreshes the claim, keeping the same device node under a different value', async () => {
+    const db = openTestDb();
+    const key = await enqueue(db, { createdAt: T1 });
+    const original = await claimedHlcOf(db, key);
+    const transport = new MockTransport().script(refuses(key, SKEW_REASON));
+
+    await drainOutbox(db, transport);
+
+    const refreshed = await claimedHlcOf(db, key);
+    expect(refreshed).not.toBeNull();
+    expect(refreshed).not.toBe(original);
+    expect(CLAIMED_HLC_RE.test(refreshed ?? '')).toBe(true);
+    expect(deviceNodeFromClaimedHlc(refreshed ?? '')).toBe(deviceNodeFromClaimedHlc(original ?? ''));
+  });
+
+  it('settles identically to any other retryable refusal — still pending, still queued', async () => {
+    const db = openTestDb();
+    const key = await enqueue(db, { createdAt: T1 });
+    const transport = new MockTransport().script(refuses(key, SKEW_REASON));
+
+    const report = await drainOutbox(db, transport);
+
+    expect(report).toMatchObject({ completed: 0, rejected: 0, deferred: 1 });
+    const marks = await marksOf(db, key);
+    expect(marks.server_ack_at).toBeNull();
+    expect(marks.rejected_at).toBeNull();
+    expect(marks.last_refusal_reason).toBe(SKEW_REASON);
+    expect((await readPendingOps(db)).map((o) => o.id)).toEqual([key]);
+  });
+
+  it('resends the REFRESHED value on the next drain pass', async () => {
+    const db = openTestDb();
+    const key = await enqueue(db, { createdAt: T1 });
+    const original = await claimedHlcOf(db, key);
+    const transport = new MockTransport().script(refuses(key, SKEW_REASON));
+
+    await drainOutbox(db, transport); // refused, refreshed
+    await drainOutbox(db, transport); // default script: applied
+
+    expect(transport.batches).toHaveLength(2);
+    const sentSecondTime = transport.batches[1]?.[0]?.claimedHlc;
+    expect(sentSecondTime).not.toBe(original);
+    expect((await marksOf(db, key)).server_ack_at).not.toBeNull();
+  });
+
+  it('does NOT touch the claim for an unrelated retryable conflict', async () => {
+    // The marker match must be exact to this one reason — nothing here should
+    // go rewriting a device's clock claim over an ordinary "try again".
+    const db = openTestDb();
+    const key = await enqueue(db, { createdAt: T1 });
+    const original = await claimedHlcOf(db, key);
+    const transport = new MockTransport().script(
+      refuses(key, 'CONFLICT: RETRY_LATER — first writer committing'),
+    );
+
+    await drainOutbox(db, transport);
+
+    expect(await claimedHlcOf(db, key)).toBe(original);
+  });
+
+  it('does NOT touch the claim for a definitive rejection — it is dead-lettered, not retried', async () => {
+    const db = openTestDb();
+    const key = await enqueue(db, { createdAt: T1 });
+    const original = await claimedHlcOf(db, key);
+    const transport = new MockTransport().script(refuses(key, 'BAD_REQUEST: lines must not be empty'));
+
+    await drainOutbox(db, transport);
+
+    expect(await claimedHlcOf(db, key)).toBe(original);
+    expect((await marksOf(db, key)).rejected_at).not.toBeNull();
   });
 });

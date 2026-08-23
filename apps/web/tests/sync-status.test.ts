@@ -106,7 +106,7 @@ describe('statusLine wording', () => {
 
   it('matches the §8.4 table', () => {
     expect(statusLine({ kind: 'online_synced' })).toBe('Online · all saved');
-    expect(statusLine({ kind: 'offline', pendingCount: 14 })).toBe('Offline · 14 sales waiting');
+    expect(statusLine({ kind: 'offline', pendingCount: 14 })).toBe('Offline · 14 records waiting');
     expect(
       statusLine({
         kind: 'syncing',
@@ -119,16 +119,31 @@ describe('statusLine wording', () => {
         { kind: 'stuck', pendingCount: 14, oldestQueuedAtMs: T0 },
         { formatClock: clock },
       ),
-    ).toBe('Not sending · 14 sales waiting since 09:12 — tell your manager');
+    ).toBe('Not sending · 14 records waiting since 09:12 — tell your manager');
   });
 
   it('uses honest local-only wording when no sync endpoint is configured', () => {
     expect(statusLine({ kind: 'offline', pendingCount: 3 }, { localOnly: true })).toBe(
-      'Local only · 3 sales saved on this device',
+      'Local only · 3 records saved on this device',
     );
     expect(statusLine({ kind: 'online_synced' }, { localOnly: true })).toBe(
       'Local only · all saved on this device',
     );
+  });
+
+  it('does not call every queued write a sale — the outbox holds all of them', () => {
+    // `readOutboxQueue` counts the WHOLE outbox with no filter on kind: stock
+    // adjustments, goods receipts, delivery updates, credit entries and
+    // sequence-block reports all queue beside sales. This line used to name
+    // them all "sale", so a wedged stock adjustment read "1 sale waiting" and
+    // sent whoever escalated it hunting for a sale that did not exist.
+    const lines = [
+      statusLine({ kind: 'offline', pendingCount: 1 }),
+      statusLine({ kind: 'stuck', pendingCount: 1, oldestQueuedAtMs: T0 }, { formatClock: clock }),
+      statusLine({ kind: 'offline', pendingCount: 4 }, { localOnly: true }),
+    ];
+    for (const line of lines) expect(line).not.toMatch(/\bsales?\b/);
+    expect(lines[0]).toBe('Offline · 1 record waiting');
   });
 
   it('never contains alarm words: offline is a state, not an error', () => {

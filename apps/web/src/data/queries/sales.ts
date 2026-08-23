@@ -17,6 +17,14 @@ export interface RecordedSale {
   readonly tenderedMinor: bigint | null;
   readonly changeMinor: bigint | null;
   readonly syncState: RecordSyncState;
+  /** Why the server dead-lettered it. Set only alongside `attention`. */
+  readonly rejectReason: string | null;
+  /**
+   * Why the server refused the most recent attempt on a sale that is STILL
+   * queued. Null until something is refused — a sale simply waiting for a
+   * connection has nothing to explain.
+   */
+  readonly lastRefusalReason: string | null;
 }
 
 function optionalBig(value: unknown): bigint | null {
@@ -35,12 +43,16 @@ function mapSale(row: DbRow): RecordedSale {
       server_ack_at: row['server_ack_at'] === null ? null : String(row['server_ack_at']),
       rejected_at: row['rejected_at'] === null ? null : String(row['rejected_at']),
     }),
+    rejectReason: row['reject_reason'] === null ? null : String(row['reject_reason']),
+    lastRefusalReason:
+      row['last_refusal_reason'] === null ? null : String(row['last_refusal_reason']),
   };
 }
 
 export async function recentSales(db: LocalDb, limit = 20): Promise<RecordedSale[]> {
   const rows = await db.getAll(
-    `SELECT id, created_at, server_ack_at, rejected_at, receipt_no,
+    `SELECT id, created_at, server_ack_at, rejected_at, reject_reason,
+            last_refusal_reason, receipt_no,
             CAST(total_minor AS TEXT) AS total_minor,
             CAST(tendered_minor AS TEXT) AS tendered_minor,
             CAST(change_minor AS TEXT) AS change_minor
@@ -55,7 +67,8 @@ export async function recentSales(db: LocalDb, limit = 20): Promise<RecordedSale
 
 export async function getRecordedSale(db: LocalDb, saleId: string): Promise<RecordedSale | null> {
   const rows = await db.getAll(
-    `SELECT id, created_at, server_ack_at, rejected_at, receipt_no,
+    `SELECT id, created_at, server_ack_at, rejected_at, reject_reason,
+            last_refusal_reason, receipt_no,
             CAST(total_minor AS TEXT) AS total_minor,
             CAST(tendered_minor AS TEXT) AS tendered_minor,
             CAST(change_minor AS TEXT) AS change_minor
