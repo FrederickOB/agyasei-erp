@@ -31,7 +31,7 @@ import { discardStrayCrud, holdsUnsyncedSeedRows } from './sync/crud-guard';
 import { CredentialCache } from './sync/credentials';
 import { SyncRuntime } from './sync/runtime';
 import { httpUploadTransport } from './sync/transport';
-import { drainOutbox } from './sync/upload';
+import { drainOutbox, needsClockResync } from './sync/upload';
 import { sequenceResultHandler } from './sequence';
 
 function toPowerSyncTable(def: LocalTableDef): Table {
@@ -246,8 +246,34 @@ export async function openLocalDb(): Promise<LocalDb> {
     // reconnect" trigger belongs with the counter's reconnect UX and is not
     // wired. `packages/wire-conformance/test/sequence-client-to-api.test.ts`
     // and drill D7 exercise the whole path explicitly.
-    drain: (onProgress) =>
-      drainOutbox(base, transport, { onProgress, onResult: sequenceResultHandler(base) }),
+    drain: async (onProgress) => {
+      const report = await drainOutbox(base, transport, {
+        onProgress,
+        onResult: sequenceResultHandler(base),
+      });
+      // The server refused these and the device will keep trying. Said out
+      // loud, once per pass, because the alternative is a write retried every
+      // 30 seconds for hours with the reason visible nowhere — not in the
+      // status bar, not on the record, and not in the API's log either, where
+      // a per-op refusal is an HTTP 200 carrying a rejected ack.
+      for (const d of report.deferredReasons) {
+        if (needsClockResync(d.reason)) {
+          // The client half of the resync 03 §3.4.1 promises: the op's
+          // clock claim has aged past the server's ±24h tolerance while
+          // queued, drainOutbox has already refreshed it, and the next pass
+          // resends the identical mutation under the device's current time.
+          console.warn(
+            `[sync] refreshed the clock claim on ${d.kind} ${d.idempotencyKey} after ` +
+              `CLOCK_RESYNC_REQUIRED; it will retry with the device's current time`,
+          );
+          continue;
+        }
+        console.warn(
+          `[sync] the server refused ${d.kind} ${d.idempotencyKey} and it stays queued: ${d.reason}`,
+        );
+      }
+      return report;
+    },
     subscribeChanges: (listener) => changes.subscribe(listener),
   });
 

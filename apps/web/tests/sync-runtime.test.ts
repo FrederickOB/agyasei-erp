@@ -8,7 +8,15 @@ import { SyncRuntime } from '../src/data/sync/runtime';
 import type { DrainReport } from '../src/data/sync/upload';
 
 function report(overrides: Partial<DrainReport> = {}): DrainReport {
-  return { batchSize: 0, completed: 0, rejected: 0, deferred: 0, transportOk: true, ...overrides };
+  return {
+    batchSize: 0,
+    completed: 0,
+    rejected: 0,
+    deferred: 0,
+    deferredReasons: [],
+    transportOk: true,
+    ...overrides,
+  };
 }
 
 interface Harness {

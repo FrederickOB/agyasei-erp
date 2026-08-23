@@ -1125,6 +1125,39 @@ button {
   color: var(--text-muted);
   font-size: var(--t-sm);
 }
+/* The server's own sentence, under the row it belongs to. Spans the whole
+   grid: a refusal reason is a sentence, not a column, and wrapping it into
+   half the row's width is how it stops being read. */
+.sales-answer {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s-2);
+  margin: 0;
+  padding: var(--s-3);
+  border-radius: var(--r-2);
+  font-size: var(--t-sm);
+}
+.sales-answer .icon {
+  flex: none;
+}
+.sales-answer-attn {
+  background: var(--attn-tint);
+  color: var(--attn-ink);
+}
+.sales-answer-attn .icon {
+  color: var(--attn);
+}
+/* Still queued, still trying — the WAITING palette, not the attention one.
+   Nothing has been lost and nobody needs to act yet; painting it red would
+   teach the counter to ignore red. */
+.sales-answer-wait {
+  background: var(--wait-tint);
+  color: var(--wait-ink);
+}
+.sales-answer-wait .icon {
+  color: var(--wait);
+}
 
 /* ─── REFUSALS, NOTICES, GATES ───────────────────────────────────────────────
    A refused sale is WORK, not a toast (§8.5): it stays until acted on, the

@@ -132,8 +132,17 @@ function defaultClock(ms: number): string {
   return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 }
 
+/**
+ * The queue holds every device write, not only sales — stock adjustments,
+ * goods receipts, delivery updates, credit entries and sequence-block reports
+ * all sit in the same outbox, and `readOutboxQueue` counts them all without
+ * filtering by kind. This line used to call every one of them a "sale", so a
+ * wedged stock adjustment read "1 sale waiting" and sent whoever escalated it
+ * looking for a sale that did not exist. The noun has to cover what is
+ * actually being counted.
+ */
 function plural(n: number): string {
-  return n === 1 ? 'sale' : 'sales';
+  return n === 1 ? 'record' : 'records';
 }
 
 /**

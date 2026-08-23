@@ -26,12 +26,20 @@
  *   default for an unknown reason is retryable, because wrongly dead-lettering
  *   is the loss path while wrongly retrying is merely loud (the §8.4 "stuck"
  *   state surfaces a queue that stops draining).
+ * - **And a retried op keeps the sentence.** "Loud" used to mean the stuck
+ *   state could say a queue had stopped draining and nothing anywhere could
+ *   say WHY: `ack.reason` was read, classified, and dropped. A write refused
+ *   every 30 seconds for sixteen hours told its counter only "tell your
+ *   manager", and told the manager nothing. `last_refusal_reason` keeps it.
+ *   This changes no settlement: the op stays pending and is retried exactly as
+ *   before, because widening what leaves the queue is the loss path (below).
  *
  * No `@powersync/web` import: plain logic over the LocalDb seam, unit-tested
  * with a mocked transport (no live service).
  */
 import { MAX_UPLOAD_BATCH, type UploadAck, type UploadAckStatus } from '@erp/contracts';
-import type { LocalDb } from '../db';
+import type { DbExecutor, LocalDb } from '../db';
+import { refreshClaimedHlc } from '../../lib/hlc';
 import { OUTBOX_QUEUE_ORDER } from './queue-seq';
 
 /**
@@ -102,6 +110,27 @@ export function classifyRejection(reason: string | undefined): RejectionClass {
   return DEFINITIVE_PREFIXES.has(prefix) ? 'definitive' : 'retryable';
 }
 
+/**
+ * The exact marker `pipeline.ts` puts in its message (03 §3.4.1: beyond ±24h
+ * of skew the server refuses `CLOCK_RESYNC_REQUIRED` and expects the client
+ * to resynchronise and retry). Matched by SUBSTRING, not prefix:
+ * `classifyRejection`'s prefix on this reason is `CONFLICT`, shared with
+ * every other retryable conflict, so the prefix alone cannot tell this one
+ * apart from an ordinary "try again" — only this string can.
+ */
+const CLOCK_RESYNC_MARKER = 'CLOCK_RESYNC_REQUIRED';
+
+/**
+ * True for the one retryable reason that means "this op's clock assertion,
+ * not the op itself, is why the server refused it" — the case
+ * `refreshClaimedHlc` exists to answer. Never true for a definitive
+ * rejection or an ordinary retryable one: nothing here should touch a
+ * device's clock claim over a conflict that has nothing to do with clocks.
+ */
+export function needsClockResync(reason: string | undefined): boolean {
+  return reason !== undefined && reason.includes(CLOCK_RESYNC_MARKER);
+}
+
 export interface DrainProgress {
   readonly sentCount: number;
   readonly batchSize: number;
@@ -130,9 +159,33 @@ export interface DrainReport {
   readonly rejected: number;
   /** Still pending: retryable rejections, missing acks, or a failed transport. */
   readonly deferred: number;
+  /**
+   * What the server said about each op it REFUSED but that stays queued. The
+   * pure module records the sentence; the callsite decides how to say it out
+   * loud (powersync.ts logs it), so nothing here has to import `console`.
+   *
+   * Empty when the batch never reached the server — an undelivered batch is
+   * not a refusal and has no sentence to report.
+   */
+  readonly deferredReasons: readonly DeferredReason[];
   /** False when the batch could not be delivered or answered at all. */
   readonly transportOk: boolean;
 }
+
+/** One op the server refused, with the refusal left intact. */
+export interface DeferredReason {
+  readonly kind: string;
+  readonly idempotencyKey: string;
+  readonly reason: string;
+}
+
+/**
+ * What is recorded when the server answers the batch but says nothing at all
+ * about one key. It is not a rejection — there is no reason to quote — but it
+ * is the one settlement outcome that would otherwise stay mute, and a key the
+ * server keeps ignoring is exactly as stuck as one it keeps refusing.
+ */
+export const NO_ACK_REASON = 'NO_ACK: the server did not answer for this write';
 
 /**
  * Pending ops, strictly in queue order, capped at the server's batch limit.
@@ -181,7 +234,14 @@ export async function drainOutbox(
 
   const ops = await readPendingOps(db, options.batchLimit ?? MAX_UPLOAD_BATCH);
   if (ops.length === 0) {
-    return { batchSize: 0, completed: 0, rejected: 0, deferred: 0, transportOk: true };
+    return {
+      batchSize: 0,
+      completed: 0,
+      rejected: 0,
+      deferred: 0,
+      deferredReasons: [],
+      transportOk: true,
+    };
   }
 
   onProgress({ sentCount: 0, batchSize: ops.length });
@@ -196,12 +256,18 @@ export async function drainOutbox(
   if (!result.ok) {
     // No definitive answer for anything: nothing is completed, nothing is
     // rejected, everything stays pending. Loud (via the stuck state), not lost.
+    //
+    // AND NOTHING IS WRITTEN TO `last_refusal_reason` HERE, deliberately. An
+    // undelivered batch is not a refusal; stamping "the network was down" over
+    // a sentence the server gave earlier would erase the diagnosis of a wedged
+    // write on the device's next outage — which, offline-first, is guaranteed.
     onProgress(null);
     return {
       batchSize: ops.length,
       completed: 0,
       rejected: 0,
       deferred: ops.length,
+      deferredReasons: [],
       transportOk: false,
     };
   }
@@ -212,7 +278,24 @@ export async function drainOutbox(
   let completed = 0;
   let rejected = 0;
   let deferred = 0;
+  const deferredReasons: DeferredReason[] = [];
   const stamp = nowIso();
+
+  /**
+   * Keep the refusal on the row without settling it. `server_ack_at` and
+   * `rejected_at` are untouched, so the op is still pending, still returned by
+   * `readPendingOps`, still retried on the next pass — the queue behaves
+   * exactly as it did before these columns existed.
+   */
+  const recordRefusal = async (tx: DbExecutor, op: PendingOp, reason: string): Promise<void> => {
+    deferred += 1;
+    deferredReasons.push({ kind: op.kind, idempotencyKey: op.idempotencyKey, reason });
+    await tx.execute(
+      `UPDATE outbox SET last_refusal_reason = ?, last_refusal_at = ?
+        WHERE id = ? AND server_ack_at IS NULL AND rejected_at IS NULL`,
+      [reason, stamp, op.id],
+    );
+  };
 
   await db.writeTransaction(async (tx) => {
     for (const op of ops) {
@@ -220,7 +303,7 @@ export async function drainOutbox(
       if (ack === undefined) {
         // The server did not answer for this key. Without an ack it is NOT
         // complete — it stays pending and is re-sent (idempotent by key).
-        deferred += 1;
+        await recordRefusal(tx, op, NO_ACK_REASON);
         continue;
       }
       if (ack.status === 'applied' || ack.status === 'duplicate') {
@@ -239,7 +322,26 @@ export async function drainOutbox(
         );
         rejected += 1;
       } else {
-        deferred += 1;
+        await recordRefusal(tx, op, ack.reason ?? 'refused, with no reason given');
+        // `op.claimedHlc` is null only for a write that never carried a claim
+        // to begin with — nothing to refresh, and nothing this server-side
+        // reason could ever apply to (the skew clamp reads meta.claimedHlc
+        // and does not fire when it is undefined; see pipeline.ts).
+        if (needsClockResync(ack.reason) && op.claimedHlc !== null) {
+          // The op itself was fine; the assertion attached to it had simply
+          // aged past the server's ±24h tolerance while queued (03 §3.4.1) —
+          // exactly what a device offline for "hours or days" (CLAUDE.md
+          // §2.2) will do to anything left waiting long enough. Refreshing it
+          // here, in the SAME transaction as the refusal record, is the
+          // client half of the resync the architecture document already
+          // specifies: the next drain pass reads this new value and resends
+          // the identical mutation under it.
+          await tx.execute(
+            `UPDATE outbox SET claimed_hlc = ?
+              WHERE id = ? AND server_ack_at IS NULL AND rejected_at IS NULL`,
+            [refreshClaimedHlc(op.claimedHlc), op.id],
+          );
+        }
       }
       onProgress({ sentCount: completed + rejected, batchSize: ops.length });
     }
@@ -252,8 +354,11 @@ export async function drainOutbox(
     for (const { op, result } of results) await options.onResult(op, result);
   }
 
-  if (completed > 0 || rejected > 0) db.changes.notify();
+  // A refusal changes what the recent-sales list must show, so it rings the
+  // change bus too — otherwise the sentence lands in the database and the row
+  // on screen goes on saying nothing until something unrelated re-renders it.
+  if (completed > 0 || rejected > 0 || deferredReasons.length > 0) db.changes.notify();
   onProgress(null);
 
-  return { batchSize: ops.length, completed, rejected, deferred, transportOk: true };
+  return { batchSize: ops.length, completed, rejected, deferred, deferredReasons, transportOk: true };
 }
