@@ -38,7 +38,10 @@ export type PostingRole =
   | 'SALES_REVENUE' | 'SALES_DISCOUNT' | 'SALES_RETURNS' | 'OUTPUT_TAX'
   | 'COGS' | 'INVENTORY' | 'INVENTORY_IN_TRANSIT'
   | 'AR_TRADE' | 'INTERLOC_CLEARING' | 'GRNI' | 'AP_TRADE' | 'INPUT_TAX'
-  | 'STOCK_ADJ' | 'DISTRIBUTION_COST';
+  | 'STOCK_ADJ' | 'DISTRIBUTION_COST'
+  | 'STAFF_COST_GROSS' | 'STAFF_COST_COMMISSION' | 'STAFF_COST_EMPLOYER_SOCIAL'
+  | 'EMPLOYEE_TAX_PAYABLE' | 'EMPLOYEE_SOCIAL_PAYABLE' | 'EMPLOYER_SOCIAL_PAYABLE'
+  | 'OTHER_DEDUCTIONS_PAYABLE' | 'NET_PAY_PAYABLE';
 
 export interface ProposedLine {
   readonly role: PostingRole;
@@ -386,6 +389,89 @@ export function transferEntry(doc: TransferDocument): ProposedEntry {
     sourceId: doc.transferId,
     documentDate: doc.businessDate,
     lines,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Rule 9 — payroll, from the figures the bureau returned
+// ---------------------------------------------------------------------------
+
+/**
+ * One employee's line in a pay period. EVERY `bureau*` figure below arrived
+ * from the bureau; this module reads them and never derives one.
+ */
+export interface PayrollLine {
+  readonly employeeId: string;
+  /** The employee's OWN location. Rule 9b needs a clearing pair when somebody
+   *  else pays them, precisely because the cost was raised here. */
+  readonly locationId: string;
+  /** base + overtime + allowances. Commission is its own line below. */
+  readonly nonCommissionGrossMinor: bigint;
+  readonly commissionMinor: bigint;
+  readonly bureauEmployeeTaxMinor: bigint;
+  readonly bureauEmployeeSocialMinor: bigint;
+  readonly bureauOtherDeductionsMinor: bigint;
+  readonly bureauEmployerSocialMinor: bigint;
+  readonly bureauNetPayMinor: bigint;
+}
+
+export interface PayrollDocument {
+  readonly payPeriodId: string;
+  readonly businessDate: string;
+  readonly lines: readonly PayrollLine[];
+}
+
+/**
+ * Rule 9 — the payroll journal.
+ *
+ * EVERY CREDIT AMOUNT IS A BUREAU FIGURE. Nothing here computes a withholding,
+ * and CLAUDE.md §2.4 makes that categorical in every jurisdiction. What this
+ * function does is book numbers somebody else produced, which is exactly what
+ * a ledger is for.
+ *
+ * THE EMPLOYER CONTRIBUTION IS A COMPANY EXPENSE and gets both an expense line
+ * and its own payable — it is not an employee deduction and must not be netted
+ * into one. Reading §2.4 as "so we do not need an employer social security
+ * account" is a misreading: the prohibition is on computing the figure, not on
+ * booking it, and omitting the account understates staff costs against the
+ * model's per-outlet baselines.
+ *
+ * A PLEASING CONSEQUENCE OF THE SHAPE: this entry balances if and only if
+ *
+ *   gross === employee tax + employee social + other deductions + net pay
+ *
+ * for every employee — the bureau's own identity, which the import already
+ * validated. So a file that slipped through validation cannot post: the
+ * imbalance is caught by `assertBalances` here and again by Postgres at
+ * COMMIT. The employer contribution appears on both sides and cancels, which
+ * is what makes it a pass-through rather than a deduction.
+ */
+export function payrollEntry(doc: PayrollDocument): ProposedEntry {
+  if (doc.lines.length === 0) {
+    throw new UnbalancedRuleError('payroll', 'a pay period with no employees has nothing to post');
+  }
+  const lines: ProposedLine[] = [];
+  for (const l of doc.lines) {
+    const who = { counterpartyKind: 'employee' as const, counterpartyId: l.employeeId };
+    lines.push(
+      dr('STAFF_COST_GROSS', l.locationId, l.nonCommissionGrossMinor, who),
+      dr('STAFF_COST_COMMISSION', l.locationId, l.commissionMinor, who),
+      dr('STAFF_COST_EMPLOYER_SOCIAL', l.locationId, l.bureauEmployerSocialMinor, who),
+      cr('EMPLOYEE_TAX_PAYABLE', l.locationId, l.bureauEmployeeTaxMinor),
+      cr('EMPLOYEE_SOCIAL_PAYABLE', l.locationId, l.bureauEmployeeSocialMinor),
+      cr('OTHER_DEDUCTIONS_PAYABLE', l.locationId, l.bureauOtherDeductionsMinor),
+      cr('EMPLOYER_SOCIAL_PAYABLE', l.locationId, l.bureauEmployerSocialMinor),
+      cr('NET_PAY_PAYABLE', l.locationId, l.bureauNetPayMinor, who),
+    );
+  }
+
+  const kept = live(lines);
+  assertBalances('payroll', kept);
+  return {
+    sourceKind: 'payroll',
+    sourceId: doc.payPeriodId,
+    documentDate: doc.businessDate,
+    lines: kept,
   };
 }
 

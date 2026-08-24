@@ -80,6 +80,14 @@ export const WRITE_ID_EXEMPT: readonly string[] = [
   // Neither is in any sync rule and no device can write one.
   'gl_account_mapping',
   'posting_exception',
+  // Migration 0017. A pay period, a bureau import and a payroll entry are all
+  // authored server-side — none is in a sync rule and no device can write one.
+  // `app.employee` DOES carry a write spine and is absent from this list on
+  // purpose: a staff record is ordinary tenant data that an administrator
+  // creates through the normal write path.
+  'pay_period',
+  'payroll_bureau_import',
+  'payroll_entry',
   'credit_sync_book_scope',
   'credit_sync_location_scope',
   'credit_ageing_band',

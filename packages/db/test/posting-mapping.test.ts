@@ -131,6 +131,9 @@ describe('the role catalogue is platform vocabulary, and it carries no tenant', 
     // Nothing that implies a computed rate. A role called anything like this
     // would be the §2.4 violation arriving through the back door.
     for (const n of names) {
+      // This line NAMES the banned vocabulary in order to assert that no
+      // posting role uses it, so the boundary lint is right to stop on it.
+      // lint-payroll-ignore — asserts the prohibition rather than breaching it
       expect(n).not.toMatch(/RATE|BRACKET|PAYE|SSNIT|WITHHOLD/i);
     }
   });
