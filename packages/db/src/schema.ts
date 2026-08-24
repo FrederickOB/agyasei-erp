@@ -1218,3 +1218,49 @@ export const journalLine = appSchema.table('journal_line', {
   memo: text('memo'),
 });
 registerAppTable('journal_line', journalLine);
+
+/**
+ * Which of the tenant's own accounts each posting ROLE resolves to.
+ *
+ * Resolution is most-specific-first: product_category -> location -> tenant
+ * default. `scopeKey` is a GENERATED column standing in for a null scope,
+ * because a primary key takes columns and not expressions — the architecture's
+ * `coalesce(scope_id, uuid_nil())` key is not valid Postgres.
+ */
+export const glAccountMapping = appSchema.table('gl_account_mapping', {
+  tenantId: uuid('tenant_id').notNull(),
+  id: uuid('id').notNull(),
+  postingRole: text('posting_role').notNull(),
+  scopeKind: text('scope_kind').notNull(),
+  scopeId: uuid('scope_id'),
+  scopeKey: uuid('scope_key').notNull(),
+  accountId: uuid('account_id').notNull(),
+  mappingSetVersion: integer('mapping_set_version').notNull(),
+  effectiveFrom: date('effective_from').notNull(),
+  effectiveTo: date('effective_to'),
+});
+registerAppTable('gl_account_mapping', glAccountMapping);
+
+/**
+ * A settled document that could not be posted. Acceptance and posting are
+ * separate and a posting failure NEVER rejects a settled document (05 §5.6.1)
+ * — so the gap is made visible here rather than left implicit, and it is a
+ * close gate.
+ */
+export const postingException = appSchema.table('posting_exception', {
+  tenantId: uuid('tenant_id').notNull(),
+  id: uuid('id').notNull(),
+  sourceKind: text('source_kind').notNull(),
+  sourceId: uuid('source_id').notNull(),
+  locationId: uuid('location_id').notNull(),
+  documentDate: date('document_date').notNull(),
+  postingRole: text('posting_role'),
+  errorCode: text('error_code').notNull(),
+  errorDetail: text('error_detail'),
+  severity: smallint('severity').notNull(),
+  openedAt: timestamp('opened_at', { withTimezone: true }).notNull(),
+  resolvedAt: timestamp('resolved_at', { withTimezone: true }),
+  resolvedBy: uuid('resolved_by'),
+  resolutionNote: text('resolution_note'),
+});
+registerAppTable('posting_exception', postingException);

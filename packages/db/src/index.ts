@@ -33,3 +33,13 @@ export {
   type ResolvedGrant,
   type Decision,
 } from './permissions.js';
+
+export {
+  MissingMappingError,
+  mappingGaps,
+  resolveAccount,
+  resolveAccounts,
+  type CompletenessGap,
+  type MappingScope,
+  type ResolvedAccount,
+} from './posting/mapping.js';

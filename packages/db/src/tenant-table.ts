@@ -75,6 +75,11 @@ export const WRITE_ID_EXEMPT: readonly string[] = [
   'gl_counter',
   'journal_entry',
   'journal_line',
+  // Migration 0016. Same reason: a mapping is authored server-side by an
+  // administrator and a posting exception is raised by the posting engine.
+  // Neither is in any sync rule and no device can write one.
+  'gl_account_mapping',
+  'posting_exception',
   'credit_sync_book_scope',
   'credit_sync_location_scope',
   'credit_ageing_band',
