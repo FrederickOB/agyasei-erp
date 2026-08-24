@@ -209,6 +209,30 @@ describe('which destinations are offered', () => {
     ]);
   });
 
+  it('offers the review queue only where sync.conflict.review is held', async () => {
+    // The template gives this to a regional manager and to Accounts, and
+    // withholds it from the counter and from an outlet manager. A queue on a
+    // cashier's nav is a queue that gets dismissed rather than worked.
+    const db = await till();
+    renderShell(db, holding([CAPABILITY.conflictReview]));
+    const nav = await screen.findByRole('navigation', { name: 'Main' });
+    expect([...nav.querySelectorAll('button')].map((b) => b.textContent)).toEqual([
+      'Counter',
+      'Sales',
+      'Decisions',
+    ]);
+
+    // The negative, with a capability that is real but different — a nav that
+    // showed everything would pass the assertion above on its own.
+    cleanup();
+    const db2 = await till();
+    renderShell(db2, holding([CAPABILITY.stockView]));
+    const nav2 = await screen.findByRole('navigation', { name: 'Main' });
+    expect([...nav2.querySelectorAll('button')].map((b) => b.textContent)).not.toContain(
+      'Decisions',
+    );
+  });
+
   it('offers everything when the capability list could not be fetched', async () => {
     const db = await till();
     renderShell(db, {
@@ -227,6 +251,11 @@ describe('which destinations are offered', () => {
       'Buying',
       'Supply',
       'On the road',
+      // The review queue. Present here because this case is "capabilities
+      // could not be fetched, so offer everything and let the server refuse"
+      // — and absent from every case above, because the template withholds
+      // `sync.conflict.review` from the counter and from an outlet manager.
+      'Decisions',
     ]);
   });
 });

@@ -183,3 +183,20 @@ export {
   syncTokenResponse,
   type SyncTokenResponse,
 } from './sync-token.js';
+
+export {
+  REVIEW_CHOICES,
+  REVIEW_STATUSES,
+  claimReviewInput,
+  getReviewInput,
+  listReviewsInput,
+  resolveReviewInput,
+  type ClaimReviewInput,
+  type ClaimReviewParsed,
+  type GetReviewInput,
+  type ListReviewsInput,
+  type ResolveReviewInput,
+  type ResolveReviewParsed,
+  type ReviewChoice,
+  type ReviewStatus,
+} from './review.js';

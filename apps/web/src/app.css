@@ -2310,3 +2310,178 @@ button {
   border-color: var(--wait);
   border-left-width: 4px;
 }
+
+/* ---------------------------------------------------------------------------
+   The review queue — items the system could not settle on its own (§2.2).
+
+   Severity is carried by a LABELLED CHIP and a left border, never by colour
+   alone: these tablets are read in daylight through a yard window, and the
+   people reading them are not all colour-sighted. `severityLabel()` in
+   features/review/Review.tsx supplies the word, and the word is the
+   accessible answer — the colour is reinforcement.
+
+   The payload blocks are `pre`, deliberately. Money inside a proposal is a
+   decimal STRING (ADR-0004) and is printed exactly as it arrived; a layout
+   that reflowed or right-aligned it would invite somebody to "tidy" it into a
+   parsed number, which is the one thing this screen must never do.
+   --------------------------------------------------------------------------- */
+
+.review-screen {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-4);
+}
+
+.review-screen-note {
+  color: var(--text-muted);
+  max-width: 60ch;
+}
+
+.review-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+}
+
+.review-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--border);
+  border-radius: var(--r-2);
+  padding: var(--s-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+}
+
+.review-sev-1 { border-left-color: var(--attn); }
+.review-sev-2 { border-left-color: var(--wait); }
+
+.review-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--s-2);
+}
+
+.review-severity {
+  font-weight: 600;
+  font-size: 0.8125rem;
+  padding: 0.125rem 0.5rem;
+  border-radius: var(--r-full);
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+.review-severity-1 { background: var(--attn-tint); color: var(--attn-ink); }
+.review-severity-2 { background: var(--wait-tint); color: var(--wait-ink); }
+
+.review-class { font-weight: 600; }
+.review-when,
+.review-entity { color: var(--text-muted); font-size: 0.875rem; }
+
+.review-claimed {
+  display: flex;
+  align-items: center;
+  gap: var(--s-1);
+  color: var(--wait-ink);
+}
+
+.review-detail {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+  padding-top: var(--s-2);
+  border-top: 1px solid var(--border);
+}
+
+.review-payload-label {
+  display: block;
+  font-weight: 600;
+  font-size: 0.875rem;
+  margin-bottom: var(--s-1);
+}
+
+.review-payload-body {
+  margin: 0;
+  padding: var(--s-2);
+  background: var(--surface-2);
+  border-radius: var(--r-1);
+  overflow-x: auto;
+  font-size: 0.8125rem;
+  white-space: pre;
+}
+
+.review-decision {
+  border: 1px solid var(--border);
+  border-radius: var(--r-2);
+  padding: var(--s-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+}
+
+.review-choice {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0 var(--s-2);
+  align-items: baseline;
+  /* A 44px row: these are gloved hands on a low-end tablet. */
+  min-height: 44px;
+}
+
+.review-choice-help {
+  grid-column: 2;
+  color: var(--text-muted);
+  font-size: 0.875rem;
+}
+
+.review-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-1);
+}
+
+.review-field textarea,
+.review-field select {
+  font: inherit;
+  padding: var(--s-2);
+  border: 1px solid var(--control-border);
+  border-radius: var(--r-1);
+  background: var(--surface);
+  color: var(--text);
+  min-height: 44px;
+}
+
+/* The screen's most important sentence: a decision is recorded, the original
+   record is NOT rewritten. Styled to be read, not skipped. */
+.review-caveat {
+  background: var(--surface-2);
+  border-radius: var(--r-1);
+  padding: var(--s-2);
+  font-size: 0.875rem;
+}
+
+.review-problem {
+  color: var(--attn-ink);
+  background: var(--attn-tint);
+  border-radius: var(--r-1);
+  padding: var(--s-2);
+}
+
+.review-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-2);
+}
+
+.review-empty,
+.review-hidden {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  color: var(--text-muted);
+}

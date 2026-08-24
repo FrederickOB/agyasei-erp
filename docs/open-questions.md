@@ -67,6 +67,21 @@ of GH₵(1,393,958) deepens — the trough is the plan's single most important f
 The ERP will measure real DSO from day one. `business-data-analyst` surfaces actual vs. the
 15-day assumption in every reporting cycle so this is caught early rather than discovered.
 
+**PHASE 2 GATE (2026-08-23) — this item moved for the worse and is escalated.** *"The ERP will
+measure real DSO from day one"* is not true and never has been. **DSO is measured nowhere** — not
+by a report, not by a route. Per-account `credit.exposure` and `credit.ageing` exist and are
+correct, and there is **no network-wide receivables rollup at all**. `docs/credit-client-plan.md`
+§4 G5 scoped a receivables read as a Phase 1 **SHOULD**; it has now carried unfixed through the
+whole of Phase 2.
+
+A correct method is already designed — `docs/architecture/sections/06-customer-credit.md` §6.9
+works out that the naive `AR ÷ average revenue × days` is dimensionally wrong on a growth ramp
+(misstating by up to 71% in its own worked example) and specifies a **countback** instead — and
+**it needs no general ledger**, only an aggregation over `credit_entry` and `sale`, both of which
+exist today. This is the reporting requirement tied most directly to the FY3 cash trough, which is
+the plan's single most important funding milestone, and it is the one nobody built.
+**Carried as `docs/phase2-gate.md` §5.3 item D10, pulled forward into Phase 2 carry-forward.**
+
 ---
 
 ## Q3 — The business plan contradicts itself · `DECIDED`
@@ -103,6 +118,24 @@ The ERP will compute and track it either way — `credit-engineer` builds the me
 rate configurable, and the GL treatment (fee income vs. revenue) is confirmed at the §2.7 gate.
 **No agent answers this question.** `compliance-gatekeeper` keeps it on the gate list.
 
+**PHASE 2 GATE (2026-08-23) — before this question is answered, fix the thing that would ignore the
+answer.** The accrual's refusal to post without confirmation is exemplary and is the pattern the
+whole project is measured against. **What sits behind the gate is not ready to receive the answer:**
+
+- `apps/api/src/credit-policy.ts:25,27,31` declares `feeBasis`, `feeCompounds` and `feeDayCount`.
+  All three are declared, defaulted, and **read by no code** — `computeFeeAccruals` reads only
+  `feeGraceDays`. **If the accountant confirms `actual_365`, the system records `actual_365` and
+  silently accrues 30E/360 anyway** (gate finding G-5).
+- `CreditPolicy` has no field for the fee's tax code (**Q18**) or its account, and `confirm()` opens
+  the gate on D-1..D-5 alone — so confirming this question would open fee posting with Q18 unasked
+  (gate finding G-3).
+- The policy store is **in-memory**, so the confirmation is not durably recordable and resets on
+  restart.
+
+**Fix all three before the accountant is asked**, otherwise their answer is captured into fields
+nothing reads. A gate that accepts a professional's answer and ignores it is worse than one that
+never asked — it converts an open question into a false assurance carrying that professional's name.
+
 ---
 
 ## Q5 — VAT was out of scope in the brief but cannot be in practice · `DECIDED`
@@ -116,10 +149,39 @@ the POS will be issuing statutory invoices from the first day of trading.
 hard-coded. The accountant confirms registration status and the correct rate set before Phase 1
 go-live; `compliance-gatekeeper` holds the gate.
 
+**PHASE 2 GATE (2026-08-23) — the mechanism is proven and THE GATE IS NOT ENFORCED.** Two findings,
+both in `docs/phase2-gate.md` §3.1.
+
+*Moved, and strongly.* `ADR-0002`'s core claim is now demonstrated live and mutation-tested: a sale
+dated 2025-06-15 reprices against the regime in force **then** (net 14,766, `GH.COVID` present,
+VAT on a `net_plus` base) while the same shelf price today reprices against today's (net 15,000).
+Same gross, different net — no constant divisor produces both. Effective dating works.
+
+*Not moved, and now a gate finding (**G-1**).* `platform.tax_rate` carries `confirmed_by` and
+`confirmed_at`, commented in the migration as *"The §2.8 gate, in the schema… NULL =
+[UNCONFIRMED]"*. Every seeded Ghana row has both NULL and every `legal_reference` ends
+`[UNCONFIRMED]` — correctly, because nobody has confirmed them. **But nothing reads those columns.**
+`taxComponentsInForce` (`apps/api/src/tax.ts:89-95`) does not select them; the device syncs them and
+queries them nowhere; and `provisioning.createTenant` writes `status='active'` immediately, so the
+`'provisioning'` lifecycle state is never occupied.
+
+The POS therefore computes, prints and stores VAT + NHIL + GETFund on every line from a software
+team's reading of published web pages, and **no screen, receipt, API field or gate says so.** The
+facility fee — unmodelled upside — refuses to post without a human. The sales tax — every sale,
+GH₵2,640,000 of FY1 revenue, statutory and remitted — posts silently. **That is backwards.**
+
+*A second finding (**G-2**).* All 219 SKUs are seeded `GH.VAT.STD` with **no `[NEEDS-FOUNDER]`
+marker**, unlike the reorder points and supplier terms which both carry one; and the product's tax
+code is only a **presence** check — `apps/api/src/tax.ts:14-19` applies every jurisdiction tax code
+in force to the line regardless, so **marking a SKU zero-rated or exempt would change nothing**. If
+any part of a construction-materials catalogue is not standard-rated, the POS overcharges from day
+one and no tenant configuration can stop it. **"Which supplies are standard-rated?" is not in the
+practitioner brief and must be added to it before it is sent.**
+
 ---
 
 ## Q6 — Phase 3 reviewing accountant is not yet named · `NEEDS-HUMAN`
-**Blocks:** Phase 3 go-live · **Owner:** founder
+**Blocks:** Phase 3 **design and content**, and Phase 3 go-live · **Owner:** founder
 
 The brief flags this as `[FILL IN]` and is emphatic about *why* it matters: the chart of accounts
 should be reviewed **from the start**, not retrofitted after Phase 3 is built. Naming this person
@@ -127,10 +189,22 @@ before Phase 3 design begins is materially cheaper than naming them after.
 
 `product-manager` raises this at the Phase 2 gate at the latest.
 
+**RAISED AT THE PHASE 2 GATE, 2026-08-23, as this item instructed — and the `blocks` field has been
+widened to match the item's own argument.** It previously read "Phase 3 go-live", which understated
+it: the body of this item argues that the chart of accounts must be reviewed *from the start, not
+retrofitted after Phase 3 is built*, and that is a statement about **design**, not about go-live.
+A named accountant is therefore a precondition for authoring Phase 3's accounting **content** —
+chart-of-accounts template, posting rules, costing method (Q16), the fee's GL treatment (Q4/Q18),
+opening balances (Q20) — and not merely for switching a ledger on.
+
+**No accountant exists.** The founder has stated they do not yet have one. This item is now the
+principal constraint on Phase 3 and it is not a software task. See `docs/phase2-gate.md` §4 and §6.
+
 ---
 
 ## Q7 — Fractional quantities and dual units of sale · `OPEN`
-**Blocks:** Phase 0 data model · **Owner:** `software-engineer` + founder
+**Blocks:** Phase 0 data model · **and, since the Phase 2 gate, Phase 2 *operability*** ·
+**Owner:** `software-engineer` + founder
 
 **27% of the catalogue (59 of 219 SKUs) does not sell in whole units.** This surfaced while
 probing the money-representation rule and it is a genuine data-model question, not a hypothetical.
@@ -162,6 +236,28 @@ ledger is the kind of migration that goes wrong quietly.
 
 **What needs the founder, not an engineer:** confirmation of how these are actually sold at the
 counter today, and the conversion factors (kg per 12m length, per rebar diameter).
+
+**PHASE 2 GATE (2026-08-23) — partly answered, and the unanswered part is now blocking a shipped
+capability.** Sub-problems **1** (fractional quantities) and **3** (sub-pesewa unit pricing) are
+answered and built: scaled integers with the scale in the column type and comment, exact rational
+conversion factors, one `product_uom` machinery used in both the buying and the selling direction
+and verified equal on both sides of the wire.
+
+**Sub-problem 2 — dual units of sale — is built as a model and is unusable.** `applyTemplate`
+authors thirteen converting `product_uom` rows per tenant and sets `can_buy = false` on every one,
+deliberately (`packages/db/src/seed/template.ts:443-448` calls the buying direction *"a further
+authoring step the founder confirms"*). **No route in the product performs that step** — the
+catalogue router (`apps/api/src/routers/catalogue.ts:105`) exposes `list`, `search` and `detail`
+and no write procedure at all, and the only thing in the repository that sets `can_buy` on a
+converting row is a development script, `infra/scripts/dev-purchase-units.ts`.
+
+So on a production tenant, `select count(*) from app.product_uom where can_buy and factor_num <>
+factor_den` is **zero**, and cross-unit multi-source purchasing — a headline Phase 2 capability,
+demonstrated live and correctly — **cannot be reached by tenant #1**. The founder input this item
+asks for is now the long pole on a shipped feature, not a data-model question.
+
+The refusal to guess is correct and should not be undone: a conversion factor is a physical claim
+about the goods, and a guessed one would make a green receipt drill certify a wrong receipt.
 
 ---
 
@@ -198,6 +294,13 @@ supplier's rate card — or trip-load sales are priced ad hoc per delivery and t
 is a fiction. Without an answer the class-A conversion for SKUs 11–14 cannot be authored, so the
 catalogue template cannot ship complete.
 
+**PHASE 2 GATE (2026-08-23) — the home now exists; the decision does not.** Phase 2 built
+`app.supplier` + `app.supplier_capability` with a **platform** capability kind of `HAULAGE`, and
+`app.delivery.carrier_supplier_id NOT NULL` referencing a supplier. That is exactly the shape this
+item proposed as the non-fleet home for a nominal capacity: a number on a supplier's rate card.
+Implementing the founder's answer is now cheap. The answer is still unmade, and SKUs 11–14 still
+cannot be authored, so the catalogue template still does not ship complete.
+
 ---
 
 ## Q10 — Cement shelf life versus no lot tracking · `OPEN`
@@ -207,6 +310,14 @@ Ten cement SKUs are the traffic-builders. OPC has a real ~3-month working shelf 
 humidity, and the data model has no lot, batch or expiry tracking. Either FIFO is a yard practice we
 deliberately do not systematise, or lot tracking is a Phase 1 gap. **It needs deciding now**: adding
 `lot_id` to a live movement ledger means every historical row has an unknown lot.
+
+**PHASE 2 GATE (2026-08-23) — this item is deteriorating and should be decided before Phase 3
+begins.** Phase 2 added a second writer to the movement ledger: a goods receipt now appends
+`app.stock_movement` rows with `source_kind = RECEIPT`, and none of them carries a lot, batch or
+expiry. Every day this stays undecided adds rows whose lot can never be known retrospectively, and
+the receipt path is precisely where a lot would be *captured* if one were ever tracked. The cost of
+the decision does not stay flat — it rises with row count, and it starts rising in earnest on the
+first day of real trading.
 
 ---
 
@@ -236,6 +347,21 @@ staff learning curve — which is the one question the pilot exists to answer.
 real hardware, staff practising against synthetic customers, no revenue at risk. If the date is
 immovable, that must be an explicit decision with the first week reclassified as training and the
 14-day success clocks starting after it.
+
+**PHASE 2 GATE (2026-08-23) — OVERTAKEN BY EVENTS. This item can no longer be actioned as written
+and is reframed.** It recommends a dry-run window *before 1 August 2026*. That date is **22 days
+past** and no phase of the build is signed off.
+
+The recommendation has not become wrong — it has become **free**. There is no longer a launch date
+to protect, so the 2–4 week dry run costs nothing but the willingness to schedule it. What the item
+now needs from the founder is not a trade-off but two facts:
+
+1. **A restated first-trading date**, set deliberately rather than by default. `docs/phase2-gate.md`
+   §6 sets out the dependency chain that determines the earliest defensible one.
+2. **An answer to Q21** — whether the outlet opened and traded anyway. If it did, this item's
+   premise is inverted: the software would not be arriving *with* a new outlet, it would be
+   arriving *into* one already running, which is a different and in some ways easier pilot — and it
+   makes Q20's opening balances a reconstruction rather than a snapshot.
 
 ---
 
@@ -278,6 +404,17 @@ model's GH₵2,640,000 is gross, actual revenue comes in materially below target
 the gross-margin denominator differs. **At 15% plus levies that is a >GH₵300,000 FY1 difference**
 against a target curve tracked to three decimal places.
 
+**PHASE 2 GATE (2026-08-23) — sharpened, and now measurable rather than theoretical.** Tax-inclusive
+price lists work end to end, so tenant #1's counter prices in whichever direction its own list
+declares while the ledger's revenue stays net of all tax components. `reports.inventoryDays`
+publishes `grossMarginPctE4` and it is **computed correctly against ERP data today** — so the only
+thing standing between the founder and a valid margin-vs-target comparison is this question.
+
+Ask it in the same email as **Q17**: both are for the founder plus whoever built the model, and both
+move a reporting baseline materially. It blocks neither Phase 3 build nor Phase 3 go-live — build
+the variance report with the baseline as a tenant-editable figure carrying an explicit `basis` flag,
+and gate nothing on it.
+
 ---
 
 ## Q16 — Costing method, and what a late offline document does to COGS · `NEEDS-HUMAN`
@@ -308,9 +445,29 @@ exceeds target from month one for a reason that is not overspending. Ask alongsi
 **Blocks:** Phase 1 credit go-live · **Owner:** the Q4 accountant · **Raised by:** §6.11, §7.4.5
 
 A sub-question of Q4 that Q4 does not currently ask, and a jurisdiction-pack value nobody has
-listed. The CoA template ships the fee account's tax code **unset** and the accrual refuses to post
-until it is set, so this gates go-live rather than the build — but it is a distinct question from
-"how should the fee be structured" and needs its own answer.
+listed. It is a distinct question from "how should the fee be structured" and needs its own answer.
+
+**CORRECTED AT THE PHASE 2 GATE (2026-08-23).** This item previously claimed: *"The CoA template
+ships the fee account's tax code **unset** and the accrual refuses to post until it is set, so this
+gates go-live rather than the build."* **That is not what the code does.** There is no chart of
+accounts and there is no tax-code field anywhere. `CreditPolicy`
+(`apps/api/src/credit-policy.ts:23-40`) carries D-1..D-3, grace and ageing, and **no field for the
+fee's tax code or for which account it posts to**; `confirm()` stamps only
+`confirmedBy`/`confirmedAt`/`confirmationNote`; and the gate condition is simply
+`policy.confirmedAt === null`, with a message naming D-1..D-5.
+
+**So an Accounts user confirming the fee *structure* (Q4) would open fee posting while Q18 has
+nowhere to be recorded and has not been asked.** Harmless today, because there is no GL and no tax
+line on a fee entry — and exactly wrong-shaped for Phase 3, which is when it stops being harmless.
+
+Cheap to fix now, and it should be fixed before Q4 is answered rather than after: add
+`feeTaxCode` and `feeAccountRef` to `CreditPolicy` and require all of them at the gate. Related:
+the policy store is **in-memory**, so a confirmation cannot be durably recorded and resets to
+unconfirmed on restart — safe direction, but "an accountant confirmed this" is not yet a
+persistable fact.
+
+An open question that misdescribes its own safeguard is worse than one that admits it has none,
+which is why this correction is recorded in place rather than quietly edited away.
 
 ---
 
@@ -329,6 +486,18 @@ holding. Who is entitled to say it, at what age, and what does the close record 
 proposal: a **tenant administrator**, never a platform operator, with the excluded device and its
 last-reported outstanding count printed on the close.
 
+**PHASE 2 GATE (2026-08-23) — this item now has an engineering precondition that did not exist when
+it was written.** A period close must be able to establish that no unresolved conflict is outstanding
+for the period. **`app.conflict_review` has no reader**: no router among 49 procedures, no sync
+bucket, no screen, no resolve path, no scheduler — verified against the live container, which holds
+**6 rows, all `open`, 0 ever claimed or resolved**. That question is unanswerable today, and a close
+that ignored open reviews would silently lock a period over unreconciled differences — the exact
+class of error §2.8 says bank reconciliation exists to surface.
+
+**The queue needs a read and resolve surface before period close is designed**, not before it ships:
+the close's contract with the review queue *is* the design question. Recorded as a precondition on
+Phase 3 Track A in `docs/phase2-gate.md` §4.3.
+
 ---
 
 ## Q20 — Opening balances · `OPEN`
@@ -341,3 +510,43 @@ mentioned once in passing as "a bulk load of 10,000 lines".
 
 This is the **first thing that posts**, so it is Phase 1 work, not Phase 3. What is needed from a
 human: the cut-off date, who prepares the opening figures, and who signs that they are right.
+
+**PHASE 2 GATE (2026-08-23) — the cut-off date is no longer a known quantity.** This item assumes a
+clean cut-off at 1 August 2026. That date is 22 days past and no phase is signed off, so the
+cut-off is now whatever Q21 turns out to be. If the outlet has been trading, opening balances are a
+**reconstruction from manual records with a moving cut-off**, not an opening snapshot — a
+materially different and larger piece of work, and one that needs the accountant who does not yet
+exist (Q6). Answer Q21 before scoping this.
+
+---
+
+## Q21 — Has tenant #1 traded since 1 August 2026 without the ERP? · `NEEDS-HUMAN`
+**Blocks:** Q20's cut-off date · the rollout plan · any claim about pilot success criteria ·
+**Owner:** founder · **Raised by:** the Phase 2 gate, `docs/phase2-gate.md` §3.3
+
+`CLAUDE.md` states the Techiman flagship opens **1 August 2026**. Today is **23 August 2026** and
+no phase of the build is signed off. **Nobody in this repository has asked whether the outlet
+opened anyway.** Every rollout document, every success clock and every opening-balance assumption
+is written as though the software will arrive on the same morning the doors first open, and that is
+now either wrong or unverified.
+
+The two answers lead to materially different projects:
+
+**If the outlet did not open** — the launch date simply moves. Q12's dry-run recommendation becomes
+free rather than costly, Q20's cut-off is whatever the restated date is, and the pilot is still the
+clean experiment it was designed to be.
+
+**If it opened and has been trading on paper, on a spreadsheet or on another system** — then:
+- there is a live period of real trading with **no system of record**, and it is growing daily;
+- **Q20 changes shape entirely**: opening balances become a reconstruction from manual records
+  against a moving cut-off, not a snapshot — bigger work, and work that needs the Q6 accountant;
+- every "14-day success clock" in the rollout plan is measuring something that already started;
+- **Q8 becomes retrospective, not prospective.** Invoices have already been issued to customers by
+  some means, and whatever their statutory status is, it is already a fact rather than a design
+  decision;
+- Q12's premise inverts: the software would be arriving *into* a running outlet rather than *with*
+  a new one — in some ways an easier pilot, because a software defect is then separable from a
+  staff learning curve, which is the one thing Q12 said the pilot could not do.
+
+**This costs one question and it changes the scope of Phase 3's first deliverable. It should be the
+first thing asked at this gate.**

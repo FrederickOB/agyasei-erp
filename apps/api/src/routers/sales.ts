@@ -348,6 +348,12 @@ export const salesRouter = router({
           assertPackPriceable(components, input.businessDate);
 
           const pricedLines: PricedLine[] = [];
+          // The steepest discount any single line carries, in basis points of
+          // that line's own extended amount. Accumulated here because the
+          // bound below must be measured against the SERVER's extended figure
+          // and the operator's stated discount — never against anything the
+          // till computed for itself.
+          let maxDiscountBps = 0n;
           for (let i = 0; i < input.lines.length; i += 1) {
             const line = input.lines[i]!;
             const prod = await tx.query<{
@@ -424,6 +430,27 @@ export const salesRouter = router({
             const extendedMinor = lineNetMinor(line.qty, sell.qty_scale, unitPriceE4, 'half-up');
             if (line.lineDiscountMinor > extendedMinor) {
               throw new TRPCError({ code: 'BAD_REQUEST', message: 'line discount exceeds line amount' });
+            }
+            if (line.lineDiscountMinor > 0n) {
+              // PER LINE, never per document. A full write-off on one line of
+              // ten averages to 10% across the document and would pass a 3%
+              // document-wide cap while giving that whole line away.
+              //
+              // The ratio is the fraction the operator actually negotiated
+              // whichever way the price list is composed: on an inclusive list
+              // both figures are gross of tax, on an exclusive list both are
+              // net of it, and the quotient is the same discount either way.
+              // That is why this is computed from the TYPED discount and the
+              // extended price rather than from `discountMinor`, which
+              // priceInclusive() has already re-denominated into the net terms
+              // the ledger stores (see its header).
+              //
+              // Rounded UP so a discount fractionally over the bound is
+              // refused rather than truncated underneath it. `extendedMinor`
+              // cannot be zero here: a zero extended amount fails the
+              // exceeds-line-amount guard above for any non-zero discount.
+              const bps = mulDiv(line.lineDiscountMinor, 10_000n, extendedMinor, 'up');
+              if (bps > maxDiscountBps) maxDiscountBps = bps;
             }
             const { net, discountMinor, taxes } = taxInclusive
               ? priceInclusive(extendedMinor, line.lineDiscountMinor, components)
@@ -504,6 +531,40 @@ export const salesRouter = router({
           // stock movement and no credit entry behind.
           if (input.tender === 'CREDIT') {
             ctx.permissions.requireWithinAmount('sale.record.credit', input.locationId, total);
+          }
+
+          // ── THE DISCOUNT BOUND (02 §2.4; CLAUDE.md §2.6). ────────────────
+          //
+          // `lineDiscountMinor` used to be authorised by NOTHING. The template
+          // withholds `sale.discount.apply` from counter staff and grants it to
+          // an outlet manager at `max_bps: 300`, and both facts were data no
+          // code read — so any principal who could ring a sale at all could
+          // discount it to zero, and the `sale.record.credit` bound above could
+          // be walked under by discounting the total beneath it. Migration 0005
+          // says the two hard prohibitions are enforced "by the counter role
+          // simply NOT HOLDING" the capability; that is only true once
+          // something asks. This is the ask.
+          //
+          // ONLY WHEN A DISCOUNT WAS ACTUALLY TAKEN. An undiscounted sale must
+          // not require a discount capability — that is every sale the pilot
+          // rings today, and demanding the grant for them would take the
+          // counter down rather than secure it.
+          //
+          // `requireWithinBound` refuses in both directions: not held at this
+          // location at all, or held with a bound this act exceeds. An absent
+          // bound is unbounded, which is what makes the owner role work.
+          //
+          // Synchronous against the already-resolved snapshot, and inside the
+          // same transaction as everything else, for the reasons the credit
+          // bound above sets out: a refusal here rolls back the sale, its stock
+          // movements and its credit entry together, leaving nothing behind.
+          if (maxDiscountBps > 0n) {
+            ctx.permissions.requireWithinBound(
+              'sale.discount.apply',
+              input.locationId,
+              'max_bps',
+              maxDiscountBps,
+            );
           }
 
           // Credit tender: resolve the account BEFORE committing to anything.

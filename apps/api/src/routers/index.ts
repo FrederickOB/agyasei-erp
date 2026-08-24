@@ -7,6 +7,7 @@ import { procurementRouter } from './procurement.js';
 import { provisioningRouter } from './provisioning.js';
 import { receivingRouter } from './receiving.js';
 import { reportsRouter } from './reports.js';
+import { reviewRouter } from './review.js';
 import { salesRouter } from './sales.js';
 import { sequenceRouter } from './sequence.js';
 import { sessionRouter } from './session.js';
@@ -20,6 +21,9 @@ export const appRouter = router({
   credit: creditRouter,
   sequence: sequenceRouter,
   reports: reportsRouter,
+  // The human review queue (CLAUDE.md §2.2). Three writers filled it from
+  // Phase 1; until this mount nothing could take a row out — see review.ts.
+  review: reviewRouter,
   // Phase 2 (CLAUDE.md §3). Mounted EMPTY and on purpose: the namespaces exist
   // so the agents that fill them change one file each and never this one — a
   // mount somebody forgot is how a written route ends up reachable by nothing
