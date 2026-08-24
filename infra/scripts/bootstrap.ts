@@ -158,10 +158,21 @@ async function main(): Promise<void> {
     // 4 — jurisdiction pack + two tenants ---------------------------------
     await seedGhanaJurisdiction(db); // platform.* writes: admin connection, idempotent
 
+    // Dev tenants are created in 'provisioning', exactly as `createTenant`
+    // now creates them (G-1). They are NOT activated here, and the bootstrap
+    // is deliberately not given a way to activate them: activation requires a
+    // qualified practitioner's confirmation on every tax rate in force
+    // (CLAUDE.md §2.8), and a dev seeder that could wave that through would be
+    // a backdoor to a human review gate — which is worth more than the
+    // convenience of a green status column.
+    //
+    // Nothing enforces active status yet, so the dev stack trades exactly as
+    // before. What changes is that the gate is VISIBLE every time anybody
+    // runs `pnpm stack:up`, rather than being bypassed silently.
     for (const t of [TENANT_A, TENANT_B]) {
       await db.query(
-        `insert into platform.tenant (id, slug, legal_name, status, jurisdiction_code, activated_at)
-         values ($1, $2, $3, 'active', 'GH', transaction_timestamp())
+        `insert into platform.tenant (id, slug, legal_name, status, jurisdiction_code)
+         values ($1, $2, $3, 'provisioning', 'GH')
          on conflict (id) do nothing`,
         [t.id, t.slug, t.legalName],
       );
@@ -362,6 +373,22 @@ async function main(): Promise<void> {
       tenantB: TENANT_B,
     };
     await writeFile(outPath, `${JSON.stringify(tenants, null, 2)}\n`);
+    // Say plainly what is standing between these tenants and activation.
+    const unconfirmed = await db.query<{ tax_code: string }>(
+      `select tax_code from platform.tax_rate
+        where jurisdiction_code = 'GH' and upper_inf(effective) and confirmed_by is null
+        order by tax_code`,
+    );
+    if (unconfirmed.rows.length > 0) {
+      console.log(
+        `[bootstrap] tenants are 'provisioning', NOT active: ${unconfirmed.rows.length} tax rate(s) ` +
+          `in force carry no practitioner confirmation (${unconfirmed.rows.map((r) => r.tax_code).join(', ')}). ` +
+          `That is open-questions Q8 and CLAUDE.md §2.8; the dev stack still trades, and the gate is real.`,
+      );
+    } else {
+      console.log(`[bootstrap] every tax rate in force is confirmed — these tenants can be activated`);
+    }
+
     console.log(`[bootstrap] wrote ${outPath}`);
     console.log('[bootstrap] done');
   } finally {
