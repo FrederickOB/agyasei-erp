@@ -98,3 +98,15 @@ export {
   type Register,
   type RegisterLine,
 } from './payroll/register.js';
+
+export {
+  closeBlockers,
+  monthlyView,
+  proposeMatches,
+  type BookLine,
+  type CloseBlocker,
+  type MatchOptions,
+  type MatchProposal,
+  type MonthlyView,
+  type StatementLine,
+} from './reconciliation/reconcile.js';

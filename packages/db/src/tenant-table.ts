@@ -88,6 +88,13 @@ export const WRITE_ID_EXEMPT: readonly string[] = [
   'pay_period',
   'payroll_bureau_import',
   'payroll_entry',
+  // Migration 0018. A statement is imported by an administrator at HQ and a
+  // match is made there; none of this is in a sync rule, and bank rec is an
+  // HQ activity by design (05 §5.7).
+  'cash_account',
+  'bank_statement',
+  'bank_statement_line',
+  'reconciliation_match',
   'credit_sync_book_scope',
   'credit_sync_location_scope',
   'credit_ageing_band',
