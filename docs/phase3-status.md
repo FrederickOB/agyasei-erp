@@ -28,6 +28,20 @@ accountant recorded per `05-general-ledger.md` §5.12. No accountant is named
 | G-1: activation gate on unconfirmed tax rates; dev stack shows it | `provisioning.ts`, bootstrap | 8 tests incl. the pinned unread-status test |
 | **Read surface: `ledger.*` router, `gl.view`, Books screen** | migration `0019`, `routers/ledger.ts`, `features/books/` | 12 API + 7 UI tests; guard-swap mutation → 3 red incl. discriminator; live 200/403 on a fresh stack |
 
+### Correction (2026-08-24): Track A was reported complete with a gap in it
+
+`postDocument` had **no production caller** — the engine, rules and statements were all real and
+no settled document ever reached them outside a test. Found while building the go-live dry-run
+machinery, recorded here rather than papered over. Closed by `posting/sweep.ts` (settled sales →
+engine, tender derived from the CHARGE credit entry rather than `customer_id` — a cash sale by a
+known customer must never debit AR), `pnpm dev:post-settled` as its only, visible caller (the
+scheduler remains the recorded nightly-job gap), and a DRAFT chart of accounts as a dev fixture
+(`seed/dev-ledger.ts` — never template content; see `docs/draft-chart-of-accounts.md`, the §2.8
+review artifact with its sign-off block blank). Demonstrated live: a sale rung at the till posts
+Till 18,000 / Revenue 15,000 / Output tax 3,000, balanced, tying to Σ(app.sale); a 2025-dated
+sale is refused GL_NO_PERIOD and surfaces as an open exception (the Q20 class, visible); tenant
+B's books stay empty. **COGS posts nothing until Q16 is answered — omitted, never estimated.**
+
 **Totals:** 1,760 tests / 118 files, 0 failures. Both lints clean. 19 migrations apply from
 nothing; the fresh stack holds **zero accounts, zero mappings, zero journal entries, zero cash
 accounts** — the safe side of the §4.3 boundary is still pristine, demonstrated on every
