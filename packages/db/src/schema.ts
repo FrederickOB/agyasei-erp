@@ -1343,3 +1343,71 @@ export const payrollEntry = appSchema.table('payroll_entry', {
   bureauImportId: uuid('bureau_import_id'),
 });
 registerAppTable('payroll_entry', payrollEntry);
+
+// ---------------------------------------------------------------------------
+// BANK AND MOBILE MONEY RECONCILIATION (migration 0018)
+//
+// A statement line carries `amountMinor` + `direction`, NOT a debit/credit
+// pair. It is external data, and forcing it into the ledger's convention
+// invites the classic reconciliation error — the bank's "credit" and the
+// ledger's "credit" are opposites from the account holder's side.
+// ---------------------------------------------------------------------------
+
+export const cashAccount = appSchema.table('cash_account', {
+  tenantId: uuid('tenant_id').notNull(),
+  id: uuid('id').notNull(),
+  accountId: uuid('account_id').notNull(),
+  kind: text('kind').notNull(),
+  provider: text('provider'),
+  externalRef: text('external_ref'),
+  locationId: uuid('location_id').notNull(),
+  openingBalanceMinor: bigint('opening_balance_minor', { mode: 'bigint' }).notNull(),
+  openingAsOf: date('opening_as_of').notNull(),
+  statementFormat: text('statement_format'),
+  staleAfterDays: integer('stale_after_days').notNull(),
+  isActive: boolean('is_active').notNull(),
+});
+registerAppTable('cash_account', cashAccount);
+
+export const bankStatement = appSchema.table('bank_statement', {
+  tenantId: uuid('tenant_id').notNull(),
+  id: uuid('id').notNull(),
+  cashAccountId: uuid('cash_account_id').notNull(),
+  periodStart: date('period_start').notNull(),
+  periodEnd: date('period_end').notNull(),
+  openingBalanceMinor: bigint('opening_balance_minor', { mode: 'bigint' }).notNull(),
+  closingBalanceMinor: bigint('closing_balance_minor', { mode: 'bigint' }).notNull(),
+  source: text('source').notNull(),
+  fileDigest: text('file_digest'),
+  importedAt: timestamp('imported_at', { withTimezone: true }).notNull(),
+  importedBy: uuid('imported_by').notNull(),
+});
+registerAppTable('bank_statement', bankStatement);
+
+export const bankStatementLine = appSchema.table('bank_statement_line', {
+  tenantId: uuid('tenant_id').notNull(),
+  id: uuid('id').notNull(),
+  statementId: uuid('statement_id').notNull(),
+  lineNo: integer('line_no').notNull(),
+  valueDate: date('value_date').notNull(),
+  description: text('description'),
+  reference: text('reference'),
+  amountMinor: bigint('amount_minor', { mode: 'bigint' }).notNull(),
+  direction: char('direction', { length: 1 }).notNull(),
+  externalRef: text('external_ref'),
+});
+registerAppTable('bank_statement_line', bankStatementLine);
+
+export const reconciliationMatch = appSchema.table('reconciliation_match', {
+  tenantId: uuid('tenant_id').notNull(),
+  id: uuid('id').notNull(),
+  cashAccountId: uuid('cash_account_id').notNull(),
+  statementLineId: uuid('statement_line_id'),
+  journalEntryId: uuid('journal_entry_id'),
+  journalLineNo: integer('journal_line_no'),
+  matchedBy: uuid('matched_by').notNull(),
+  matchedAt: timestamp('matched_at', { withTimezone: true }).notNull(),
+  method: text('method').notNull(),
+  note: text('note'),
+});
+registerAppTable('reconciliation_match', reconciliationMatch);
