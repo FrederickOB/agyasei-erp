@@ -262,6 +262,9 @@ const ACCOUNTS: TemplateRole = {
     { code: 'payroll.register.export' },
     { code: 'payroll.register.import' },
     { code: 'sync.conflict.review' },
+    // The books. CLAUDE.md's role sketch puts "GL review" here and nowhere
+    // else; the owner role reaches it through the owner expansion.
+    { code: 'gl.view' },
     // Accounts owns the supplier master file, because payment terms are an
     // AP fact, and approves the spend — unbounded, unlike the regional
     // manager's ceiling.

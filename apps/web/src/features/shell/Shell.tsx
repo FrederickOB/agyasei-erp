@@ -87,6 +87,7 @@ const Suppliers = lazy(async () => ({
   default: (await import('../suppliers/Suppliers')).Suppliers,
 }));
 const Review = lazy(async () => ({ default: (await import('../review/Review')).Review }));
+const Books = lazy(async () => ({ default: (await import('../books/Books')).Books }));
 const Deliveries = lazy(async () => ({
   default: (await import('../deliveries/Deliveries')).Deliveries,
 }));
@@ -102,7 +103,8 @@ export type ViewId =
   | 'buying'
   | 'suppliers'
   | 'deliveries'
-  | 'review';
+  | 'review'
+  | 'books';
 
 interface ViewDef {
   readonly id: ViewId;
@@ -152,6 +154,9 @@ const VIEWS: readonly ViewDef[] = [
   // destination rather than a notification, because a conflict that is only
   // ever surfaced as a badge is a conflict somebody dismisses.
   { id: 'review', label: 'Decisions', icon: 'alert', requires: CAPABILITY.conflictReview, keepMounted: false },
+  // The general ledger. Strictly online and read-only — the books are the
+  // server's, and a correction is a reversing entry, never an edit.
+  { id: 'books', label: 'Books', icon: 'receipt', requires: CAPABILITY.glView, keepMounted: false },
 ];
 
 export interface ShellProps {
@@ -270,6 +275,11 @@ export function Shell({ db, permissions, status, notice, apiOptions }: ShellProp
         {active === 'suppliers' ? (
           <Suspense fallback={<ServerPending what="The supplier list" rows={3} />}>
             <Suppliers db={db} permissions={permissions} {...(apiOptions === undefined ? {} : { apiOptions })} />
+          </Suspense>
+        ) : null}
+        {active === 'books' ? (
+          <Suspense fallback={<ServerPending what="The books" rows={4} />}>
+            <Books {...(apiOptions === undefined ? {} : { apiOptions })} />
           </Suspense>
         ) : null}
         {active === 'review' ? (

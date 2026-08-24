@@ -84,6 +84,13 @@ export const CAPABILITY = {
    */
   conflictReview: 'sync.conflict.review',
   /**
+   * Read the general ledger: trial balance, statements, posting exceptions.
+   * Sensitive — the books carry every margin and every net-pay line — so the
+   * template gives it to Accounts alone, and the owner role reaches it
+   * through the owner expansion. Read-only: no write capability exists.
+   */
+  glView: 'gl.view',
+  /**
    * Open a customer's credit account, amend its terms, and MOVE IT BETWEEN
    * ACTIVE, SUSPENDED AND CLOSED — the switch behind the check
    * `sales.createSale` has always made and nothing could satisfy. TENANT-WIDE
