@@ -61,3 +61,11 @@ export {
   type StockAdjustmentDocument,
   type TransferDocument,
 } from './posting/rules.js';
+
+export {
+  POSTING_ERROR,
+  postDocument,
+  type PostOptions,
+  type PostResult,
+  type PostingRunner,
+} from './posting/engine.js';
