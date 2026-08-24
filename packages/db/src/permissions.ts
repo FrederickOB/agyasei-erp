@@ -73,6 +73,7 @@ export const PERMISSION_CODES = [
   'credit.fee.accrue',
   'credit.policy.manage',
 
+  'gl.view',
   'report.view.location',
   'report.view.tenant',
   'report.view.margin',

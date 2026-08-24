@@ -233,6 +233,25 @@ describe('which destinations are offered', () => {
     );
   });
 
+  it('offers the books only where gl.view is held — Accounts, and nobody else', async () => {
+    const db = await till();
+    renderShell(db, holding([CAPABILITY.glView]));
+    const nav = await screen.findByRole('navigation', { name: 'Main' });
+    expect([...nav.querySelectorAll('button')].map((b) => b.textContent)).toEqual([
+      'Counter',
+      'Sales',
+      'Books',
+    ]);
+
+    cleanup();
+    const db2 = await till();
+    // The margin capability is the strongest REPORTING grant; it must not
+    // open the books, or the gl.view split means nothing on the client.
+    renderShell(db2, holding([CAPABILITY.reportMargin, CAPABILITY.reportLocation]));
+    const nav2 = await screen.findByRole('navigation', { name: 'Main' });
+    expect([...nav2.querySelectorAll('button')].map((b) => b.textContent)).not.toContain('Books');
+  });
+
   it('offers everything when the capability list could not be fetched', async () => {
     const db = await till();
     renderShell(db, {
@@ -256,6 +275,7 @@ describe('which destinations are offered', () => {
       // — and absent from every case above, because the template withholds
       // `sync.conflict.review` from the counter and from an outlet manager.
       'Decisions',
+      'Books',
     ]);
   });
 });

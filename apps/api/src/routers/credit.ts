@@ -32,7 +32,12 @@ import {
 } from '@erp/contracts';
 import { deterministicUuid } from '@erp/db';
 import { mulDiv } from '@erp/money';
-import { days30, type CreditPolicy } from '../credit-policy.js';
+import {
+  days30,
+  feeMechanics,
+  UnsupportedPolicyError,
+  type CreditPolicy,
+} from '../credit-policy.js';
 import type { Queryable } from '../db.js';
 import { runIdempotent } from '../pipeline.js';
 import { permissionProcedure, router } from '../trpc.js';
@@ -157,21 +162,34 @@ interface FeeAccrual {
   dueDate: string;
   basisMinor: bigint;
   elapsedDays30: number;
+  /** What was actually counted, in the policy's own convention. */
+  elapsedLabel: string;
   cumulativeMinor: bigint;
   alreadyPostedMinor: bigint;
   deltaMinor: bigint;
 }
 
 /**
- * §6.4.3 under the provisional settings: per-invoice, cumulative
- * computation with delta posting — truncation error bounded under one
- * minor unit per invoice FOR ALL TIME, and no allocation remainder exists
- * because the fee is computed at invoice grain.
+ * §6.4.3: per-invoice, cumulative computation with delta posting —
+ * truncation error bounded under one minor unit per invoice FOR ALL TIME, and
+ * no allocation remainder exists because the fee is computed at invoice grain.
  *
- *   cumulative = (basis × rate_bp × elapsed30) / (10000 × 30)   -- ÷ LAST,
+ *   cumulative = (basis × rate_bp × elapsedNum) / (10000 × elapsedDen)  ÷ LAST
  *   delta      = cumulative − Σ prior fee entries for the invoice
  *
  * The formula contains no currency scale — no literal 100 anywhere.
+ *
+ * EVERY Q4 DECISION IS NOW READ (G-5). This function used to compute 30E/360
+ * on the overdue balance unconditionally while `feeBasis`, `feeDayCount`,
+ * `feeCompounds` and `feeOnFee` sat in the policy unread — so an accountant
+ * confirming `actual_365` would have had their answer recorded and silently
+ * disregarded, and the system could have shown them a signed confirmation of
+ * a rule it did not follow.
+ *
+ * `feeMechanics()` now supplies the elapsed-time rational, the date time runs
+ * from, and whether unpaid fees join the basis. A decision it cannot honour
+ * THROWS rather than falling back, which is the whole point: a value is
+ * honoured or refused, never ignored.
  */
 function computeFeeAccruals(
   policy: CreditPolicy,
@@ -187,34 +205,85 @@ function computeFeeAccruals(
     target.set(e.applies_to_id, (target.get(e.applies_to_id) ?? 0n) + BigInt(e.amount_minor));
   }
 
+  // Throws `UnsupportedPolicyError` for any confirmed decision this engine
+  // cannot honour. The caller turns that into a refusal, so a policy the
+  // accountant confirmed and the code cannot follow stops the accrual instead
+  // of quietly producing a figure under different rules.
+  const mechanics = feeMechanics(policy);
+
   const out: FeeAccrual[] = [];
   for (const e of entries) {
     if (e.kind !== 'CHARGE' || !e.due_date) continue;
-    // D-2: feeOnFee=false — fees never enter their own basis.
-    const outstanding = BigInt(e.amount_minor) + (appliedNonFee.get(e.id) ?? 0n);
+    const already = appliedFee.get(e.id) ?? 0n;
+
+    // D-2 feeOnFee: do unpaid accruals themselves enter the basis?
+    const outstanding =
+      BigInt(e.amount_minor) +
+      (appliedNonFee.get(e.id) ?? 0n) +
+      (mechanics.feeJoinsBasis ? already : 0n);
     if (outstanding <= 0n) continue;
-    // D-1: overdue only — nothing accrues inside terms (+ grace).
+
+    // D-1 feeBasis: overdue-only runs from the due date; an outstanding-balance
+    // policy runs from the document date, because the customer held the money
+    // from then.
+    const runsFrom =
+      mechanics.runsFrom === 'due_date' ? e.due_date : e.business_date;
     const accrualStart =
-      policy.feeGraceDays > 0 ? addCalendarDays(e.due_date, policy.feeGraceDays) : e.due_date;
-    const elapsed = Math.max(0, days30(accrualStart, asOf));
-    if (elapsed === 0) continue;
+      policy.feeGraceDays > 0 ? addCalendarDays(runsFrom, policy.feeGraceDays) : runsFrom;
+
+    // D-3 feeDayCount, as an exact rational so the division happens LAST.
+    const elapsed = mechanics.elapsed(accrualStart, asOf);
+    if (elapsed.numerator <= 0n) continue;
+
     // ÷ last, truncating toward zero: the sub-minor fraction is always
     // FORGONE, never charged — truncation favours the customer.
-    const cumulative = mulDiv(outstanding, feeRateBp * BigInt(elapsed), 10_000n * 30n, 'down');
-    const already = appliedFee.get(e.id) ?? 0n;
+    const cumulative = mulDiv(
+      outstanding,
+      feeRateBp * elapsed.numerator,
+      10_000n * elapsed.denominator,
+      'down',
+    );
     const delta = cumulative - already;
     if (delta <= 0n) continue;
     out.push({
       chargeId: e.id,
       dueDate: e.due_date,
       basisMinor: outstanding,
-      elapsedDays30: elapsed,
+      elapsedDays30: Number(elapsed.numerator),
+      elapsedLabel: elapsed.elapsedLabel,
       cumulativeMinor: cumulative,
       alreadyPostedMinor: already,
       deltaMinor: delta,
     });
   }
   return out;
+}
+
+/**
+ * Compute the accruals, or refuse with a message naming the decision.
+ *
+ * `feeMechanics` throws for any confirmed Q4 decision this engine cannot
+ * honour. Letting that escape as an INTERNAL_SERVER_ERROR would be the same
+ * defect in a different coat: the accountant's answer would be recorded, and
+ * the system would produce a 500 instead of a figure, telling nobody why.
+ *
+ * PRECONDITION_FAILED, and the message names the decision and what is needed
+ * to settle it — because the fix is a conversation with a human, not a retry.
+ */
+function accrualsOrRefuse(
+  policy: CreditPolicy,
+  feeRateBp: bigint,
+  entries: EntryRow[],
+  asOf: string,
+): FeeAccrual[] {
+  try {
+    return computeFeeAccruals(policy, feeRateBp, entries, asOf);
+  } catch (err) {
+    if (err instanceof UnsupportedPolicyError) {
+      throw new TRPCError({ code: 'PRECONDITION_FAILED', message: err.message });
+    }
+    throw err;
+  }
 }
 
 function bucketLabels(bounds: readonly number[]): { label: string; from: number; to: number | null }[] {
@@ -911,7 +980,7 @@ export const creditRouter = router({
       return ctx.deps.runner.withTenant(ctx.identity.tenantId, async (tx) => {
         const account = await requireAccount(tx, input.accountId);
         const entries = await loadEntries(tx, input.accountId, input.asOf);
-        const accruals = computeFeeAccruals(policy, account.feeRateBp, entries, input.asOf);
+        const accruals = accrualsOrRefuse(policy, account.feeRateBp, entries, input.asOf);
         return {
           accountId: input.accountId,
           asOf: input.asOf,
@@ -959,7 +1028,7 @@ export const creditRouter = router({
         async (tx) => {
           const account = await requireAccount(tx, input.accountId);
           const entries = await loadEntries(tx, input.accountId, input.asOf);
-          const accruals = computeFeeAccruals(policy, account.feeRateBp, entries, input.asOf);
+          const accruals = accrualsOrRefuse(policy, account.feeRateBp, entries, input.asOf);
           const response = {
             accountId: input.accountId,
             asOf: input.asOf,

@@ -2485,3 +2485,42 @@ button {
   gap: var(--s-2);
   color: var(--text-muted);
 }
+
+/* ---------------------------------------------------------------------------
+   The books — read-only statements. The exception banner sits ABOVE the
+   statements because a statement over an incomplete ledger is quietly wrong.
+   --------------------------------------------------------------------------- */
+.books-screen { display: flex; flex-direction: column; gap: var(--s-4); }
+.books-note { color: var(--text-muted); max-width: 60ch; }
+.books-tabs { display: flex; gap: var(--s-2); flex-wrap: wrap; }
+.books-tab {
+  font: inherit; padding: var(--s-2) var(--s-3); border-radius: var(--r-full);
+  border: 1px solid var(--control-border); background: var(--surface); color: var(--text);
+  min-height: 44px;
+}
+.books-tab-active { background: var(--brand); border-color: var(--brand); color: var(--brand-ink); }
+.books-statement { display: flex; flex-direction: column; gap: var(--s-3); }
+.books-table { width: 100%; border-collapse: collapse; }
+.books-table th, .books-table td {
+  text-align: left; padding: var(--s-2); border-bottom: 1px solid var(--border);
+}
+.books-table .numeric, .books-totals dd { text-align: right; font-variant-numeric: tabular-nums; }
+.books-totals { display: flex; gap: var(--s-4); flex-wrap: wrap; margin: 0; }
+.books-totals dt { color: var(--text-muted); font-size: 0.875rem; }
+.books-totals dd { margin: 0; font-weight: 600; }
+.books-result dd { color: var(--text); }
+.books-ok { background: var(--ok-tint); color: var(--ok-ink); padding: var(--s-2); border-radius: var(--r-1); }
+.books-attn { background: var(--attn-tint); color: var(--attn-ink); padding: var(--s-2); border-radius: var(--r-1); font-weight: 600; }
+.books-attn-list { color: var(--attn-ink); }
+.books-empty {
+  display: flex; flex-direction: column; gap: var(--s-2); align-items: flex-start;
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-2);
+  padding: var(--s-4); max-width: 60ch;
+}
+.books-empty p { color: var(--text-muted); }
+.books-empty-warn { color: var(--wait-ink); font-weight: 600; }
+.books-exceptions {
+  display: flex; gap: var(--s-2); background: var(--attn-tint); color: var(--attn-ink);
+  border-radius: var(--r-2); padding: var(--s-3);
+}
+.books-exceptions ul { margin: var(--s-1) 0 0; padding-left: 1.2em; font-size: 0.875rem; }

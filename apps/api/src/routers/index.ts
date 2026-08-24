@@ -2,6 +2,7 @@ import { router } from '../trpc.js';
 import { catalogueRouter } from './catalogue.js';
 import { creditRouter } from './credit.js';
 import { inventoryRouter } from './inventory.js';
+import { ledgerRouter } from './ledger.js';
 import { logisticsRouter } from './logistics.js';
 import { procurementRouter } from './procurement.js';
 import { provisioningRouter } from './provisioning.js';
@@ -31,6 +32,9 @@ export const appRouter = router({
   procurement: procurementRouter, // suppliers, multi-source supply, purchase orders
   receiving: receivingRouter, // goods receipts matched against those orders
   logistics: logisticsRouter, // third-party dispatch and delivery status (ADR-0001)
+  // Phase 3 Track A's read surface. Read-only by construction — every
+  // procedure is a query, and no write capability exists (see ledger.ts).
+  ledger: ledgerRouter,
 });
 
 export type AppRouter = typeof appRouter;
