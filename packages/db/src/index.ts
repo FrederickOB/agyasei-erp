@@ -69,3 +69,18 @@ export {
   type PostResult,
   type PostingRunner,
 } from './posting/engine.js';
+
+export {
+  balanceSheet,
+  clearingNet,
+  profitAndLoss,
+  statementsReconcile,
+  trialBalance,
+  type AccountType,
+  type BalanceSheet,
+  type LocationBalance,
+  type ProfitAndLoss,
+  type StatementQuery,
+  type StatementRow,
+  type TrialBalance,
+} from './posting/statements.js';
