@@ -1095,3 +1095,126 @@ export const creditAllowance = appSchema.table('credit_allowance', {
   snapshotAsOfHlc: text('snapshot_as_of_hlc').notNull(),
 });
 registerAppTable('credit_allowance', creditAllowance);
+
+// ---------------------------------------------------------------------------
+// THE GENERAL LEDGER (migration 0015, Phase 3 Track A)
+//
+// Mirrors only. The hand-written SQL is the schema, and everything that makes
+// this a LEDGER rather than a set of tables — balance enforced twice,
+// immutability, the postable-account foreign key — lives there where no ORM
+// can route around it.
+//
+// None of these carry `write_id` or `hlc`, and they are named in
+// `WRITE_ID_EXEMPT` with the reason: the GL is server-side only (05 §5.2.6).
+// No device may write a journal, no journal table is in any sync rule, and
+// every entry is derived from a document that already carries its own spine.
+// ---------------------------------------------------------------------------
+
+/** The tenant's own fiscal calendar. Nothing on the platform assumes January. */
+export const fiscalYear = appSchema.table('fiscal_year', {
+  tenantId: uuid('tenant_id').notNull(),
+  fyCode: text('fy_code').notNull(),
+  startsOn: date('starts_on').notNull(),
+  endsOn: date('ends_on').notNull(),
+});
+registerAppTable('fiscal_year', fiscalYear);
+
+/** Periods that tile a fiscal year: no gaps, no overlaps, enforced by trigger. */
+export const accountingPeriod = appSchema.table('accounting_period', {
+  tenantId: uuid('tenant_id').notNull(),
+  id: uuid('id').notNull(),
+  fyCode: text('fy_code').notNull(),
+  seq: integer('seq').notNull(),
+  startsOn: date('starts_on').notNull(),
+  endsOn: date('ends_on').notNull(),
+  status: text('status').notNull(),
+  closedAt: timestamp('closed_at', { withTimezone: true }),
+  closedBy: uuid('closed_by'),
+  reopenedAt: timestamp('reopened_at', { withTimezone: true }),
+  reopenedBy: uuid('reopened_by'),
+  reopenReason: text('reopen_reason'),
+});
+registerAppTable('accounting_period', accountingPeriod);
+
+/**
+ * The chart of accounts. STRUCTURE ONLY — there are no rows, in any template,
+ * and there must not be until the §2.8 accountant review has happened (Q6).
+ */
+export const glAccount = appSchema.table('gl_account', {
+  tenantId: uuid('tenant_id').notNull(),
+  id: uuid('id').notNull(),
+  code: text('code').notNull(),
+  name: text('name').notNull(),
+  accountType: text('account_type').notNull(),
+  normalBalance: char('normal_balance', { length: 1 }).notNull(),
+  parentAccountId: uuid('parent_account_id'),
+  isPostable: boolean('is_postable').notNull(),
+  requiresCounterparty: text('requires_counterparty'),
+  controlAccountKind: text('control_account_kind'),
+  reportLineKey: text('report_line_key').notNull(),
+  isActive: boolean('is_active').notNull(),
+  closedAt: date('closed_at'),
+  templateRef: text('template_ref'),
+});
+registerAppTable('gl_account', glAccount);
+
+/** The gapless entry number, per (tenant, fiscal year). Server-side, locked. */
+export const glCounter = appSchema.table('gl_counter', {
+  tenantId: uuid('tenant_id').notNull(),
+  fyCode: text('fy_code').notNull(),
+  nextNo: bigint('next_no', { mode: 'bigint' }).notNull(),
+});
+registerAppTable('gl_counter', glCounter);
+
+/**
+ * The journal header. `debitTotalMinor` / `creditTotalMinor` / `lineCount` are
+ * DERIVED and maintained by trigger — never written by application code, and
+ * never trusted by the balance backstop, which recomputes from the lines.
+ */
+export const journalEntry = appSchema.table('journal_entry', {
+  tenantId: uuid('tenant_id').notNull(),
+  id: uuid('id').notNull(),
+  entryNo: bigint('entry_no', { mode: 'bigint' }).notNull(),
+  periodId: uuid('period_id').notNull(),
+  fyCode: text('fy_code').notNull(),
+  documentDate: date('document_date').notNull(),
+  postedAt: timestamp('posted_at', { withTimezone: true }),
+  status: text('status').notNull(),
+  sourceKind: text('source_kind').notNull(),
+  sourceId: uuid('source_id'),
+  idempotencyKey: text('idempotency_key').notNull(),
+  postingRuleVersion: integer('posting_rule_version').notNull(),
+  mappingSetVersion: integer('mapping_set_version').notNull(),
+  isLateArrival: boolean('is_late_arrival').notNull(),
+  memo: text('memo'),
+  createdBy: uuid('created_by').notNull(),
+  reversesEntryId: uuid('reverses_entry_id'),
+  reversedByEntryId: uuid('reversed_by_entry_id'),
+  debitTotalMinor: bigint('debit_total_minor', { mode: 'bigint' }).notNull(),
+  creditTotalMinor: bigint('credit_total_minor', { mode: 'bigint' }).notNull(),
+  lineCount: integer('line_count').notNull(),
+});
+registerAppTable('journal_entry', journalEntry);
+
+/**
+ * Where double entry lives: two non-negative columns, exactly one non-zero.
+ * `locationId` is NOT NULL because an entry balances PER LOCATION — a line
+ * with no location has nothing to balance against (05 §5.5.3).
+ */
+export const journalLine = appSchema.table('journal_line', {
+  tenantId: uuid('tenant_id').notNull(),
+  journalEntryId: uuid('journal_entry_id').notNull(),
+  lineNo: integer('line_no').notNull(),
+  accountId: uuid('account_id').notNull(),
+  accountPostable: boolean('account_postable').notNull(),
+  locationId: uuid('location_id').notNull(),
+  debitMinor: bigint('debit_minor', { mode: 'bigint' }).notNull(),
+  creditMinor: bigint('credit_minor', { mode: 'bigint' }).notNull(),
+  currencyCode: char('currency_code', { length: 3 }).notNull(),
+  counterpartyKind: text('counterparty_kind'),
+  counterpartyId: uuid('counterparty_id'),
+  productId: uuid('product_id'),
+  sourceLineId: uuid('source_line_id'),
+  memo: text('memo'),
+});
+registerAppTable('journal_line', journalLine);

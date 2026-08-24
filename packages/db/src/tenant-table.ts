@@ -61,6 +61,20 @@ const tenantTableRegistry = new Map<string, unknown>();
  */
 export const WRITE_ID_EXEMPT: readonly string[] = [
   'write_log',
+  // The GENERAL LEDGER (migration 0015). Same reason as (2), stated for its
+  // own case because it is the largest exemption in this list: the GL is
+  // SERVER-SIDE ONLY (05 §5.2.6). No journal table is in any sync rule, no
+  // device may write one, and every entry is derived by the server from a
+  // document that already carries its own write spine and logical clock.
+  // `source_kind` + `source_id` + `idempotency_key` carry the provenance a
+  // `write_id` would, and carry it accurately; a nullable write column here
+  // would assert a device authorship that can never exist.
+  'fiscal_year',
+  'accounting_period',
+  'gl_account',
+  'gl_counter',
+  'journal_entry',
+  'journal_line',
   'credit_sync_book_scope',
   'credit_sync_location_scope',
   'credit_ageing_band',
