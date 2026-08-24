@@ -16,7 +16,8 @@
     "stack:bootstrap": "tsx infra/scripts/bootstrap.ts",
     "dev:token": "node infra/scripts/dev-token.mjs",
     "dev:api": "pnpm --filter @erp/api dev:stack",
-    "dev:web": "pnpm --filter @erp/web dev"
+    "dev:web": "pnpm --filter @erp/web dev",
+    "lint:payroll": "node tools/lint-payroll.mjs"
   },
   "devDependencies": {
     "@erp/db": "workspace:*",

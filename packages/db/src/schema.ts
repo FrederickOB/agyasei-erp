@@ -1264,3 +1264,82 @@ export const postingException = appSchema.table('posting_exception', {
   resolutionNote: text('resolution_note'),
 });
 registerAppTable('posting_exception', postingException);
+
+// ---------------------------------------------------------------------------
+// PAYROLL — CAPTURE ONLY (migration 0017, CLAUDE.md §2.4)
+//
+// The column split is the design. `bureau_*` fields are the bureau's answer
+// and are NULL until an import supplies them; nothing in this codebase may
+// compute one, and `tools/lint-payroll.mjs` fails the build if anything tries.
+// ---------------------------------------------------------------------------
+
+/** Staff records. No tax identifier: statutory identity belongs elsewhere. */
+export const employee = appSchema.table('employee', {
+  tenantId: uuid('tenant_id').notNull(),
+  id: uuid('id').notNull(),
+  writeId: uuid('write_id').notNull(),
+  staffRef: text('staff_ref').notNull(),
+  displayName: text('display_name').notNull(),
+  locationId: uuid('location_id').notNull(),
+  jobTitle: text('job_title'),
+  startedOn: date('started_on').notNull(),
+  endedOn: date('ended_on'),
+  isActive: boolean('is_active').notNull(),
+});
+registerAppTable('employee', employee);
+
+export const payPeriod = appSchema.table('pay_period', {
+  tenantId: uuid('tenant_id').notNull(),
+  id: uuid('id').notNull(),
+  code: text('code').notNull(),
+  startsOn: date('starts_on').notNull(),
+  endsOn: date('ends_on').notNull(),
+  status: text('status').notNull(),
+  exportedAt: timestamp('exported_at', { withTimezone: true }),
+  returnedAt: timestamp('returned_at', { withTimezone: true }),
+  postedAt: timestamp('posted_at', { withTimezone: true }),
+  paidAt: timestamp('paid_at', { withTimezone: true }),
+  journalEntryId: uuid('journal_entry_id'),
+});
+registerAppTable('pay_period', payPeriod);
+
+/** One file from the bureau. The ONLY authority for a `bureau_*` figure. */
+export const payrollBureauImport = appSchema.table('payroll_bureau_import', {
+  tenantId: uuid('tenant_id').notNull(),
+  id: uuid('id').notNull(),
+  payPeriodId: uuid('pay_period_id').notNull(),
+  bureauRef: text('bureau_ref').notNull(),
+  fileName: text('file_name'),
+  fileDigest: text('file_digest').notNull(),
+  importedBy: uuid('imported_by').notNull(),
+  importedAt: timestamp('imported_at', { withTimezone: true }).notNull(),
+  statedGrossMinor: bigint('stated_gross_minor', { mode: 'bigint' }).notNull(),
+  statedEmployeeTaxMinor: bigint('stated_employee_tax_minor', { mode: 'bigint' }).notNull(),
+  statedEmployeeSocialMinor: bigint('stated_employee_social_minor', { mode: 'bigint' }).notNull(),
+  statedOtherMinor: bigint('stated_other_minor', { mode: 'bigint' }).notNull(),
+  statedEmployerSocialMinor: bigint('stated_employer_social_minor', { mode: 'bigint' }).notNull(),
+  statedNetMinor: bigint('stated_net_minor', { mode: 'bigint' }).notNull(),
+});
+registerAppTable('payroll_bureau_import', payrollBureauImport);
+
+export const payrollEntry = appSchema.table('payroll_entry', {
+  tenantId: uuid('tenant_id').notNull(),
+  payPeriodId: uuid('pay_period_id').notNull(),
+  employeeId: uuid('employee_id').notNull(),
+  locationId: uuid('location_id').notNull(),
+  hoursWorkedScaled: bigint('hours_worked_scaled', { mode: 'bigint' }).notNull(),
+  hoursScale: smallint('hours_scale').notNull(),
+  basePayMinor: bigint('base_pay_minor', { mode: 'bigint' }).notNull(),
+  overtimeMinor: bigint('overtime_minor', { mode: 'bigint' }).notNull(),
+  commissionMinor: bigint('commission_minor', { mode: 'bigint' }).notNull(),
+  allowancesMinor: bigint('allowances_minor', { mode: 'bigint' }).notNull(),
+  grossPayMinor: bigint('gross_pay_minor', { mode: 'bigint' }).notNull(),
+  // Below this line: the bureau's, never ours.
+  bureauEmployeeTaxMinor: bigint('bureau_employee_tax_minor', { mode: 'bigint' }),
+  bureauEmployeeSocialMinor: bigint('bureau_employee_social_minor', { mode: 'bigint' }),
+  bureauOtherDeductionsMinor: bigint('bureau_other_deductions_minor', { mode: 'bigint' }),
+  bureauEmployerSocialMinor: bigint('bureau_employer_social_minor', { mode: 'bigint' }),
+  bureauNetPayMinor: bigint('bureau_net_pay_minor', { mode: 'bigint' }),
+  bureauImportId: uuid('bureau_import_id'),
+});
+registerAppTable('payroll_entry', payrollEntry);

@@ -49,10 +49,13 @@ export {
   assertBalances,
   clearingNets,
   paymentEntry,
+  payrollEntry,
   saleEntry,
   stockAdjustmentEntry,
   transferEntry,
   type PaymentDocument,
+  type PayrollDocument,
+  type PayrollLine,
   type PostingRole,
   type ProposedEntry,
   type ProposedLine,
@@ -84,3 +87,14 @@ export {
   type StatementRow,
   type TrialBalance,
 } from './posting/statements.js';
+
+export {
+  buildRegister,
+  validateBureauFile,
+  type BureauFile,
+  type BureauLine,
+  type ImportRejection,
+  type ImportResult,
+  type Register,
+  type RegisterLine,
+} from './payroll/register.js';
