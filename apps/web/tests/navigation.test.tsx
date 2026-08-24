@@ -261,6 +261,21 @@ describe('which destinations are offered', () => {
 });
 
 describe('an in-progress cart survives navigation', () => {
+  /**
+   * `waitFor` defaults to one second, and this is the only test in the web
+   * suite that has ever exceeded it — never when the file or the package runs
+   * alone (verified over five consecutive runs), only under `turbo run test`
+   * with nineteen tasks competing for the CPU, where it took 3.2s and was
+   * still progressing rather than stuck.
+   *
+   * The timeout is raised rather than the assertions relaxed. What is under
+   * test is that the cart SURVIVES navigation, which is a behaviour; how many
+   * milliseconds a contended machine takes to render it is not. Raised here
+   * and not globally, so a genuine slowdown anywhere else in the suite still
+   * fails loudly.
+   */
+  const SLOW = { timeout: 10_000 };
+
   it('keeps the lines, and keeps the counter mounted rather than rebuilding it', async () => {
     const db = await till();
     const { container } = renderShell(db, holding([CAPABILITY.stockView]));
@@ -269,14 +284,15 @@ describe('an in-progress cart survives navigation', () => {
     const pane = container.querySelector('.view-pane') as HTMLElement;
 
     // Ring one line at the counter.
-    fireEvent.click(await screen.findByRole('button', { name: /Cement 50kg/ }));
-    await waitFor(() =>
-      expect(within(pane).getByRole('button', { name: /1 line/ }).textContent).toContain('620.00'),
+    fireEvent.click(await screen.findByRole('button', { name: /Cement 50kg/ }, SLOW));
+    await waitFor(
+      () => expect(within(pane).getByRole('button', { name: /1 line/ }).textContent).toContain('620.00'),
+      SLOW,
     );
 
     // Walk away to another destination.
     fireEvent.click(screen.getByRole('button', { name: /^Stock/ }));
-    await screen.findByRole('heading', { name: /Low stock/ });
+    await screen.findByRole('heading', { name: /Low stock/ }, SLOW);
 
     // The counter is HIDDEN, not unmounted: its markup is still in the
     // document, and it is out of the accessibility tree while it is away.
@@ -286,8 +302,9 @@ describe('an in-progress cart survives navigation', () => {
 
     // And the cart is still the same cart when we come back.
     fireEvent.click(screen.getByRole('button', { name: /^Counter/ }));
-    await waitFor(() =>
-      expect(within(pane).getByRole('button', { name: /1 line/ }).textContent).toContain('620.00'),
+    await waitFor(
+      () => expect(within(pane).getByRole('button', { name: /1 line/ }).textContent).toContain('620.00'),
+      SLOW,
     );
 
     const cart = await getOpenCart(db);
