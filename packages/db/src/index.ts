@@ -110,3 +110,6 @@ export {
   type MonthlyView,
   type StatementLine,
 } from './reconciliation/reconcile.js';
+
+export { seedDevLedger, type DevLedgerResult } from './seed/dev-ledger.js';
+export { sweepSettledSales, type SweepOptions, type SweepResult } from './posting/sweep.js';

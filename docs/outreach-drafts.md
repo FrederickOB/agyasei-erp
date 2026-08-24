@@ -38,7 +38,9 @@ rather find the right person now than at the point where it is urgent.
 **What I need reviewed, before the system becomes our books:**
 
 1. **The chart of accounts** for a multi-outlet distribution business — we need reporting by outlet
-   and consolidated, and I would rather you shaped it than corrected it.
+   and consolidated. There is a working draft for you to tear apart (attached: our draft chart of
+   accounts, running against live test data), prepared so your review starts from something
+   concrete — every account you change or reject is exactly the review working.
 2. **The double-entry logic** — which accounts each kind of transaction posts to. A sale, a goods
    receipt, a stock write-off, a customer payment, freight.
 3. **One full month of statements the system has generated**, checked against what you would expect

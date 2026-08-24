@@ -47,6 +47,7 @@ import {
   seedGhanaJurisdiction,
 } from '@erp/db/seed';
 import { applyDevPrices } from './dev-prices.js';
+import { seedDevLedger } from '@erp/db';
 import { applyDevPurchaseUnits } from './dev-purchase-units.js';
 
 const DATABASE_URL =
@@ -373,6 +374,26 @@ async function main(): Promise<void> {
       tenantB: TENANT_B,
     };
     await writeFile(outPath, `${JSON.stringify(tenants, null, 2)}\n`);
+    // ── The DRAFT chart of accounts — dev fixture, tenant A only. ─────────
+    // Same footing as dev prices: the template deliberately ships a ledger
+    // with no accounts (Track B, §2.8 accountant review, Q6), and a dev stack
+    // whose Books screen can only ever show an empty state exercises nothing.
+    // Tenant B stays empty ON PURPOSE — a live isolation check: B's books
+    // must read empty while A's carry figures.
+    // packages/db/src/seed/dev-ledger.ts says why this is not template
+    // content; docs/draft-chart-of-accounts.md is the review artifact.
+    const ledger = await withTenant(TENANT_A.id, (tx) => seedDevLedger(tx, TENANT_A.id));
+    if (ledger.unmappedRequired.length > 0) {
+      throw new Error(
+        `[bootstrap] the draft ledger fails its own completeness gate: ${ledger.unmappedRequired.join(', ')}`,
+      );
+    }
+    console.log(
+      `[bootstrap] tenant ${TENANT_A.slug}: DRAFT chart of accounts — ${ledger.accounts} accounts, ` +
+        `${ledger.mappings} role mappings, ${ledger.periods} periods (FY27). UNREVIEWED (§2.8, Q6): ` +
+        `a proposal for the accountant, never template content. Post settled sales with: pnpm dev:post-settled`,
+    );
+
     // Say plainly what is standing between these tenants and activation.
     const unconfirmed = await db.query<{ tax_code: string }>(
       `select tax_code from platform.tax_rate

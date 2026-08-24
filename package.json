@@ -17,7 +17,8 @@
     "dev:token": "node infra/scripts/dev-token.mjs",
     "dev:api": "pnpm --filter @erp/api dev:stack",
     "dev:web": "pnpm --filter @erp/web dev",
-    "lint:payroll": "node tools/lint-payroll.mjs"
+    "lint:payroll": "node tools/lint-payroll.mjs",
+    "dev:post-settled": "tsx infra/scripts/dev-post-settled.ts"
   },
   "devDependencies": {
     "@erp/db": "workspace:*",
