@@ -75,6 +75,15 @@ export const CAPABILITY = {
   /** Look a customer's credit position up. Held at any location. */
   creditView: 'credit.view',
   /**
+   * Work the human review queue — the conflicts the system could not settle
+   * on its own (CLAUDE.md §2.2). The template gives it to a regional manager
+   * and to Accounts, and withholds it from the counter and from an outlet
+   * manager. The server checks it again, and then checks the ROW's own
+   * `required_permission` at the location the conflict concerns; this
+   * capability is what puts the destination on the nav at all.
+   */
+  conflictReview: 'sync.conflict.review',
+  /**
    * Open a customer's credit account, amend its terms, and MOVE IT BETWEEN
    * ACTIVE, SUSPENDED AND CLOSED — the switch behind the check
    * `sales.createSale` has always made and nothing could satisfy. TENANT-WIDE

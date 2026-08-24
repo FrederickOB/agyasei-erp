@@ -785,3 +785,240 @@ describe('the bound, through POST /sync/upload — the surface a till meets', ()
     expect(await landed(sale.receiptNo)).toBe(1);
   });
 });
+
+// ---------------------------------------------------------------------------
+// THE DISCOUNT BOUND — the second figure the template carries and nothing read
+// ---------------------------------------------------------------------------
+
+/**
+ * `sale.discount.apply` was catalogued with a `max_bps` bound, granted to an
+ * outlet manager at 300 and deliberately withheld from counter staff — and
+ * `sales.createSale` never asked for it. `lineDiscountMinor` is an ordinary
+ * field on the sale input, so ANY principal who could ring a sale could ring
+ * it for nothing, and the `sale.record.credit` bound proven above could be
+ * walked under by discounting the total beneath it.
+ *
+ * The Phase 2 gate found this by driving the route rather than reading it
+ * (docs/phase2-gate-evidence.md). `docs/phase1-status.md` §6 item 2 had
+ * concluded the opposite — that the brief's price-override prohibition "holds
+ * structurally" because `createSale` accepts no price. It accepts no price and
+ * never did; it accepts a DISCOUNT, which reaches the same place.
+ *
+ * Every test here is on what the real router did, and every refusal has a
+ * positive control on the same route with the same payload shape.
+ */
+describe('THE DISCOUNT BOUND: "no price overrides" (the brief; 02 §2.4)', () => {
+  /** The extended, undiscounted amount of a one-unit line, per the server. */
+  let extendedTiny: bigint;
+  /** The largest discount on that line that is still within 300 bps. */
+  let atCap: bigint;
+  /** One minor unit more — the first discount that is not. */
+  let overCap: bigint;
+
+  beforeAll(async () => {
+    const owner = h.callerFor(await h.identityFor(tenantId, { locs: [root, outletA, outletB] }));
+
+    // WHOLESALE is a tax-EXCLUSIVE list, so an undiscounted line's net IS its
+    // extended amount and the basis points below are computed against the
+    // right denominator. Asserted rather than assumed: were the template to
+    // ship this list inclusive, `subtotalNetMinor` would be the de-grossed
+    // figure and every discount here would be quietly steeper than it reads.
+    const inclusive = await h.db.withTenant(tenantId, async (tx) => {
+      const r = await tx.query<{ is_tax_inclusive: boolean }>(
+        `select is_tax_inclusive from app.price_list where code = 'WHOLESALE' and deleted_at is null`,
+        [],
+      );
+      return r.rows[0]?.is_tax_inclusive;
+    });
+    expect(inclusive).toBe(false);
+
+    const probe = await owner.sales.createSale(cashSale({ qty: QTY_TINY, tag: 'D-PROBE' }));
+    extendedTiny = BigInt(probe.subtotalNetMinor);
+    expect(extendedTiny).toBeGreaterThan(0n);
+
+    atCap = (extendedTiny * 300n) / 10_000n; // floor — at or under 300 bps
+    overCap = atCap + 1n; // rounded UP by the router, so strictly over
+    expect(atCap).toBeGreaterThan(0n);
+  }, 60_000);
+
+  function discounted(ref: string, discountMinor: bigint, tag: string, qty = QTY_TINY) {
+    return p(ref).caller.sales.createSale({
+      ...cashSale({ qty, tag }),
+      lines: [{ productId, qty, lineDiscountMinor: discountMinor.toString(10) }],
+    });
+  }
+
+  it('the template withholds the capability from counter staff and bounds the manager at 300', async () => {
+    const held = await h.db.withTenant(tenantId, async (tx) => {
+      const r = await tx.query<{ origin_ref: string; bound: { max_bps?: number } | null }>(
+        `select r.origin_ref, rp.bound
+           from app.role_permission rp
+           join app.role r on r.id = rp.role_id
+          where rp.permission_code = 'sale.discount.apply' and rp.deleted_at is null
+            and r.deleted_at is null and not r.is_owner`,
+        [],
+      );
+      return r.rows;
+    });
+    const refs = held.map((r) => r.origin_ref);
+    expect(refs).not.toContain('role:counter_staff');
+    expect(refs).toContain('role:outlet_manager');
+    expect(held.find((r) => r.origin_ref === 'role:outlet_manager')?.bound?.max_bps).toBe(300);
+  });
+
+  it('counter staff may NOT discount a sale — the capability is not theirs', async () => {
+    await expect(discounted('counter_staff', atCap, 'D-CS')).rejects.toThrow(
+      /FORBIDDEN|PERMISSION_DENIED|sale\.discount\.apply/,
+    );
+  });
+
+  it('…and the SAME payload undiscounted is recorded — the positive control', async () => {
+    const sale = await p('counter_staff').caller.sales.createSale(
+      cashSale({ qty: QTY_TINY, tag: 'D-CS-OK' }),
+    );
+    expect(BigInt(sale.totalMinor)).toBeGreaterThan(0n);
+    expect(BigInt(sale.discountMinor)).toBe(0n);
+  });
+
+  it('an undiscounted sale does NOT require the discount capability at all', async () => {
+    // The regression that would take the counter down: requiring the grant on
+    // every sale rather than on every discount. Explicitly with the field
+    // present and zero, which is exactly what apps/web sends.
+    const sale = await p('counter_staff').caller.sales.createSale({
+      ...cashSale({ qty: QTY_TINY, tag: 'D-CS-Z' }),
+      lines: [{ productId, qty: QTY_TINY, lineDiscountMinor: '0' }],
+    });
+    expect(BigInt(sale.discountMinor)).toBe(0n);
+  });
+
+  it('an outlet manager is ALLOWED at the cap and REFUSED one minor unit over it', async () => {
+    const ok = await discounted('outlet_manager', atCap, 'D-OM-AT');
+    expect(BigInt(ok.discountMinor)).toBe(atCap);
+
+    await expect(discounted('outlet_manager', overCap, 'D-OM-OVER')).rejects.toThrow(
+      /PERMISSION_BOUND_EXCEEDED/,
+    );
+  });
+
+  it('the refusal names the discount capability and its bound — not the credit one', async () => {
+    await expect(discounted('outlet_manager', overCap, 'D-OM-MSG')).rejects.toThrow(
+      /sale\.discount\.apply.*max_bps=300/s,
+    );
+  });
+
+  it('a refused discount leaves NOTHING behind — no sale, no line, no movement', async () => {
+    const tag = 'D-NONE';
+    await expect(discounted('outlet_manager', extendedTiny, tag)).rejects.toThrow();
+    const rows = await h.db.withTenant(tenantId, async (tx) => {
+      const r = await tx.query<{ n: string }>(
+        `select count(*)::text as n from app.sale where receipt_no like $1`,
+        [`SR-${tag}-%`],
+      );
+      return Number(r.rows[0]!.n);
+    });
+    expect(rows).toBe(0);
+  });
+
+  it('THE BYPASS: a credit sale discounted under the money bound is still refused', async () => {
+    // This is the finding, stated as a test. `sale.record.credit` is measured
+    // against the SERVER's repriced total — correct, and provably so above —
+    // but the operator controls that total through the discount. Ducking under
+    // GH₵5,000 from a 90-unit order takes a discount far steeper than 3%, so
+    // the two controls compose: the money bound cannot be walked under without
+    // tripping the discount bound.
+    const gross = serverTotal.get(QTY_OVER_MANAGER)!;
+    expect(gross).toBeGreaterThan(MANAGER_BOUND);
+
+    // Enough of a discount to bring the taxed total below the bound.
+    const cut = gross - MANAGER_BOUND + 1_000n;
+    const attempt = p('outlet_manager').caller.sales.createSale({
+      ...creditSale({ qty: QTY_OVER_MANAGER, tag: 'D-BYPASS' }),
+      lines: [{ productId, qty: QTY_OVER_MANAGER, lineDiscountMinor: cut.toString(10) }],
+    });
+    await expect(attempt).rejects.toThrow(/sale\.discount\.apply/);
+
+    const landed = await h.db.withTenant(tenantId, async (tx) => {
+      const r = await tx.query<{ n: string }>(
+        `select count(*)::text as n from app.sale where receipt_no like 'SR-D-BYPASS-%'`,
+        [],
+      );
+      return Number(r.rows[0]!.n);
+    });
+    expect(landed).toBe(0);
+  });
+
+  it('a discount FRACTIONALLY over the cap is refused — the rounding fails closed', async () => {
+    // The one case that separates rounding up from rounding down. On a small
+    // line the basis points step in whole numbers and the two agree; on a
+    // 90-unit line they do not. `d` here sits strictly between 300 and 301
+    // basis points, so truncating would admit a discount that is over the
+    // tenant's stated cap, by an amount the tenant never authorised.
+    const extendedBig = serverTotal.get(QTY_OVER_MANAGER)! ; // taxed total, only used to assert the fixture is the big one
+    expect(extendedBig).toBeGreaterThan(MANAGER_BOUND);
+
+    const probe = await h
+      .callerFor(await h.identityFor(tenantId, { locs: [root, outletA, outletB] }))
+      .sales.createSale(cashSale({ qty: QTY_OVER_MANAGER, tag: 'D-FRAC-P' }));
+    const extended = BigInt(probe.subtotalNetMinor);
+
+    const exactly300 = (extended * 300n) / 10_000n;
+    const fractional = exactly300 + 1n;
+    // Prove the fixture actually exercises the band: floor() still reads 300,
+    // ceil() reads 301. Without this the test could silently degrade into the
+    // same whole-number case the previous test already covers.
+    expect((fractional * 10_000n) / extended).toBe(300n);
+    expect((fractional * 10_000n) % extended).toBeGreaterThan(0n);
+
+    await expect(
+      discounted('outlet_manager', fractional, 'D-FRAC', QTY_OVER_MANAGER),
+    ).rejects.toThrow(/max_bps=300/);
+
+    // …and the whole-number cap immediately below it is still allowed.
+    const ok = await discounted('outlet_manager', exactly300, 'D-FRAC-OK', QTY_OVER_MANAGER);
+    expect(BigInt(ok.discountMinor)).toBe(exactly300);
+  });
+
+  it('the bound is PER LINE — a write-off on one line cannot hide behind nine others', async () => {
+    // Document-wide this is well under 3%; on its own line it is 100%. A
+    // per-document check would wave it through and give the line away.
+    const many = Array.from({ length: 9 }, () => ({ productId, qty: QTY_TINY }));
+    const attempt = p('outlet_manager').caller.sales.createSale({
+      ...cashSale({ qty: QTY_TINY, tag: 'D-PERLINE' }),
+      lines: [
+        ...many,
+        { productId, qty: QTY_TINY, lineDiscountMinor: extendedTiny.toString(10) },
+      ],
+    });
+    await expect(attempt).rejects.toThrow(/sale\.discount\.apply.*max_bps=300/s);
+  });
+
+  it('a tenant raising its own bound takes effect on the next request', async () => {
+    // The bound is the tenant's data, not the platform's rule (§2.9).
+    await h.db.withTenant(tenantId, async (tx) => {
+      await tx.query(
+        `update app.role_permission rp
+            set bound = jsonb_build_object('max_bps', 5000)
+           from app.role r
+          where r.id = rp.role_id and r.origin_ref = 'role:outlet_manager'
+            and rp.permission_code = 'sale.discount.apply' and rp.deleted_at is null`,
+        [],
+      );
+    });
+    const ok = await discounted('outlet_manager', overCap, 'D-RAISED');
+    expect(BigInt(ok.discountMinor)).toBe(overCap);
+
+    await h.db.withTenant(tenantId, async (tx) => {
+      await tx.query(
+        `update app.role_permission rp
+            set bound = jsonb_build_object('max_bps', 300)
+           from app.role r
+          where r.id = rp.role_id and r.origin_ref = 'role:outlet_manager'
+            and rp.permission_code = 'sale.discount.apply' and rp.deleted_at is null`,
+        [],
+      );
+    });
+    await expect(discounted('outlet_manager', overCap, 'D-LOWERED')).rejects.toThrow(
+      /PERMISSION_BOUND_EXCEEDED/,
+    );
+  });
+});

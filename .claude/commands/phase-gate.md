@@ -15,8 +15,9 @@ The gate is not a formality. Per `CLAUDE.md` §3, a phase ends with a **working,
    Distinguish carefully between demonstrated and asserted. The brief is explicit that the
    two-device conflict case must be *demonstrated, not asserted* — apply that standard to all.
 
-2. **Test coverage in the two mandatory categories** — money-touching code and sync/conflict
-   logic (`CLAUDE.md` §2.6). Neither is done without tests. Name what is uncovered.
+2. **Test coverage in the three mandatory categories** — money-touching code, sync/conflict logic,
+   and every read path that could cross a tenant boundary (`CLAUDE.md` §2.7). None is done without
+   tests. Name what is uncovered, not only what passes.
 
 3. **Open questions** — which items in `docs/open-questions.md` moved, which are still blocking,
    and whether any `NEEDS-HUMAN` item is being worked around rather than resolved.

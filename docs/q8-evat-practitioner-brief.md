@@ -50,9 +50,15 @@ which is right.
 
 **Founder: before sending this, write the real intended first-trading date here → `____________`**
 
-We have not guessed at it and we have not adjusted anything to fit. If the date has moved, say so
-in the covering note; if it has not, Brief A's timing questions are already past due and that is the
-first thing the practitioner should be told.
+We have not guessed at it and we have not adjusted anything to fit.
+
+**As of 23 August 2026 that date is 22 days in the past and this brief has not been sent.** So the
+question is no longer "is there enough runway" — it is either "the outlet has not opened yet and
+here is the real date", or "the outlet has been trading since 1 August and we need to know what
+that means for invoices already issued". Those are very different conversations and the
+practitioner must be told which one this is in the covering note. If it is the second, say so
+plainly and first: invoices already issued under an unconfirmed treatment are the practitioner's
+most urgent question, not ours.
 
 ---
 
@@ -63,12 +69,21 @@ instrument or prescription it rests on**. Our system has columns waiting for exa
 
 | What you tell us | Where it is recorded |
 |---|---|
-| The rule, and the Act / regulation / GRA prescription it comes from | `tax_rate.legal_reference`, `pack_document_field.source` |
+| The rule, and the Act / regulation / GRA prescription it comes from | `tax_rate.legal_reference` |
 | Your name and the date you confirmed it | `tax_rate.confirmed_by`, `tax_rate.confirmed_at` |
 | The credit-fee decisions | `credit_policy.fee_confirmed_by`, `fee_confirmed_at`, `fee_confirmation_note` |
 
-Until those fields carry your name, the software **refuses to go live** on the affected paths. That
-is deliberate and it is already built. Your written answer is the key, not a formality.
+**Where that enforcement has actually reached, stated precisely, because an earlier draft of this
+brief overstated it.** The credit-facility-fee path genuinely does refuse: with no confirmation on
+record the system returns a hard error and posts nothing, so nobody can be billed a fee we guessed
+at. The **sales-tax path does not yet** — the `confirmed_by` / `confirmed_at` columns exist and are
+empty on every Ghana rate row, and the pricing code does not currently read them, so the rates
+below are being applied unconfirmed. That is a defect on our side, it is recorded as one, and it is
+being closed. We are telling you rather than letting you assume a control that is not yet there.
+
+Your written answer is what makes those rates confirmed rather than assumed, on every historical
+transaction as well as every future one — our rates are effective-dated, so a sale is always
+re-priced against the row that was in force on its own transaction date.
 
 A bulleted email is entirely sufficient. We do not need a formal opinion letter unless you think one
 is warranted.
@@ -380,6 +395,43 @@ error rather than a printing one.
 - **VAT is *not* on the same base as the levies under the current regime** → our effective rate is
   wrong, and **every price and every invoice is wrong from the first day of trading.** That is why
   this also appears as row 3 of the table in A4 rather than being left implicit.
+
+### A3.10 — Which of our goods are standard-rated, and which are not · gate `G2b` — **the question we forgot to ask, and it changes the price of every bag**
+
+> **Ask:** Across a construction-materials range — cement, rebar, roofing sheets, sand and quarry
+> aggregates, timber, plumbing and electrical fittings, paints, hand tools — are **all** supplies
+> standard-rated under the current Ghanaian regime, or are any of them zero-rated, exempt, or
+> subject to a different rate or scheme? We are particularly unsure about **unprocessed quarry
+> products (sand, chippings, laterite)** and about any relief attaching to supplies to a
+> **VAT-registered contractor** as opposed to a walk-in retail customer.
+
+**Why it matters to the software, and why we are asking it late.** Our catalogue has **219 stock
+items and every one of them is currently set to the standard rate.** That was a seed value nobody
+ever confirmed, and it did not appear in the first version of this brief — which is the honest
+reason it is numbered last. If any category is not standard-rated, then today we are **over-charging
+the customer and over-declaring the tax** on every one of those lines.
+
+Two further honesty notes, so you can judge how much weight our answer can carry:
+
+1. Our per-item tax setting is currently **not actually consulted** when a line is priced — the
+   system applies whichever rates are in force for the jurisdiction to every line regardless. So
+   marking an item zero-rated today would change nothing on the invoice. That is a defect on our
+   side and it is being fixed; we mention it because it means we cannot "just configure it" until
+   we have, and because you should not assume a control exists that does not.
+2. We are **not** asking you to classify 219 items one by one. Categories are enough — "everything
+   on this list is standard-rated", or "these categories are not, here is the basis". We will map
+   the items ourselves and send the mapping back for a sanity check if you want to see it.
+
+**What each answer changes.**
+
+- **All standard-rated** → we record your confirmation against the rate rows and nothing moves.
+  This is the answer we expect, and we would still like it in writing rather than by silence.
+- **Some category is zero-rated or exempt** → those items get their own tax code, the pricing path
+  starts reading the item's code, and **every price already published for those items is wrong.**
+  We would need to know from what date.
+- **A relief depends on the customer's status rather than the good** → the tax code has to be
+  resolved per sale rather than per item, which is a real change to how a counter rings a sale, and
+  we would want to talk it through rather than infer it.
 
 ### A3.9 — Returns, cancellations and credit notes · gates `G2c` / `G2d`
 

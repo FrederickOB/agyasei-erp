@@ -86,6 +86,7 @@ const Purchasing = lazy(async () => ({
 const Suppliers = lazy(async () => ({
   default: (await import('../suppliers/Suppliers')).Suppliers,
 }));
+const Review = lazy(async () => ({ default: (await import('../review/Review')).Review }));
 const Deliveries = lazy(async () => ({
   default: (await import('../deliveries/Deliveries')).Deliveries,
 }));
@@ -100,7 +101,8 @@ export type ViewId =
   | 'receive'
   | 'buying'
   | 'suppliers'
-  | 'deliveries';
+  | 'deliveries'
+  | 'review';
 
 interface ViewDef {
   readonly id: ViewId;
@@ -145,6 +147,11 @@ const VIEWS: readonly ViewDef[] = [
   // is the wider grant. A status move rides the outbox; booking a load does
   // not (features/deliveries/Deliveries.tsx).
   { id: 'deliveries', label: 'On the road', icon: 'sync', requires: CAPABILITY.deliveryView, keepMounted: false },
+  // The human review queue (CLAUDE.md §2.2). Strictly online, and last on the
+  // nav because it is periodic work rather than counter work — but it is a
+  // destination rather than a notification, because a conflict that is only
+  // ever surfaced as a badge is a conflict somebody dismisses.
+  { id: 'review', label: 'Decisions', icon: 'alert', requires: CAPABILITY.conflictReview, keepMounted: false },
 ];
 
 export interface ShellProps {
@@ -263,6 +270,11 @@ export function Shell({ db, permissions, status, notice, apiOptions }: ShellProp
         {active === 'suppliers' ? (
           <Suspense fallback={<ServerPending what="The supplier list" rows={3} />}>
             <Suppliers db={db} permissions={permissions} {...(apiOptions === undefined ? {} : { apiOptions })} />
+          </Suspense>
+        ) : null}
+        {active === 'review' ? (
+          <Suspense fallback={<ServerPending what="Items needing a decision" rows={3} />}>
+            <Review {...(apiOptions === undefined ? {} : { apiOptions })} />
           </Suspense>
         ) : null}
         {active === 'deliveries' ? (

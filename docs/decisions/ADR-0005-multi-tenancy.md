@@ -40,7 +40,7 @@ change rather than a rewrite.
 - **Isolation now depends on discipline, so it must be enforced structurally**: a shared base
   table definition or codegen that makes omitting `tenant_id` impossible, not a convention.
 - **Cross-tenant leakage becomes a third mandatory test category** alongside money and sync
-  (`CLAUDE.md` §2.6). Every read path gets a test that a second tenant's data is invisible.
+  (`CLAUDE.md` §2.7). Every read path gets a test that a second tenant's data is invisible.
 - Idempotency-key uniqueness is scoped per tenant, not global.
 - Per-tenant data export and deletion must be built deliberately — with a shared schema they are
   queries, not `pg_dump`. A customer leaving must be able to take their books with them.
