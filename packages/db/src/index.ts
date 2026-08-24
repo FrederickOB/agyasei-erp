@@ -43,3 +43,21 @@ export {
   type MappingScope,
   type ResolvedAccount,
 } from './posting/mapping.js';
+
+export {
+  UnbalancedRuleError,
+  assertBalances,
+  clearingNets,
+  paymentEntry,
+  saleEntry,
+  stockAdjustmentEntry,
+  transferEntry,
+  type PaymentDocument,
+  type PostingRole,
+  type ProposedEntry,
+  type ProposedLine,
+  type SaleDocument,
+  type SaleTaxComponent,
+  type StockAdjustmentDocument,
+  type TransferDocument,
+} from './posting/rules.js';
