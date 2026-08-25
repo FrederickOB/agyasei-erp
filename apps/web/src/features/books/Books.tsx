@@ -60,12 +60,19 @@ function EmptyLedger({ openExceptions }: { readonly openExceptions: number }): R
 }
 
 function StatementTable({ rows }: { readonly rows: readonly StatementRow[] }): ReactNode {
+  // A per-location statement repeats the same account once per outlet. Without
+  // the outlet's own code beside it, a reader sees three rows reading "Till
+  // cash" and cannot use the statement — found the moment a month of demo
+  // data existed, and invisible on the empty ledger this screen was built
+  // against. The column appears only when the rows actually carry locations.
+  const perLocation = rows.some((r) => r.locationCode !== null);
   return (
     <table className="books-table">
       <thead>
         <tr>
           <th>Code</th>
           <th>Account</th>
+          {perLocation ? <th>Outlet</th> : null}
           <th className="numeric">Amount</th>
         </tr>
       </thead>
@@ -74,6 +81,7 @@ function StatementTable({ rows }: { readonly rows: readonly StatementRow[] }): R
           <tr key={`${r.accountId}:${r.locationId ?? ''}`}>
             <td className="tabular">{r.code}</td>
             <td>{r.name}</td>
+            {perLocation ? <td className="tabular">{r.locationCode ?? '—'}</td> : null}
             <td className="numeric">
               <Money amount={r.amountMinor} />
             </td>

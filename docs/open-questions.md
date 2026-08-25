@@ -503,6 +503,13 @@ Phase 3 Track A in `docs/phase2-gate.md` §4.3.
 ## Q20 — Opening balances · `OPEN`
 **Blocks:** Phase 1 go-live · **Owner:** founder + accountant · **Raised by:** §5.14.6 finding 27
 
+**UPDATED 2026-08-25 (Q21 answered: no trading).** Tenant #1 now goes live on **1 January 2027**,
+and because the outlet has never traded there are **no debtors and no creditors to bring across** —
+opening balances reduce to opening STOCK plus whatever capital and bank position the accountant
+determines. That is the small version of this question, and it is still the accountant's.
+
+The original text follows.
+
 Tenant #1 goes live on 1 August 2026 with existing stock, debtors and creditors, and the ledger
 design contains **no opening-balance mechanism at all** — no `source_kind`, no posting rule, no
 equity plug, no gate that the opening trial balance ties to the subledgers per location. It was
@@ -520,7 +527,28 @@ exist (Q6). Answer Q21 before scoping this.
 
 ---
 
-## Q21 — Has tenant #1 traded since 1 August 2026 without the ERP? · `NEEDS-HUMAN`
+## Q21 — Has tenant #1 traded since 1 August 2026 without the ERP? · **ANSWERED 2026-08-25: NO**
+
+> **Founder, 25 August 2026: the outlet has not opened and no sale has been made.** The launch date
+> is restated to **1 January 2027** (`CLAUDE.md` §1).
+>
+> **This is the good answer, and it collapses three problems at once:**
+> - **Q20 becomes a clean cut-over, not a reconstruction.** Opening balances are a snapshot taken
+>   on a chosen date before 1 January 2027, not an archaeology of paper records against a moving
+>   cut-off. Still needs the accountant, but it is now the small version of the job.
+> - **Q8 stays prospective.** No invoice has been issued under an unconfirmed treatment, so the
+>   practitioner is being asked to advise on a design rather than to assess a liability already
+>   incurred. That is a materially cheaper conversation and a materially better one to be having.
+> - **Q12's dry-run window is free.** There is no live trading to interrupt, so a parallel run
+>   before go-live costs nothing but calendar — and the calendar just gained four months.
+>
+> The original text is kept below as the record of the question that was asked.
+
+---
+
+### The question as it was raised
+
+
 **Blocks:** Q20's cut-off date · the rollout plan · any claim about pilot success criteria ·
 **Owner:** founder · **Raised by:** the Phase 2 gate, `docs/phase2-gate.md` §3.3
 

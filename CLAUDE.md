@@ -23,11 +23,19 @@ unreliable for hours or days at a time. Offline operation is not a feature; it i
 product exists rather than any conventional cloud ERP.
 
 **Tenant #1 (the pilot)** — Agyasei Jnr & Company Limited, an integrated hardware and cement
-wholesale/retail chain launching in Techiman, Bono Region, Ghana on **1 August 2026**, growing to
+wholesale/retail chain launching in Techiman, Bono Region, Ghana on **1 January 2027**, growing to
 25 outlets across six regions over ten years. Their three-tier network (1 Flagship, 6 Regional
 Distribution Centres, 18 Community Micro-Outlets), 219-SKU construction catalogue, five roles and
 chart of accounts ship as the **"Construction materials distribution — Ghana"** template.
 Reference data: `docs/source-of-truth/`.
+
+> **The launch date was restated by the founder on 25 August 2026: 1 August 2026 → 1 January 2027.**
+> The original date passed with no phase signed off and the outlet not yet open (`open-questions.md`
+> Q21 — answered: tenant #1 has **not** traded, so the pilot is still the clean experiment it was
+> designed to be). **This line is the authoritative date.** Documents dated before 25 August 2026 —
+> the architecture sections, the phase gates, and everything under `source-of-truth/` — quote the
+> superseded date and are deliberately left as the historical records they are. The fiscal year is
+> unchanged (1 August – 31 July), so launch now falls in period 6 of FY27 rather than period 1.
 
 ---
 

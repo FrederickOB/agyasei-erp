@@ -6,16 +6,23 @@ either exists or is explicitly out of reach until your act happens. Status is ho
 
 ## 1. Q8 — Ghana e-VAT clearance · LONGEST LEAD, NOT STARTED
 
-**Do:** fill the date blank at `docs/q8-evat-practitioner-brief.md` (marked line), attach it to
-draft 2 of `docs/outreach-drafts.md`, send to a GRA-registered practitioner. **Nothing on my side
+**Do:** attach `docs/q8-evat-practitioner-brief.md` to draft 2 of `docs/outreach-drafts.md` and
+send to a GRA-registered practitioner. **The date is filled in (1 January 2027)** and both
+documents are rewritten for the answered Q21 — nothing remains to complete but the recipient. **Nothing on my side
 remains** — the brief is corrected (G-2/G-4), states plainly where our own enforcement has and has
 not reached, and includes the standard-rating question. The unknown is Certified Invoicing System
 lead time, which only the engagement can answer.
 
 ## 2. The accountant and §2.8's month of statements · CALENDAR-BOUND
 
-**Do:** send draft 1 of `docs/outreach-drafts.md`. Attach `docs/draft-chart-of-accounts.md` —
-there is now a running draft for them to tear apart rather than a blank page.
+**Do:** send draft 1 of `docs/outreach-drafts.md`. Attach BOTH
+`docs/draft-chart-of-accounts.md` (the chart to tear apart) and
+`docs/statements-dry-run.md` (**a full month of generated statements, already produced** — 181
+sales rung through the real till, swept to the ledger, reconciled four ways).
+
+**The month-long clock has already been run.** §2.8 asks for a month of statements reviewed
+against manual expectation; the month exists, is deterministic, and reproduces from an empty
+database with two commands. What remains is their review of it, not the waiting.
 **Then the dry run works like this** (this is the machinery this repo now has):
 1. Their reviewed chart replaces the draft (Track B, their name on the commit — days of work).
 2. The dev/staging stack trades normally; `pnpm dev:post-settled` sweeps settled sales to the
@@ -46,13 +53,16 @@ network). Protocol, in order, recording each result:
 5. The stale-clock case: set the device clock wrong by hours, confirm the resync refusal appears.
 **Then** whatever it surfaces is engineering again (that is the point of the trial).
 
-## 5. Q21 — has Techiman been trading since 1 August? · ONE MINUTE, SHAPES EVERYTHING
+## 5. Q21 — has Techiman been trading? · **ANSWERED 2026-08-25: NO** ✅
 
-Answer it in `docs/open-questions.md`. If **yes**: every trading day deepens the opening-balance
-reconstruction (Q20), and the practitioner must be told invoices have been issued under an
-unconfirmed treatment — it changes their first question. If **no**: the launch date needs formal
-restating (`CLAUDE.md` §6.1 still says 1 August 2026) and Q20 becomes a clean cut-over.
+**Answered: the outlet has not opened and has made no sale.** Consequences, all favourable:
+Q20 is a clean cut-over rather than a reconstruction (no debtors or creditors to bring across);
+Q8 stays prospective, so the practitioner advises on a design instead of assessing a liability
+already incurred; and the dry run costs nothing but calendar. The launch date is restated to
+**1 January 2027** (`CLAUDE.md` §1).
 
 ---
-*2 and 5 are emails you could send today. 1 is the pole. 3 and 4 are purchases plus protocols
-that are already written. None of the five is code.*
+*Item 5 is answered. Items 1 and 2 are emails you could send today, both with their attachments
+already written — and item 2's month of statements is already produced, which was the one piece of
+the critical path that could be pulled forward. Item 1 is the pole. Items 3 and 4 are purchases
+plus protocols already written. None of what remains is code.*

@@ -70,6 +70,7 @@ function rowOut(r: StatementRow) {
     accountType: r.accountType,
     reportLineKey: r.reportLineKey,
     locationId: r.locationId,
+    locationCode: r.locationCode,
     netDebitMinor: wire(r.netDebitMinor),
     amountMinor: wire(r.amountMinor),
   };

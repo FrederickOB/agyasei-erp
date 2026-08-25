@@ -1856,6 +1856,15 @@ D17 32/32, credit-client 19/19.
 
 ---
 
+> **FOUNDER SIGN-OFF RECORDED 2026-08-25** — Frederick Ofori-Boadu signed Phase 2 on this
+> document's evidence. See `docs/phase2-signoff.md`, which also records what the signature does
+> NOT cover: the §2.8 accountant gate, Phase 0 and Phase 1, and this document's §5 residue.
+>
+> The founder also restated the launch date to **1 January 2027** and answered **Q21: the outlet
+> has not traded.** §6.1 of this document asked for exactly those two things; both are now
+> settled, and the opening-balance problem it warned about is a clean cut-over rather than a
+> reconstruction.
+
 **Signed:** `product-manager`, 2026-08-23.
 **Phase 2: signed off on scope.** **Phase 3 Track A: cleared subject to items 1–2.**
 **Phase 3 Track B: blocked on Q6.** **Pilot go-live: blocked, and no agent may say otherwise.**
