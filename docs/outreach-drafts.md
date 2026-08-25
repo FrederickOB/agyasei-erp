@@ -13,10 +13,9 @@ second adds that time to the schedule for no reason at all.
 | 1 | A chartered accountant (ICAG) | `Q6`, `Q4`, `Q18`, the whole of Phase 3's accounting content | §2.8 makes their review blocking, and one required piece of it — a full month of generated statements — takes **a month after they are appointed** |
 | 2 | A GRA-registered tax practitioner | `Q8` | Certified Invoicing System onboarding has a lead time we do not know, and the pilot's stated opening date is already **22 days past** |
 
-Before sending either, settle the question in `open-questions.md` **Q21**: *has the Techiman outlet
-been trading since 1 August without the system?* Both letters read differently depending on the
-answer, and the second one changes materially — invoices already issued under an unconfirmed tax
-treatment are the first thing a practitioner needs to be told.
+**Q21 is answered (25 August 2026): the outlet has not opened and has made no sale.** Both letters
+are written for that answer — prospective advice, a clean cut-over, and a 1 January 2027 launch.
+Nothing in them needs completing before sending except the recipient's name.
 
 ---
 
@@ -28,7 +27,7 @@ Dear ___,
 
 I am the founder of Agyasei Jnr & Company Limited, a construction-materials wholesale and retail
 business opening in Techiman, Bono Region, and growing to around 25 outlets over the next ten
-years. We are building our own point-of-sale, stock and accounting system rather than buying one,
+years. We open on 1 January 2027. We are building our own point-of-sale, stock and accounting system rather than buying one,
 because our outlets have to keep trading through hours or days without mobile data and no
 off-the-shelf package does that.
 
@@ -105,10 +104,9 @@ the *documents*, because they carry different urgency. And we have been explicit
 software does not yet enforce something it should, so you are not assuming a control that is not
 there.
 
-**On timing, honestly:** our own documents put the opening at 1 August 2026 and that date has passed.
-[Founder: complete this paragraph — either the outlet has not opened and here is the real date, or
-it has been trading since 1 August, in which case say so here and say it first.] I would rather tell
-you that plainly than have you discover it.
+**On timing:** we intend to start trading on **1 January 2027**. The outlet is not yet open and has
+issued no invoice, so this is a design question rather than a problem to unwind — which I hope makes
+it a straightforward one to take on.
 
 What I need to know first is simply whether this is work you take on, and what the lead time looks
 like — particularly for Certified Invoicing System onboarding, if that is required, since that is the
@@ -125,7 +123,7 @@ Frederick Ofori-Boadu
   practitioner to read cold and it now includes the standard-rating question (A3.10) that the first
   version missed — that one matters, because all 219 of our stock items are currently set to the
   standard rate on nobody's authority.
-- **Fill in the date** at the marked line inside that brief. It is deliberately blank.
+- **The date inside that brief is filled in**: 1 January 2027.
 - **Do not send the first letter to someone who also keeps the books.** The reviewer and the
   preparer being the same person removes the point of the review.
 - If either recipient asks who built the software, say it plainly: it was built with AI assistance

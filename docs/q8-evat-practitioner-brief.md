@@ -41,24 +41,23 @@ is the one that is on fire.** If time is short, answer A and schedule B.
 
 ---
 
-## Before you start: one internal contradiction the founder must resolve
+## When we intend to start trading
 
-Our own project documents state the pilot outlet opens in Techiman on **1 August 2026**. This brief
-was compiled on **21 August 2026**. Those cannot both be current. Every lead-time question in
-Brief A — "is there enough runway for Certified Invoicing System onboarding?" — depends entirely on
-which is right.
+Our earlier project documents stated **1 August 2026**. That date passed before the outlet opened,
+and the founder has restated it to **1 January 2027**. Every lead-time question in Brief A — "is
+there enough runway for Certified Invoicing System onboarding?" — is measured against that date.
 
-**Founder: before sending this, write the real intended first-trading date here → `____________`**
+**First trading date: 1 January 2027.** (Restated by the founder on 25 August 2026; the original
+1 August 2026 date passed before the outlet opened.)
 
-We have not guessed at it and we have not adjusted anything to fit.
+**The outlet has not opened and has issued no invoice.** We are asking you to advise on a design
+before it is built into daily practice, not to assess a treatment already applied to real
+customers. Everything in Brief A is therefore prospective, which we understand is both the
+cheaper conversation and the better one to be having.
 
-**As of 23 August 2026 that date is 22 days in the past and this brief has not been sent.** So the
-question is no longer "is there enough runway" — it is either "the outlet has not opened yet and
-here is the real date", or "the outlet has been trading since 1 August and we need to know what
-that means for invoices already issued". Those are very different conversations and the
-practitioner must be told which one this is in the covering note. If it is the second, say so
-plainly and first: invoices already issued under an unconfirmed treatment are the practitioner's
-most urgent question, not ours.
+**What we need from you first is the lead time**, particularly for Certified Invoicing System
+onboarding if it is required — because that is the one item on our plan we cannot compress by
+working harder, and it is the reason we are writing four months out rather than four weeks.
 
 ---
 

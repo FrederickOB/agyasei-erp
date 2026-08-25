@@ -44,6 +44,16 @@ export interface StatementRow {
   readonly reportLineKey: string;
   /** null on a consolidated statement — the same query without the grouping. */
   readonly locationId: string | null;
+  /**
+   * The location's own code, when the statement is grouped by location.
+   *
+   * Carried because a per-location trial balance renders the SAME account
+   * once per outlet, and a reader looking at three rows reading "Till cash"
+   * with no way to tell them apart cannot use the statement at all. Found by
+   * generating a month of demo data — an empty ledger could never have shown
+   * it, which is most of the argument for generating one.
+   */
+  readonly locationCode: string | null;
   /** Σ debit − Σ credit. The primitive; sign is the ledger's, not a reader's. */
   readonly netDebitMinor: bigint;
   /** The same figure in the account's NATURAL direction. Revenue positive. */
@@ -66,10 +76,12 @@ function naturalSign(type: AccountType): bigint {
 const BASE_SQL = (byLocation: boolean) => `
   select a.id as account_id, a.code, a.name, a.account_type, a.report_line_key,
          ${byLocation ? 'l.location_id' : 'null::uuid as location_id'},
+         ${byLocation ? 'loc.code as location_code' : 'null::text as location_code'},
          (sum(l.debit_minor) - sum(l.credit_minor))::text as net_debit_minor
     from app.journal_line l
     join app.journal_entry e on e.tenant_id = l.tenant_id and e.id = l.journal_entry_id
     join app.gl_account a    on a.tenant_id = l.tenant_id and a.id = l.account_id
+    ${byLocation ? 'join app.location loc on loc.tenant_id = l.tenant_id and loc.id = l.location_id' : ''}
    -- 'posted' is the ONLY posted state (§5.3). There is no 'reversed' value to
    -- be accidentally excluded: a reversal is its own posted entry sitting
    -- alongside the original, and both belong in the answer.
@@ -77,14 +89,15 @@ const BASE_SQL = (byLocation: boolean) => `
      and ($1::uuid[] is null or e.period_id = any($1::uuid[]))
      and ($2::uuid[] is null or l.location_id = any($2::uuid[]))
    group by a.id, a.code, a.name, a.account_type, a.report_line_key
-            ${byLocation ? ', l.location_id' : ''}
-   order by a.code${byLocation ? ', l.location_id' : ''}
+            ${byLocation ? ', l.location_id, loc.code' : ''}
+   order by a.code${byLocation ? ', loc.code' : ''}
 `;
 
 async function statementRows(tx: Queryable, q: StatementQuery): Promise<StatementRow[]> {
   const res = await tx.query<{
     account_id: string; code: string; name: string; account_type: AccountType;
-    report_line_key: string; location_id: string | null; net_debit_minor: string;
+    report_line_key: string; location_id: string | null; location_code: string | null;
+    net_debit_minor: string;
   }>(BASE_SQL(q.byLocation === true), [
     q.periodIds !== undefined && q.periodIds.length > 0 ? [...q.periodIds] : null,
     q.locationIds !== undefined && q.locationIds.length > 0 ? [...q.locationIds] : null,
@@ -98,6 +111,7 @@ async function statementRows(tx: Queryable, q: StatementQuery): Promise<Statemen
       accountType: r.account_type,
       reportLineKey: r.report_line_key,
       locationId: r.location_id,
+      locationCode: r.location_code,
       netDebitMinor,
       amountMinor: netDebitMinor * naturalSign(r.account_type),
     };

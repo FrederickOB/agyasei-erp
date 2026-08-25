@@ -32,6 +32,8 @@ export interface StatementRow {
   readonly accountType: string;
   readonly reportLineKey: string;
   readonly locationId: string | null;
+  /** The outlet's own code — without it a per-location statement is unreadable. */
+  readonly locationCode: string | null;
   /** Σ debit − Σ credit: the ledger's raw primitive. */
   readonly netDebitMinor: bigint;
   /** The natural-direction figure a reader expects. Revenue positive. */
@@ -101,6 +103,7 @@ function mapRow(entry: unknown, what: string): StatementRow {
     accountType: asString(r['accountType'], `${what}.accountType`),
     reportLineKey: asString(r['reportLineKey'], `${what}.reportLineKey`),
     locationId: asOptionalString(r['locationId'], `${what}.locationId`),
+    locationCode: asOptionalString(r['locationCode'], `${what}.locationCode`),
     netDebitMinor: asScaled(r['netDebitMinor'], `${what}.netDebitMinor`),
     amountMinor: asScaled(r['amountMinor'], `${what}.amountMinor`),
   };

@@ -46,7 +46,7 @@ const EMPTY_TB = {
 function statementRow(over: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     accountId: '018f3a1e-0000-7000-8000-0000000000a1', code: '4100', name: 'Sales revenue',
-    accountType: 'INCOME', reportLineKey: 'line:4100', locationId: null,
+    accountType: 'INCOME', reportLineKey: 'line:4100', locationId: null, locationCode: null,
     netDebitMinor: '-515000', amountMinor: '515000', ...over,
   };
 }
@@ -163,6 +163,47 @@ describe('rule 3 — open exceptions are the headline', () => {
     });
     expect(await screen.findByText(/DOES NOT SUM TO ZERO/)).toBeTruthy();
     expect(screen.getByText(new RegExp(`location ${LOC}`))).toBeTruthy();
+  });
+});
+
+describe('a per-location statement names the outlet', () => {
+  it('shows the outlet code when rows carry one — three "Till cash" rows are unreadable without it', async () => {
+    renderBooks({
+      'ledger.trialBalance': {
+        ok: true,
+        json: {
+          accountCount: 7,
+          rows: [
+            statementRow({ code: '1000', name: 'Till cash', locationId: LOC, locationCode: 'OUT-01', amountMinor: '12296645', netDebitMinor: '12296645', accountType: 'ASSET' }),
+            statementRow({ code: '1000', name: 'Till cash', locationId: '018f3a1e-0000-7000-8000-00000000bbbb', locationCode: 'OUT-02', amountMinor: '15085852', netDebitMinor: '15085852', accountType: 'ASSET' }),
+          ],
+          debitMinor: '27382497', creditMinor: '27382497', balanced: true,
+          byLocation: [
+            { locationId: LOC, debitMinor: '12296645', creditMinor: '12296645', balanced: true },
+            { locationId: '018f3a1e-0000-7000-8000-00000000bbbb', debitMinor: '15085852', creditMinor: '15085852', balanced: true },
+          ],
+        },
+      },
+      'ledger.postingExceptions': { ok: true, json: NO_EXCEPTIONS },
+    });
+    expect(await screen.findByText('OUT-01')).toBeTruthy();
+    expect(screen.getByText('OUT-02')).toBeTruthy();
+    expect(screen.getByRole('columnheader', { name: 'Outlet' })).toBeTruthy();
+  });
+
+  it('…and omits the column entirely on a consolidated statement', async () => {
+    renderBooks({
+      'ledger.trialBalance': {
+        ok: true,
+        json: {
+          accountCount: 7, rows: [statementRow()], debitMinor: '515000', creditMinor: '515000',
+          balanced: true, byLocation: [],
+        },
+      },
+      'ledger.postingExceptions': { ok: true, json: NO_EXCEPTIONS },
+    });
+    await screen.findByText('Sales revenue');
+    expect(screen.queryByRole('columnheader', { name: 'Outlet' })).toBeNull();
   });
 });
 
