@@ -567,6 +567,44 @@ export const LOCAL_TABLES: readonly LocalTableDef[] = [
     ],
   },
   {
+    // Receipt print queue — one row per sale, LOCAL-ONLY (§8.8, §8.11).
+    //
+    // WHAT IT HOLDS. The rendered ESC/POS bytes of a print that has not
+    // succeeded yet (`bytes_b64`, dropped the moment it is sent), and the
+    // receipt SNAPSHOT (`doc_json`) the retry and any reprint render from.
+    // The snapshot exists because a sale rung offline has no `sale_line` rows
+    // on the device until the server has priced it and the rows stream back;
+    // the cart that held the names is deleted at checkout. Without it a
+    // reprint of an unsynced sale would have nothing to print.
+    //
+    // WHAT IT IS NOT. It is never the sale. Nothing reads it to decide what
+    // was sold, nothing writes to the outbox from it, and a failed print only
+    // ever touches this table. Rows are discarded at `expires_at` (7 days).
+    //
+    // DROPPABLE (§8.11): losing it loses a retry and a convenience reprint,
+    // never a sale. A reprint after expiry renders from synced rows instead.
+    name: 'local_print_queue',
+    localOnly: true,
+    columns: [
+      t('sale_id'),
+      t('receipt_no'),
+      t('doc_json'), // the ReceiptDocument snapshot; bigint tagged, see printing/document.ts
+      t('bytes_b64'), // rendered bytes of the outstanding print; NULL once sent
+      i('paper_width_mm'),
+      t('state'), // 'pending' (a print is outstanding) | 'sent'
+      i('is_copy'), // 1 once this request is a reprint
+      i('attempts'),
+      t('last_outcome'),
+      t('last_evidence'),
+      t('last_detail'),
+      t('last_transport'),
+      t('last_attempt_at'),
+      t('requested_at'), // when the CURRENT request (first print or reprint) was made
+      t('created_at'),
+      t('expires_at'),
+    ],
+  },
+  {
     // Device-allocated human-facing sequence numbers (03 §3.7.5). LOCAL-ONLY
     // and consumed with ZERO connectivity — a block is drawn down inside the
     // same local transaction that writes the sale, so a rolled-back checkout
@@ -639,6 +677,7 @@ export function localSchemaDdl(): string[] {
   });
   stmts.push('CREATE UNIQUE INDEX idx_outbox_idempotency_key ON outbox (idempotency_key)');
   stmts.push('CREATE INDEX idx_cart_line_cart ON cart_line (cart_id)');
+  stmts.push('CREATE UNIQUE INDEX idx_print_queue_sale ON local_print_queue (sale_id)');
   stmts.push('CREATE INDEX idx_outbox_pending ON outbox (created_at)');
   // The drain's own key. Unique because two ops may never share a queue
   // position — a duplicate would put the order back where it was.
