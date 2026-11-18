@@ -12,7 +12,11 @@
  */
 import type { ReactNode } from 'react';
 import type { LocalDb } from '../../data/db';
-import { getRecordedSale, type RecordedSale } from '../../data/queries/sales';
+import {
+  getRecordedSale,
+  getRecordedSaleTenders,
+  type RecordedSale,
+} from '../../data/queries/sales';
 import { useLiveQuery } from '../../data/use-live-query';
 import { recordBadgeLabel } from '../../lib/badges';
 import { Money } from '../../money/Money';
@@ -39,6 +43,7 @@ export function ReceiptView({
   readonly onNewSale: () => void;
 }): ReactNode {
   const sale = useLiveQuery(db, (d) => getRecordedSale(d, saleId), [saleId]);
+  const tenders = useLiveQuery(db, (d) => getRecordedSaleTenders(d, saleId), [saleId]);
   const heading =
     sale === undefined || sale === null ? shortSaleNumber(saleId) : saleNumberLabel(sale);
 
@@ -60,6 +65,17 @@ export function ReceiptView({
               <span className="total-label">Total</span>
               <Money amount={sale.totalMinor} className="money receipt-total" />
             </div>
+            {/* How it was paid: one row per method, with the reference a
+                momo or cheque line carried — what the customer will quote. */}
+            {(tenders ?? []).map((t, i) => (
+              <div className="total-row receipt-tender" key={`${t.name}-${String(i)}`}>
+                <span className="total-label">
+                  {t.name}
+                  {t.reference === null ? null : <small className="receipt-tender-ref"> · {t.reference}</small>}
+                </span>
+                <Money amount={t.amountMinor} className="money" />
+              </div>
+            ))}
             {changeMinor !== null ? (
               <div className="total-row">
                 <span className="total-label">Change given</span>

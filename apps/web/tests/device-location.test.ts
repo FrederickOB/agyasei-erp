@@ -47,7 +47,7 @@ import {
 import { DEV_PLACEHOLDER_CURRENCY, seedDevDataIfEmpty } from '../src/data/seed';
 import type { LocalDb } from '../src/data/db';
 import { uuidv7 } from '../src/lib/uuidv7';
-import { fixedHlc, seedProduct } from './helpers/fixtures';
+import { ensureOpenTill, fixedHlc, seedProduct } from './helpers/fixtures';
 import { openTestDb } from './helpers/node-db';
 
 // ---------------------------------------------------------------------------
@@ -105,6 +105,7 @@ async function sellOneLine(db: LocalDb): Promise<Record<string, unknown>> {
   if (product === undefined) throw new Error('no product to sell');
   const cartId = await createCart(db, { nowIso: '2026-08-21T09:00:00.000Z' });
   await addProductToCart(db, cartId, product);
+  await ensureOpenTill(db, '2026-08-21');
   await checkout(db, {
     cartId,
     tenderedMinor: 100_000_000n,

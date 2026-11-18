@@ -13,11 +13,12 @@
  * platform constant and never the tablet's own locale — a tablet that has
  * wandered onto the wrong timezone must not silently move the trading day.
  *
- * Honest about what this is NOT: §3.4.2 makes `business_date` a human-asserted
- * value constrained by an open cash session, and `app.cash_session` does not
- * exist yet (migration 0004 defers it). Until it does, the derived value is
- * the device's best assertion, and `checkout()` takes an explicit override so
- * the day-open control can supply the asserted one without touching this file.
+ * What this is NOT: the sale's business date. §3.4.2 makes `business_date` a
+ * human-asserted value, and since migration 0020 it is — a SALE is filed under
+ * its open till's date (`data/mutations/till.ts`), never under this function's
+ * answer. What this function does is PROPOSE the date the open-till screen
+ * shows a person to confirm, and tell the counter when local midnight has
+ * passed so the till can close itself (08 §8.2a).
  */
 
 const YMD_RE = /^\d{4}-\d{2}-\d{2}$/;

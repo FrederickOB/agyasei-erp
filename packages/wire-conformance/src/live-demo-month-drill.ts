@@ -45,6 +45,7 @@ import { SignJWT } from 'jose';
 import pg from 'pg';
 import { provisionPrincipal } from '@erp/db/seed';
 import { sweepSettledSales } from '@erp/db';
+import { LiveTills, liveTenderIds, tenderLines } from './live-tills.js';
 
 const API_URL = process.env['API_URL'] ?? 'http://127.0.0.1:3001';
 const DATABASE_URL =
@@ -236,6 +237,18 @@ async function main(): Promise<void> {
   let receipt = 0;
   const firstRefusal: string[] = [];
 
+  // Since 0020 every sale names the till it was rung into, and the till's
+  // date IS the sale's: one shared till per outlet per day, opened by the
+  // manager through the real route. The tender methods are the tenant's own.
+  const tenderIds = await liveTenderIds(
+    async (sql, params) => (await client.query(sql, params)).rows as never[],
+    tenantId,
+  );
+  const tills = new LiveTills(async (input) => {
+    const o = await post(manager, 'cashSession.open', input);
+    return { ok: o.status === 200, detail: `HTTP ${o.status} ${o.message}` };
+  });
+
   for (let day = 0; day < DAYS; day += 1) {
     const businessDate = isoDay(day);
     const isSunday = new Date(`${businessDate}T00:00:00Z`).getUTCDay() === 0;
@@ -255,8 +268,8 @@ async function main(): Promise<void> {
         locationId: outlet.id,
         priceListCode: 'RETAIL',
         receiptNo: `DEMO-${outlet.code}-${String(receipt).padStart(5, '0')}`,
-        businessDate,
-        tender: onCredit ? 'CREDIT' : 'CASH',
+        cashSessionId: await tills.till(outlet.id, businessDate),
+        tenders: tenderLines(onCredit ? 'CREDIT' : 'CASH', tenderIds),
         ...(onCredit ? { customerId } : {}),
         lines,
       });

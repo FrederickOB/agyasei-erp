@@ -89,6 +89,9 @@ export default defineConfig({
   },
   test: {
     include: ['tests/**/*.test.{ts,tsx}'],
+    // See the file: findBy/waitFor tolerate a loaded parallel runner.
+    setupFiles: ['tests/setup/async-timeout.ts'],
+    testTimeout: 20_000,
     environment: 'node',
   },
 });

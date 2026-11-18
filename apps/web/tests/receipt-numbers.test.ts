@@ -245,8 +245,8 @@ describe('receipt number formatting', () => {
       locationId: '018f0c4c-0000-7000-8000-0000000000aa',
       priceListCode: 'DEFAULT',
       receiptNo,
-      businessDate: '2026-08-21',
-      tender: 'CASH',
+      cashSessionId: '018f0c4c-0000-7000-8000-0000000000cc',
+      tenders: [{ methodId: '018f0c4c-0000-7000-8000-0000000000dd', settlement: 'IMMEDIATE' }],
       lines: [{ productId: '018f0c4c-0000-7000-8000-0000000000bb', qty: '1' }],
     });
     expect(parsed.receiptNo).toBe(receiptNo);

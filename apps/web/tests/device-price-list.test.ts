@@ -48,7 +48,7 @@ import {
 } from '../src/data/session/device-price-list';
 import { readPendingOps } from '../src/data/sync/upload';
 import { uuidv7 } from '../src/lib/uuidv7';
-import { fixedHlc, seedProduct } from './helpers/fixtures';
+import { ensureOpenTill, fixedHlc, seedProduct } from './helpers/fixtures';
 import { openTestDb } from './helpers/node-db';
 
 // ---------------------------------------------------------------------------
@@ -159,6 +159,7 @@ async function sellOneLine(db: LocalDb): Promise<Record<string, unknown>> {
   if (product === undefined) throw new Error('no product to sell');
   const cartId = await createCart(db, { nowIso: NOW });
   await addProductToCart(db, cartId, product);
+  await ensureOpenTill(db, TODAY);
   await checkout(db, { cartId, tenderedMinor: 100_000_000n, hlc: fixedHlc(), nowIso: NOW });
   const entry = (await readPendingOps(db))[0];
   if (entry === undefined) throw new Error('nothing in the outbox');
@@ -425,6 +426,7 @@ describe('the dev seed’s placeholder list', () => {
     });
     const cartId = await createCart(db, { nowIso: NOW });
     await addProductToCart(db, cartId, product);
+    await ensureOpenTill(db, TODAY);
     await expect(
       checkout(db, { cartId, tenderedMinor: 100_000_000n, hlc: fixedHlc(), nowIso: NOW }),
     ).rejects.toBeInstanceOf(SaleContextIncompleteError);
@@ -457,6 +459,7 @@ describe('the dev seed’s placeholder list', () => {
     expect(state.status).toBe('awaiting-config');
 
     // The cart it left behind is refused, with its lines intact...
+    await ensureOpenTill(db, TODAY);
     await expect(
       checkout(db, { cartId, tenderedMinor: 100_000_000n, hlc: fixedHlc(), nowIso: NOW }),
     ).rejects.toBeInstanceOf(SaleContextIncompleteError);

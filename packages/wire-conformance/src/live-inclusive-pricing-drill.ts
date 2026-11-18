@@ -61,6 +61,7 @@ import { createHlcClock, deterministicUuid, hlcNodeFromName, sha256Hex } from '@
 
 import { addProductToCart, createCart } from '../../../apps/web/src/data/mutations/cart';
 import { checkout } from '../../../apps/web/src/data/mutations/checkout';
+import { closeTill, openTill, readOpenTill, tillExpectedCash } from '../../../apps/web/src/data/mutations/till';
 import { getCartLines, getOpenCart } from '../../../apps/web/src/data/queries/cart';
 import { priceCart } from '../../../apps/web/src/data/pricing/cart-pricing';
 import { readPricingBasis } from '../../../apps/web/src/data/pricing/cart-basis';
@@ -74,7 +75,7 @@ import { readPendingOps } from '../../../apps/web/src/data/sync/upload';
 import type { FetchLike, HttpResponseLike } from '../../../apps/web/src/data/sync/credentials';
 import type { LocalDb } from '../../../apps/web/src/data/db';
 import { openTestDb } from '../../../apps/web/tests/helpers/node-db';
-import { fixedHlc } from '../../../apps/web/tests/helpers/fixtures';
+import { fixedHlc, replaceTenderMethods } from '../../../apps/web/tests/helpers/fixtures';
 import {
   CONFIG_KEY_LOCATION_CODE,
   CONFIG_KEY_LOCATION_ID,
@@ -457,6 +458,27 @@ async function main(): Promise<void> {
         `blocks=${String(blocksSales(bound))} message=${String(bound.message)}`,
     );
 
+    // The tenant's REAL tender methods, as the reference bucket would deliver
+    // them, and a till for today opened through the PWA's own path — there is
+    // no sale without one (08 §8.2a). The open rides the outbox ahead of the
+    // sale and is sent in the same batch below.
+    const methods = await scoped<{
+      id: string; name: string; posting_role: string; is_cash: boolean;
+      is_on_account: boolean; requires_reference: boolean; sort_order: number;
+    }>(
+      `select id, name, posting_role, is_cash, is_on_account, requires_reference, sort_order
+         from app.tender_method where is_active and deleted_at is null`,
+      [],
+    );
+    await replaceTenderMethods(db, methods.map((m) => ({
+      id: m.id, name: m.name, postingRole: m.posting_role, isCash: m.is_cash,
+      isOnAccount: m.is_on_account, requiresReference: m.requires_reference, sortOrder: m.sort_order,
+    })));
+    await openTill(db, {
+      openingFloatMinor: 0n, businessDate: today, openedOffline: false, drawer: 'SHARED',
+      hlc: fixedHlc(Date.parse(nowIso) - 1000, deviceNode), nowIso,
+    });
+
     const componentSet = await readTaxComponentsInForce(db, today);
     check(
       'B2 the device reads its own pack rows — components are DATA, not a constant',
@@ -775,14 +797,32 @@ async function main(): Promise<void> {
     const histLines = await getCartLines(db, histCart);
     const histBasis = await readPricingBasis(db, true, HIST_DATE);
     const histLocal = priceCart(histLines, histBasis);
+    // A BACK-DATED sale is rung into a till opened FOR that day (08 §8.2a):
+    // today's till is cashed up first, then a till for HIST_DATE is opened,
+    // flagged offline because the server's date check would (rightly) refuse
+    // it online. Both ride the outbox ahead of the sale.
+    const todays = await readOpenTill(db);
+    if (todays !== null) {
+      await closeTill(db, {
+        tillId: todays.id, countedMinor: await tillExpectedCash(db, todays),
+        hlc: fixedHlc(Date.parse(nowIso) + 500, deviceNode), nowIso,
+      });
+    }
+    // The device's wall clock says HIST_DATE — that is what a till that
+    // traded that day saw. The HLC stays real time: the server clamps a claimed
+    // HLC to ±24h of its own clock, and the HLC is not the trading day.
+    const histNow = `${HIST_DATE}T12:00:00.000Z`;
+    await openTill(db, {
+      openingFloatMinor: 0n, businessDate: HIST_DATE, openedOffline: true, drawer: 'SHARED',
+      hlc: fixedHlc(Date.parse(nowIso) + 700, deviceNode), nowIso: histNow,
+    });
     const histSale = await checkout(db, {
       cartId: histCart,
       tenderedMinor: expectedGross,
       hlc: fixedHlc(Date.parse(nowIso) + 1000, deviceNode),
-      nowIso,
-      businessDate: HIST_DATE,
+      nowIso: histNow,
     });
-    const histOps = (await readPendingOps(db)).filter((o) => o.idempotencyKey === histSale.saleId);
+    const histOps = await readPendingOps(db);
     const histPosted = await transport.send(histOps);
     const histAck = histPosted.acks.find((a) => a.key === histSale.saleId);
     check(

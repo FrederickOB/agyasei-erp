@@ -58,6 +58,13 @@ export const WIRE_KINDS: Readonly<Record<string, DeviceOpKind>> = {
   // be superseding. They go over tRPC and are refused out loud
   // (data/api/credit.ts).
   credit_payment: 'credit.record_entry',
+  // THE TILL (08 §8.2a). Opening and closing a till are trade, not
+  // configuration: an outlet opens at seven whether or not the tower is up,
+  // and every sale it rings names the till. Riding THIS ordered queue is what
+  // guarantees the open reaches the server before the sales that name it and
+  // the close after the last of them (data/mutations/till.ts).
+  cash_session_open: 'cash_session.open',
+  cash_session_close: 'cash_session.close',
 };
 
 export function wireKind(kind: string): string {

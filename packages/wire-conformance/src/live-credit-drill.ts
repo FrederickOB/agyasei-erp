@@ -63,6 +63,7 @@ import { SignJWT } from 'jose';
 import pg from 'pg';
 
 import { provisionPrincipal } from '@erp/db/seed';
+import { LiveTills, liveTenderIds, tenderLines } from './live-tills.js';
 
 const API_URL = process.env['API_URL'] ?? 'http://127.0.0.1:3001';
 const DATABASE_URL =
@@ -274,6 +275,19 @@ async function main(): Promise<void> {
   const businessDate = new Date().toISOString().slice(0, 10);
   const dueDate = addDays(businessDate, TERMS_DAYS);
 
+  // Since 0020 a sale names its till and its tender methods. The seller opens
+  // one shared till per outlet for the day; the methods are the tenant's own.
+  const tenderIds = await liveTenderIds(
+    async (sql, params) => (await client.query(sql, params)).rows as never[],
+    tenantId,
+  );
+  const tills = new LiveTills(async (input) => {
+    const o = await callMutation(seller, 'cashSession.open', input);
+    return { ok: o.status === 200, detail: `HTTP ${o.status} ${o.message}` };
+  });
+  const till01 = await tills.till(out01, businessDate);
+  const till03 = await tills.till(out03, businessDate);
+
   function sale(
     locationId: string,
     qty: string,
@@ -282,10 +296,10 @@ async function main(): Promise<void> {
     return {
       idempotencyKey: randomUUID(),
       locationId,
+      cashSessionId: locationId === out01 ? till01 : till03,
       priceListCode: 'WHOLESALE',
       receiptNo: `D9-${randomUUID().slice(0, 12)}`,
-      businessDate,
-      tender,
+      tenders: tenderLines(tender, tenderIds),
       ...(tender === 'CREDIT' ? { customerId } : {}),
       lines: [{ productId, qty }],
     };
