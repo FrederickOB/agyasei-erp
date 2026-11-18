@@ -36,23 +36,32 @@ pnpm stack:bootstrap  # re-run just the idempotent db bootstrap
 `stack:up` is idempotent; `stack:reset` is the clean-slate path and recreates
 the same two tenants with the same ids.
 
-## Auth contract (dev)
+## Auth contract
 
-One HS256 secret — env `DEV_JWT_SECRET`, default `dev-secret-change-me` — is
-shared by API-issued tokens and the service's `client_auth`. PowerSync client
-tokens carry:
+**Production path (02-security §2.2, §2.7).** A device enrols with a one-time
+code (back office → Devices), a person signs in through the identity provider
+(provider-generic OIDC), and the API mints an ES256 sync token — `aud
+"erp-sync"`, 5 minutes, claims `tid`, `sub`, `did` — which PowerSync verifies
+against the API's public keys at `PS_JWKS_URI` (`/.well-known/jwks.json`).
 
-- `aud: "powersync"`
-- `tid: <tenant uuid>` — **the only source of tenant identity**; sync rules
-  read it from the token, never from client parameters
-- `location_id: <location uuid>` — interim location scope (see deviations),
-  set server-side by the API from the user's assignment
-- `sub`, `iat`, `exp` — keep tokens short-lived (≤ 5 min is PowerSync's norm)
+**Dev path.** One HS256 secret — env `DEV_JWT_SECRET`, default
+`dev-secret-change-me` — shared by `pnpm dev:token` bearers and the service's
+`client_auth` (`aud "powersync"`). `infra/scripts/stack.mjs` derives
+`PS_JWT_K = base64url(DEV_JWT_SECRET)`; never set it by hand. The production
+PowerSync config carries no `oct` key.
 
-`infra/scripts/stack.mjs` derives `PS_JWT_K = base64url(DEV_JWT_SECRET)` for
-the service config; never set it by hand. Defaults live in `infra/env.example`
-(named without the leading dot because workspace tooling blocks `.env*` writes
-as a secrets guard). Real secrets are never committed.
+**Either way, every bucket is keyed on `did` + `sub` + `tid` through
+`app.device_sync_grant` / `app.device_sync_location_scope` (migration 0024).**
+A token whose device is not an ACTIVE row in `app.device`, with a ceiling the
+user's scope meets, downloads nothing. `pnpm dev:token` therefore enrols a dev
+device per location (placeholder key — the HS256 path has no proof of
+possession) and mints with `dev: <device id>`; the drills enrol theirs in
+`ServerDb.enrolDevice`.
+
+**Dev identity provider.** `pnpm dev:idp` runs a minimal OIDC provider on
+:9400 (no passwords — pick a dev principal). Start the API with
+`OIDC_ISSUER=http://localhost:9400 OIDC_CLIENT_ID=erp-pwa-dev` and leave
+`VITE_API_TOKEN` empty in the PWA to exercise enrolment → sign-in → PIN.
 
 ## Seeded tenants — `infra/dev-tenants.json`
 
@@ -97,11 +106,12 @@ valid dev token (HS256, aud `powersync`, `tid` claim) it streams checkpoints.
 
 ## Known deviations from §3.2.3 (all fail closed; fix-forward list)
 
-1. **Location scope via token claim, not `user_location_scope`.** The RBAC
-   tables (`user_location_scope`, `user_effective_permission`,
-   `tenant_membership`) don't exist yet (phase1-status §3). Until they land,
-   `location_id` is a signed token claim minted server-side. No claim → no
-   bucket → no rows.
+1. **CLOSED by migration 0024 — location scope is table-driven.** Every
+   parameter query reads `app.device_sync_grant` or
+   `app.device_sync_location_scope`, the trigger-maintained intersection of
+   the user's scope and the device's ceiling over ACTIVE devices. A
+   future-dated lapse is swept by `app.refresh_sync_scope_all()`, which the
+   production package schedules (02 §2.5 says every 60 s).
 2. **Credit book: RESOLVED, with one part still empty.** §3.2.2's
    `tenant_credit` and `location_credit_allowance` buckets now exist and are
    gated on the DATABASE, not on a claim. The permission tables landed in 0005
