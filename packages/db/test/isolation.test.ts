@@ -184,6 +184,35 @@ describe('two-tenant isolation at the SQL level (as app_user)', () => {
     expect(admin.rows[0]!.n).toBe('2');
   });
 
+  it('the operator plane needs BYPASSRLS on platform.tenant: with it, the registry; without it, nothing — never a leak', async () => {
+    // 0027 FORCES row security on the registry, which binds the table owner
+    // too. PGlite's admin (and the dev stack's `erp`) is a superuser and is
+    // exempt; a deployed operator credential is not, and must carry
+    // BYPASSRLS (02-security §2.3's app_migrate). This pins both halves.
+    await db.asAdmin(async (tx) => {
+      await tx.query('create role iso_operator nosuperuser bypassrls');
+      await tx.query('create role iso_operator_nobypass nosuperuser nobypassrls');
+      await tx.query('grant usage on schema platform, app to iso_operator, iso_operator_nobypass');
+      await tx.query('grant select on platform.tenant to iso_operator, iso_operator_nobypass');
+    });
+    const readAs = (role: string) =>
+      db.asAdmin(async (tx) => {
+        await tx.query(`set local role ${role}`);
+        return (await tx.query<{ id: string }>('select id from platform.tenant order by id')).rows;
+      });
+    try {
+      expect((await readAs('iso_operator')).map((r) => r.id)).toEqual([TENANT_A, TENANT_B].sort());
+      expect(await readAs('iso_operator_nobypass')).toEqual([]);
+    } finally {
+      await db.asAdmin(async (tx) => {
+        for (const role of ['iso_operator', 'iso_operator_nobypass']) {
+          await tx.query(`drop owned by ${role}`);
+          await tx.query(`drop role ${role}`);
+        }
+      });
+    }
+  });
+
   it('global reference data is read in full by every tenant and written by none', async () => {
     const all = await db.asAdmin((tx) =>
       tx.query<{ n: string }>('select count(*)::text as n from platform.tax_rate'),
