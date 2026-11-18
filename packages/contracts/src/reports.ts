@@ -65,6 +65,20 @@ export const salesReportInput = z
 export const cashPositionReportInput = salesReportInput;
 
 /**
+ * Sales by BUSINESS DAY over the same inclusive range, for the change-over-
+ * time visual on the back-office dashboard. Same input, same range rule, and
+ * the same identity on the way out: Σ(days) equals the range total, checked
+ * by the router. Every day in the range is a row — a day with no trade is a
+ * zero, so a dark day is drawn as a dip to nothing rather than a gap that
+ * looks like missing data. Capped at 400 days: a year's chart, not a dump.
+ */
+export const salesByDayReportInput = salesReportInput.refine(
+  (v) => Date.parse(`${v.to}T00:00:00Z`) - Date.parse(`${v.from}T00:00:00Z`) <= 399 * 86_400_000,
+  { message: 'a by-day report covers at most 400 days', path: ['to'] },
+);
+export type SalesByDayReportInput = z.input<typeof salesByDayReportInput>;
+
+/**
  * Stock on hand by location and SKU, derived from the movement ledger.
  *
  * No date range: on-hand is a position, not a flow. `asOf` is deliberately
