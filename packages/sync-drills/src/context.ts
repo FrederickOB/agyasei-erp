@@ -13,6 +13,7 @@ import type {
   CreateSaleInput,
   MutationEnvelope,
   OpenAccountInput,
+  OpenCashSessionInput,
   RecordMovementInput,
 } from '@erp/contracts';
 import { DrillDevice, pollUntil } from './device.js';
@@ -56,6 +57,28 @@ export interface DrillContext {
  */
 type DrillPayload<T> = Omit<T, keyof MutationEnvelope>;
 
+/**
+ * THE TILL (migrations 0020–0022). A sale names the till it was rung into and
+ * its business date IS the till's; it pays through the tenant's own tender
+ * method. Both are registered once in `warmUp` — one shared till per drill
+ * location for the drill's business date, opened through the device outbox
+ * like any other trade write — and looked up here, so every drill keeps
+ * asking for "a sale at this location on this day".
+ */
+const tills = new Map<string, string>();
+const cashMethods = new Map<string, string>();
+
+export function tillOp(locationId: string, businessDate: string): DrillPayload<OpenCashSessionInput> {
+  return {
+    locationId,
+    businessDate,
+    openingFloatMinor: '0',
+    openedAt: new Date().toISOString(),
+    openedOffline: false,
+    drawer: 'SHARED',
+  };
+}
+
 export function saleOp(
   locationId: string,
   productId: string,
@@ -63,12 +86,18 @@ export function saleOp(
   businessDate: string,
   qty = '2',
 ): DrillPayload<CreateSaleInput> {
+  const cashSessionId = tills.get(`${locationId}|${businessDate}`);
+  const methodId = cashMethods.get(locationId);
+  if (cashSessionId === undefined || methodId === undefined) {
+    throw new Error(`no till open at ${locationId} for ${businessDate} — warmUp opens them`);
+  }
   return {
     locationId,
+    cashSessionId,
     priceListCode: 'WHOLESALE',
     receiptNo,
-    businessDate,
-    tender: 'CASH',
+    // One BALANCE line: the cash method settles the server's own total.
+    tenders: [{ methodId, settlement: 'IMMEDIATE' }],
     lines: [{ productId, qty }],
   };
 }
@@ -145,6 +174,24 @@ export async function createContext(): Promise<DrillContext> {
  *  any timing starts, and gives every synced table rows on both tenants so
  *  the D5 absence assertions are non-vacuous. */
 export async function warmUp(cx: DrillContext): Promise<void> {
+  console.log("[setup] opening the day's tills through /sync/upload…");
+  const [cashA, cashB] = await Promise.all([
+    cx.server.cashMethod(cx.tenants.tenantA.id),
+    cx.server.cashMethod(cx.tenants.tenantB.id),
+  ]);
+  for (const [device, locationId, method] of [
+    [cx.a1, cx.locA1, cashA],
+    [cx.a3, cx.locA3, cashA],
+    [cx.b1, cx.locB, cashB],
+  ] as const) {
+    const key = await device.recordToOutbox('cash_session.open', tillOp(locationId, cx.businessDate));
+    const acks = await device.flushOutbox();
+    const bad = acks.filter((a) => a.status !== 'applied');
+    if (bad.length > 0) throw new Error(`till open at ${locationId} not applied: ${JSON.stringify(bad)}`);
+    tills.set(`${locationId}|${cx.businessDate}`, key);
+    cashMethods.set(locationId, method);
+  }
+
   console.log('[setup] online seed writes through /sync/upload…');
   // Tenant A: opening stock at OUT-01 + a credit account (customer row).
   await cx.a1.recordToOutbox(
