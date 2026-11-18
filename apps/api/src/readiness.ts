@@ -16,9 +16,22 @@
  */
 export interface ReadinessResult {
   readonly ready: boolean;
-  readonly reason?: 'database_unreachable' | 'migrations_pending';
+  /**
+   * `database_unreachable`: no connection (network, pooler, credentials).
+   * `database_error`: connected, but the check's query failed — a missing
+   * grant or schema, not a network problem. Distinguished so an operator
+   * does not chase the network for a permission.
+   */
+  readonly reason?: 'database_unreachable' | 'database_error' | 'migrations_pending';
   readonly pending?: readonly string[];
   readonly ahead?: readonly string[];
+  /** SQLSTATE / error code and the primary message's first line. Logged, never served. */
+  readonly detail?: string;
+}
+
+/** Connection-class failures: SQLSTATE class 08, auth (28), or a Node socket error. */
+function isUnreachable(code: string | undefined): boolean {
+  return code === undefined || code.startsWith('08') || code.startsWith('28') || /^E[A-Z]+$/.test(code);
 }
 
 export interface ReadinessDeps {
@@ -43,8 +56,14 @@ export function readinessCheck(deps: ReadinessDeps): () => Promise<ReadinessResu
       const pending = deps.expectedMigrations.filter((f) => !applied.has(f));
       const ahead = [...applied].filter((f) => !known.has(f)).sort();
       result = pending.length > 0 ? { ready: false, reason: 'migrations_pending', pending, ahead } : { ready: true, ahead };
-    } catch {
-      result = { ready: false, reason: 'database_unreachable' };
+    } catch (err) {
+      const code = typeof (err as { code?: unknown })?.code === 'string' ? (err as { code: string }).code : undefined;
+      const message = err instanceof Error ? (err.message.split('\n')[0] ?? '').slice(0, 200) : 'unknown error';
+      result = {
+        ready: false,
+        reason: isUnreachable(code) ? 'database_unreachable' : 'database_error',
+        detail: `${code ?? 'no code'}: ${message}`,
+      };
     }
     cached = { at: now(), result };
     return result;

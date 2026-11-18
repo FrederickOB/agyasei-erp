@@ -174,7 +174,7 @@ describe('backup manifest', () => {
     const t = restored.tenants[0]!;
     const wl = t.tables.find((x) => x.tableName === 'write_log')!;
     (wl as { rowCount: string }).rowCount = String(BigInt(wl.rowCount) - 1n);
-    (t as { tables: unknown[] }).tables = t.tables.filter((x) => x.tableName !== 'sale');
+    (t as unknown as { tables: unknown[] }).tables = t.tables.filter((x) => x.tableName !== 'sale');
     const c = compareManifests(manifest, restored);
     expect(c.digestsMatched).toBe(false);
     expect(c.differences.some((d) => d.includes('write_log: rows'))).toBe(true);

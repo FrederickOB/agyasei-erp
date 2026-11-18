@@ -104,12 +104,26 @@ describe('readinessCheck', () => {
       expectedMigrations: [],
       now: () => t,
     });
-    expect(await check()).toEqual({ ready: false, reason: 'database_unreachable' });
+    expect(await check()).toMatchObject({ ready: false, reason: 'database_unreachable' });
     await check();
     expect(calls).toBe(1);
     t = 10_000;
     await check();
     expect(calls).toBe(2);
+  });
+
+  it('a permission error is a database ERROR, not an unreachable database — with the SQLSTATE for the log', async () => {
+    const check = readinessCheck({
+      query: async () => {
+        throw Object.assign(new Error('permission denied for schema erp_meta'), { code: '42501' });
+      },
+      expectedMigrations: [],
+    });
+    expect(await check()).toEqual({
+      ready: false,
+      reason: 'database_error',
+      detail: '42501: permission denied for schema erp_meta',
+    });
   });
 });
 

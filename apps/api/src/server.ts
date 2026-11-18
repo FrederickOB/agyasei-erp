@@ -110,7 +110,7 @@ export async function buildServer(opts: BuildServerOptions): Promise<FastifyInst
       if (r.ready !== lastReady) {
         lastReady = r.ready;
         app.log[r.ready ? 'info' : 'warn'](
-          { ready: r.ready, reason: r.reason, pending: r.pending?.join(','), ahead: r.ahead?.join(',') },
+          { ready: r.ready, reason: r.reason, detail: r.detail, pending: r.pending?.join(','), ahead: r.ahead?.join(',') },
           'readiness changed',
         );
       }
