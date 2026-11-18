@@ -37,8 +37,11 @@ jobs:
         run: node tools/lint-money.mjs
       - name: payroll boundary lint (CLAUDE.md §2.4)
         run: node tools/lint-payroll.mjs
+      # Concurrency capped: each PGlite suite forks its own Postgres-in-wasm,
+      # and apps/web's office-shell UI test times out (findBy*, 1 s) when every
+      # suite runs at once — it passes alone. Fix the test's timeouts, then lift this.
       - name: typecheck and test (the three mandatory categories run here)
-        run: pnpm exec turbo run typecheck test
+        run: pnpm exec turbo run typecheck test --concurrency=2
       - name: build
         run: pnpm build
       - name: release path against real Postgres 16
