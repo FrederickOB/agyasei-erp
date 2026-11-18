@@ -401,6 +401,32 @@ describe('tender lines — split tender, references, and the settlement the capa
     expect(createSaleInput.safeParse(t('x'.repeat(64))).success).toBe(true);
   });
 
+  it('ONE line may leave its amount to the balance — "50 by mobile money, the rest in cash"', () => {
+    const parsed = createSaleInput.parse({
+      ...goodPayload(),
+      tenders: [
+        { methodId: MOMO, settlement: 'IMMEDIATE', amountMinor: '500', reference: 'MP-1' },
+        { methodId: CASH, settlement: 'IMMEDIATE' },
+      ],
+      clientTotalMinor: '2550',
+    });
+    expect(parsed.tenders[1]!.amountMinor).toBeUndefined();
+    // Two balance lines would be two claims on "the rest": refused.
+    expect(
+      failurePaths({ ...goodPayload(), tenders: [
+        { methodId: CASH, settlement: 'IMMEDIATE' },
+        { methodId: MOMO, settlement: 'IMMEDIATE', reference: 'MP-2' },
+      ] }),
+    ).toEqual(['tenders']);
+    // With a balance line, the STATED lines may not exceed the device's own total.
+    expect(
+      failurePaths({ ...goodPayload(), clientTotalMinor: '2550', tenders: [
+        { methodId: MOMO, settlement: 'IMMEDIATE', amountMinor: '2551', reference: 'MP-3' },
+        { methodId: CASH, settlement: 'IMMEDIATE' },
+      ] }),
+    ).toEqual(['tenders']);
+  });
+
   it('caps the number of tender lines, and refuses a method that is not an id', () => {
     const one = { methodId: CASH, settlement: 'IMMEDIATE', amountMinor: '1' };
     expect(failurePaths({ ...goodPayload(), tenders: Array.from({ length: 9 }, () => one) })).toContain('tenders');
