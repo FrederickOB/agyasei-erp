@@ -716,6 +716,20 @@ async function withMutation(mutation: Mutation, fn: () => Promise<void>): Promis
 }
 
 /**
+ * `held-by-app-predicate` — the path resolves its tenant scope through
+ * queries that carry an EXPLICIT `tenant_id = app.current_tenant()` predicate
+ * as well as RLS (routers/scope.ts, permissions.ts, @erp/db's effective-
+ * permission read): CLAUDE.md §2.1's "application queries scope by tenant AND
+ * RLS enforces it". No database-level mutation breaks these probes any more,
+ * and the suite below asserts exactly that — under every mutation they stay
+ * GREEN, which is the positive evidence that the second control holds.
+ * Mutation-checked by hand in the other direction: with those predicates
+ * removed, all 13 went red again under the mutations listed in git history
+ * for this table (integration review, 18 Nov 2026).
+ */
+type Decisive = Mutation | 'code-only' | 'held-by-app-predicate';
+
+/**
  * For EVERY probe: the weakest mutation under which it goes red. Recorded
  * per probe, so a probe that loses its sensitivity — or a path that gains or
  * loses a control — changes this table in a reviewed diff.
@@ -726,7 +740,7 @@ async function withMutation(mutation: Mutation, fn: () => Promise<void>): Promis
  * (check deleted -> the probe went red with an IsolationBreach: tenant A's
  * token answered B's readiness while a nonexistent id answered NOT_FOUND).
  */
-const DECISIVE_MUTATION: Record<string, Mutation | 'code-only'> = {
+const DECISIVE_MUTATION: Record<string, Decisive> = {
   'catalogue.list': 'rls-off',
   'catalogue.search': 'rls-off',
   'catalogue.detail': 'rls-off',
@@ -735,34 +749,34 @@ const DECISIVE_MUTATION: Record<string, Mutation | 'code-only'> = {
   'credit.ageing': 'rls-off',
   'credit.previewFacilityFee': 'rls-off',
   'inventory.onHand': 'rls-off',
-  'inventory.reorderPoints': 'rls-off-and-principal-in-both-tenants',
-  'inventory.lowStock': 'rls-off-and-principal-in-both-tenants',
+  'inventory.reorderPoints': 'held-by-app-predicate',
+  'inventory.lowStock': 'held-by-app-predicate',
   'ledger.trialBalance': 'rls-off-and-location-policy-too-wide',
   'ledger.profitAndLoss': 'rls-off-and-location-policy-too-wide',
   'ledger.balanceSheet': 'rls-off-and-location-policy-too-wide',
   'ledger.postingExceptions': 'rls-off-and-location-policy-too-wide',
   'logistics.get': 'rls-off',
-  'logistics.list': 'rls-off-and-principal-in-both-tenants',
-  'logistics.haulageSpend': 'rls-off-and-location-policy-too-wide',
+  'logistics.list': 'held-by-app-predicate',
+  'logistics.haulageSpend': 'held-by-app-predicate',
   'procurement.listSuppliers': 'rls-off',
   'procurement.suppliersForProduct': 'rls-off',
   'procurement.purchaseOrder': 'rls-off',
-  'procurement.listPurchaseOrders': 'rls-off-and-principal-in-both-tenants',
-  'procurement.reorderSuggestions': 'rls-off-and-principal-in-both-tenants',
+  'procurement.listPurchaseOrders': 'held-by-app-predicate',
+  'procurement.reorderSuggestions': 'held-by-app-predicate',
   'provisioning.activationReadiness': 'code-only',
   'receiving.get': 'rls-off',
   'receiving.purchaseOrderReceiptStatus': 'rls-off',
-  'reports.salesByLocation': 'rls-off-and-location-policy-too-wide',
-  'reports.salesByDay': 'rls-off-and-location-policy-too-wide',
-  'reports.stockOnHand': 'rls-off-and-location-policy-too-wide',
+  'reports.salesByLocation': 'held-by-app-predicate',
+  'reports.salesByDay': 'held-by-app-predicate',
+  'reports.stockOnHand': 'held-by-app-predicate',
   'reports.cashPosition': 'rls-off',
-  'reports.inventoryDays': 'rls-off-and-location-policy-too-wide',
-  'reports.distributionCostRatio': 'rls-off-and-location-policy-too-wide',
-  'review.list': 'rls-off-and-principal-in-both-tenants',
+  'reports.inventoryDays': 'held-by-app-predicate',
+  'reports.distributionCostRatio': 'held-by-app-predicate',
+  'review.list': 'held-by-app-predicate',
   'review.get': 'rls-off',
   'sales.get': 'rls-off',
   'sales.recomputeCheck': 'rls-off',
-  'session.permissions': 'rls-off',
+  'session.permissions': 'held-by-app-predicate',
 };
 
 describe('mutation: remove the backstop and every probe goes red — with an IsolationBreach', () => {
@@ -771,7 +785,7 @@ describe('mutation: remove the backstop and every probe goes red — with an Iso
   });
 
   for (const [procedure, mutation] of Object.entries(DECISIVE_MUTATION)) {
-    if (mutation === 'code-only') continue;
+    if (mutation === 'code-only' || mutation === 'held-by-app-predicate') continue;
     it(`${procedure} goes red under ${mutation}`, async () => {
       let caught: unknown;
       await withMutation(mutation, async () => {
@@ -782,6 +796,28 @@ describe('mutation: remove the backstop and every probe goes red — with an Iso
         }
       });
       expect(caught, `${procedure}: the probe stayed green under ${mutation}`).toBeInstanceOf(IsolationBreach);
+    });
+  }
+
+  const ALL_MUTATIONS: readonly Mutation[] = [
+    'rls-off',
+    'rls-off-and-location-policy-too-wide',
+    'rls-off-and-principal-in-both-tenants',
+  ];
+  for (const [procedure, mutation] of Object.entries(DECISIVE_MUTATION)) {
+    if (mutation !== 'held-by-app-predicate') continue;
+    it(`${procedure} stays isolated under EVERY database mutation — the explicit predicate holds`, async () => {
+      for (const m of ALL_MUTATIONS) {
+        let caught: unknown;
+        await withMutation(m, async () => {
+          try {
+            await probes[procedure]!();
+          } catch (err) {
+            caught = err;
+          }
+        });
+        expect(caught, `${procedure} under ${m}`).toBeUndefined();
+      }
     });
   }
 
