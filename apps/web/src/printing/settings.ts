@@ -14,7 +14,7 @@ import { uuidv7 } from '../lib/uuidv7';
 import type { CodePageId } from './codepage';
 import type { CutMode, DrawerKick } from './escpos';
 import { DEFAULT_DRAWER_KICK } from './escpos';
-import { DEFAULT_BRIDGE_PACKAGE } from './transports/android-bridge';
+import { DEFAULT_BRIDGE_PACKAGE, isAndroidPackageName } from './transports/android-bridge';
 import {
   ALL_TRANSPORT_IDS,
   DEFAULT_PRINT_TIMEOUT_MS,
@@ -99,7 +99,9 @@ export function sanitizeSettings(raw: unknown): PrinterSettings {
     chunkDelayMs: int(r['chunkDelayMs'], d.chunkDelayMs, 0, 500),
     baudRate: int(r['baudRate'], d.baudRate, 1200, 921_600),
     bridgePackage:
-      typeof r['bridgePackage'] === 'string' && r['bridgePackage'].length > 0 ? r['bridgePackage'] : d.bridgePackage,
+      typeof r['bridgePackage'] === 'string' && isAndroidPackageName(r['bridgePackage'])
+        ? r['bridgePackage']
+        : d.bridgePackage,
     systemLayout: r['systemLayout'] === 'a4' ? 'a4' : 'roll',
     devices,
   };

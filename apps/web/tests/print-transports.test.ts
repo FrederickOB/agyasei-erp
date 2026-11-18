@@ -473,6 +473,20 @@ describe('android-print-bridge', () => {
     expect(fromBase64(b64)).toEqual(j.bytes);
   });
 
+  it('never splices an edited package name into the intent: anything but an app id falls back to the default', () => {
+    const bytes = new Uint8Array([0x1b, 0x40]);
+    // A value that would add a browser fallback and redirect the till away from the PWA.
+    const hostile = 'pkg.example;S.browser_fallback_url=https%3A%2F%2Fevil.example;end';
+    const url = buildBridgeUrl(bytes, hostile);
+    expect(url).not.toContain('browser_fallback_url');
+    expect(url).toMatch(/;package=ru\.a402d\.rawbtprinter;end;$/);
+    // Positive control: a real app id is used as given.
+    expect(buildBridgeUrl(bytes, 'com.example.print_app')).toMatch(/;package=com\.example\.print_app;end;$/);
+    for (const bad of ['', 'nodots', '1pkg.x', 'pkg..x', 'pkg.x;end']) {
+      expect(buildBridgeUrl(bytes, bad)).toMatch(/;package=ru\.a402d\.rawbtprinter;end;$/);
+    }
+  });
+
   it('is unavailable off Android, and a throwing navigation is a failed value', async () => {
     const { deps } = makeDeps();
     const desktop = createAndroidBridgeTransport(deps, { userAgent: () => 'Windows NT 10', open: () => undefined });

@@ -261,6 +261,13 @@ describe('device printer settings', () => {
     expect(s.devices['ble-escpos']).toEqual({ id: 'd', name: null });
   });
 
+  it('keeps a real print-app id and drops anything that is not one', () => {
+    expect(sanitizeSettings({ bridgePackage: 'com.example.printer' }).bridgePackage).toBe('com.example.printer');
+    expect(sanitizeSettings({ bridgePackage: 'x;S.browser_fallback_url=https://evil;end' }).bridgePackage).toBe(
+      DEFAULT_PRINTER_SETTINGS.bridgePackage,
+    );
+  });
+
   it('defaults to no printer, so the receipt is shown on screen until someone chooses one', () => {
     expect(DEFAULT_PRINTER_SETTINGS.transport).toBe('none');
   });

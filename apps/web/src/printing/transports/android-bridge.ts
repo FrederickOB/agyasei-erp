@@ -68,8 +68,22 @@ export function defaultBridgeEnv(): BridgeEnv {
   };
 }
 
+/**
+ * An Android application id: dot-separated segments, each starting with a
+ * letter. The package name is device configuration that anyone holding the
+ * tablet can edit, and it is spliced into an `intent:` URL — so anything else
+ * (a `;`, an `S.browser_fallback_url=` extra) could redirect the till away
+ * from the PWA. Refused here and in the settings sanitiser, not escaped.
+ */
+const ANDROID_PACKAGE = /^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)+$/;
+
+export function isAndroidPackageName(value: string): boolean {
+  return value.length <= 255 && ANDROID_PACKAGE.test(value);
+}
+
 export function buildBridgeUrl(bytes: Uint8Array, packageName: string): string {
-  return `intent:base64,${toBase64(bytes)}#Intent;scheme=rawbt;package=${packageName};end;`;
+  const pkg = isAndroidPackageName(packageName) ? packageName : DEFAULT_BRIDGE_PACKAGE;
+  return `intent:base64,${toBase64(bytes)}#Intent;scheme=rawbt;package=${pkg};end;`;
 }
 
 export function createAndroidBridgeTransport(
