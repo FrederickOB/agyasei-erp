@@ -31,6 +31,8 @@ export {
 export {
   POWERSYNC_PUBLICATION,
   POWERSYNC_PUBLICATION_TABLES,
+  SELF_GRANT_APP_USER_SQL,
+  canSetAppUserSql,
   convergeGrants,
   convergePublication,
   grantsSql,

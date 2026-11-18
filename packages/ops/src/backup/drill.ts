@@ -28,6 +28,7 @@ import { dirname, join } from 'node:path';
 import pg from 'pg';
 import { uuidv7 } from '@erp/db';
 import { catalogueViolations } from '../catalogue.js';
+import { SELF_GRANT_APP_USER_SQL } from '../converge.js';
 import { pgPoolConfig, type OpsDb } from '../db.js';
 import type { Logger } from '../log.js';
 import { BACKUP_FORMAT, sha256File, type BackupRecord } from './dump.js';
@@ -102,8 +103,7 @@ export async function restoreDrill(opts: DrillOptions): Promise<DrillReport> {
           create role app_user nosuperuser nocreatedb nocreaterole noinherit nobypassrls;
         end if;
       end $$`);
-    const member = await admin.query<{ ok: boolean }>(`select pg_has_role(current_user, 'app_user', 'MEMBER') as ok`);
-    if (member.rows[0]?.ok !== true) await admin.query(`grant app_user to current_user`);
+    await admin.query(SELF_GRANT_APP_USER_SQL);
     opts.log.info('scratch database created; restoring', { scratch: name });
 
     const scratch: PgTarget = { ...opts.scratchAdmin, url: dbUrl(opts.scratchAdmin.url, name) };

@@ -76,6 +76,32 @@ export const POWERSYNC_PUBLICATION_TABLES: readonly string[] = [
 
 const IDENT = /^[a-z_][a-z0-9_]*\.[a-z_][a-z0-9_]*$/;
 
+/**
+ * SQL boolean: may `role` actually `SET ROLE app_user`? On Postgres 16+
+ * membership and the SET option are separate — a role's CREATOR holds ADMIN
+ * membership without SET (createrole_self_grant), so a plain MEMBER check
+ * says yes while SET ROLE is refused. 15 and earlier: membership is enough.
+ */
+export function canSetAppUserSql(roleExpr = 'current_user'): string {
+  return `(case when current_setting('server_version_num')::int >= 160000
+                then pg_has_role(${roleExpr}, 'app_user', 'SET')
+                else pg_has_role(${roleExpr}, 'app_user', 'MEMBER') end)`;
+}
+
+/** Make the current role able to SET ROLE app_user (idempotent, version-aware). */
+export const SELF_GRANT_APP_USER_SQL = `
+do $self$
+begin
+  if current_setting('server_version_num')::int >= 160000 then
+    if not pg_has_role(current_user, 'app_user', 'SET') then
+      execute format('grant app_user to %I with set true', current_user);
+    end if;
+  elsif not pg_has_role(current_user, 'app_user', 'MEMBER') then
+    execute format('grant app_user to %I', current_user);
+  end if;
+end
+$self$;`;
+
 function assertQualified(tables: readonly string[]): void {
   for (const t of tables) {
     if (!IDENT.test(t)) throw new Error(`not a schema-qualified table name: ${JSON.stringify(t)}`);
@@ -86,17 +112,13 @@ function assertQualified(tables: readonly string[]): void {
 export function grantsSql(publicationTables: readonly string[] = POWERSYNC_PUBLICATION_TABLES): string {
   assertQualified(publicationTables);
   const published = publicationTables.join(', ');
-  return `
+  // The migrator (whoever is running this) acts as app_user to compute
+  // per-tenant figures under RLS for the backup manifest.
+  return `${SELF_GRANT_APP_USER_SQL}
 do $grants$
 declare
   has_job_run boolean := to_regclass('platform.job_run') is not null;
 begin
-  -- The migrator (whoever is running this) acts as app_user to compute
-  -- per-tenant figures under RLS for the backup manifest.
-  if not pg_has_role(current_user, 'app_user', 'MEMBER') then
-    execute format('grant app_user to %I', current_user);
-  end if;
-
   if exists (select 1 from pg_roles where rolname = 'erp_api') then
     grant usage on schema app, platform to erp_api;
     grant app_user to erp_api;

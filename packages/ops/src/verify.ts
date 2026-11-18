@@ -14,7 +14,7 @@
  */
 import pg from 'pg';
 import { catalogueViolations } from './catalogue.js';
-import { POWERSYNC_PUBLICATION, POWERSYNC_PUBLICATION_TABLES } from './converge.js';
+import { canSetAppUserSql, POWERSYNC_PUBLICATION, POWERSYNC_PUBLICATION_TABLES } from './converge.js';
 import { pgPoolConfig, type SslMode } from './db.js';
 import { listMigrationFiles, migrationState } from './migrations.js';
 
@@ -129,7 +129,7 @@ export async function verifyProvisioning(inputs: VerifyInputs): Promise<CheckRes
         (
           await mig.query<{ who: string; sup: boolean; bypass: boolean; member: boolean }>(
             `select current_user::text as who, rolsuper as sup, rolbypassrls as bypass,
-                    pg_has_role(current_user, 'app_user', 'MEMBER') as member
+                    ${canSetAppUserSql()} as member
                from pg_roles where rolname = current_user`,
           )
         ).rows,
@@ -139,7 +139,7 @@ export async function verifyProvisioning(inputs: VerifyInputs): Promise<CheckRes
         'roles.migrator',
         'backup and manifest',
         ok ? 'PASS' : 'FAIL',
-        `${r.who}: bypassrls=${r.bypass || r.sup} (pg_dump of forced-RLS tables needs it), member of app_user=${r.member} (the manifest computes each tenant under RLS)`,
+        `${r.who}: bypassrls=${r.bypass || r.sup} (pg_dump of forced-RLS tables needs it), can SET ROLE app_user=${r.member} (the manifest computes each tenant under RLS; run db:migrate or infra/supabase/roles.sql to grant it)`,
       );
     });
 
@@ -191,14 +191,27 @@ export async function verifyProvisioning(inputs: VerifyInputs): Promise<CheckRes
     });
 
     await guard('observability.auto_explain', 'pg_stat_statements, auto_explain, log export', async () => {
-      const r = one(
-        (
-          await mig.query<{ spl: string; sess: string }>(
-            `select current_setting('shared_preload_libraries', true) as spl,
-                    coalesce(current_setting('session_preload_libraries', true), '') as sess`,
-          )
-        ).rows,
-      );
+      let r: { spl: string; sess: string };
+      try {
+        r = one(
+          (
+            await mig.query<{ spl: string; sess: string }>(
+              `select current_setting('shared_preload_libraries', true) as spl,
+                      coalesce(current_setting('session_preload_libraries', true), '') as sess`,
+            )
+          ).rows,
+        );
+      } catch {
+        // A managed provider's `postgres` is not a superuser and may not read
+        // shared_preload_libraries at all. Not a failure of the provider.
+        add(
+          'observability.auto_explain',
+          'pg_stat_statements, auto_explain, log export',
+          'WARN',
+          'cannot read shared_preload_libraries as this role; confirm auto_explain availability with the provider and record it',
+        );
+        return;
+      }
       const on = `${r.spl},${r.sess}`.includes('auto_explain');
       add(
         'observability.auto_explain',
@@ -320,12 +333,12 @@ export async function verifyProvisioning(inputs: VerifyInputs): Promise<CheckRes
           (
             await c.query<{ ins: boolean; member: boolean; lock: boolean }>(
               `select has_table_privilege('platform.job_run', 'insert') as ins,
-                      pg_has_role(current_user, 'app_user', 'MEMBER') as member,
+                      ${canSetAppUserSql()} as member,
                       pg_try_advisory_xact_lock(hashtextextended('erp:verify', 0)) as lock`,
             )
           ).rows,
         );
-        add('jobs.role', 'operations', r.ins && r.member && r.lock ? 'PASS' : 'FAIL', `job_run insert=${r.ins}, member of app_user=${r.member}, advisory lock=${r.lock}`);
+        add('jobs.role', 'operations', r.ins && r.member && r.lock ? 'PASS' : 'FAIL', `job_run insert=${r.ins}, can SET ROLE app_user=${r.member}, advisory lock=${r.lock}`);
       } finally {
         await c.end();
       }
