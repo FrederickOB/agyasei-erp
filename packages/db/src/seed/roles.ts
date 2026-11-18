@@ -155,6 +155,13 @@ const OUTLET_MANAGER: TemplateRole = {
     { code: 'customer.manage' },
     { code: 'report.view.location' },
     { code: 'admin.device.enrol' },
+    // ...and REVOKE them, at their own outlet. A tablet that walks out of the
+    // yard must be stoppable by the person standing in the yard, not only by
+    // the founder — revocation speed is the security property (02 §2.7). The
+    // grant is location-scoped like every other: a manager at Techiman cannot
+    // revoke Wenchi's tablets. Widening a device's scope
+    // (admin.device.scope.manage) stays with the owner role.
+    { code: 'admin.device.revoke' },
     // Procurement, from the yard's side: raise the order for what their
     // outlet is running out of, sign for what the truck brings, and book a
     // haulier to take goods to a customer's site.

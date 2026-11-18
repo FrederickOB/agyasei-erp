@@ -33,20 +33,36 @@ port: 8080
 sync_config:
   path: /config/sync_rules.yaml
 
-# Client (device) authentication.
-# One dev HS256 secret is shared by API-issued tokens and this validation:
-# env DEV_JWT_SECRET (default "dev-secret-change-me"). PS_JWT_K is
-# base64url(DEV_JWT_SECRET) — derived by infra/scripts/stack.mjs.
-# Tokens must carry aud "powersync" and claim "tid" (tenant uuid).
-# No `kid` is pinned here so dev tokens do not need a kid header; if the
-# issuer sets one anyway, PowerSync still tries this single key.
+# Client (device) authentication — TWO key sources, one audience each.
+#
+# PRODUCTION PATH (02-security §2.2): ES256 sync tokens minted by the API's
+# GET /sync/token for an enrolled device's session, audience "erp-sync",
+# verified against the API's PUBLIC keys at its JWKS endpoint. Key rotation
+# is the API's (prepend a key in ERP_SIGNING_JWKS; the old one keeps
+# verifying until its tokens expire) and needs no change here.
+#   PS_JWKS_URI  e.g. https://api.<platform>/.well-known/jwks.json in
+#                production; in dev the API on the host, reached from the
+#                container (default in docker-compose.yml).
+# block_local_jwks: false is DEV ONLY — PowerSync refuses a JWKS URI on a
+# private address by default, and in dev the API is on the host. Production
+# serves the JWKS on a public URL and MUST leave the default (true).
+#
+# DEV PATH: the one HS256 dev secret, env DEV_JWT_SECRET (default
+# "dev-secret-change-me"), audience "powersync". PS_JWT_K is
+# base64url(DEV_JWT_SECRET), derived by infra/scripts/stack.mjs. Production
+# config carries NO oct key — the dev path must not exist there.
+#
+# Either way the token must carry tid, sub and did: every parameter query
+# keys on all three (sync_rules.yaml, migration 0024).
 client_auth:
+  jwks_uri: !env PS_JWKS_URI
+  block_local_jwks: false
   jwks:
     keys:
       - kty: 'oct'
         alg: 'HS256'
         k: !env PS_JWT_K
-  audience: ['powersync']
+  audience: ['powersync', 'erp-sync']
 
 # Local admin/diagnostics API token (dev only).
 api:

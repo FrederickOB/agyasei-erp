@@ -1,4 +1,13 @@
 /**
+ * ═══════════════════════════════════════════════════════════════════════════
+ * DEV-ONLY PATH. Production identity is `./identity/` — ES256 tokens bound to
+ * an enrolled device key by DPoP, minted after an OIDC sign-in (02 §2.2, §2.7).
+ * ═══════════════════════════════════════════════════════════════════════════
+ * This file is the HS256 shared-secret token the live drills, the test
+ * harness and `pnpm dev:token` use against the local stack. It is accepted
+ * ONLY when the server is built with a `jwtSecret`, and `dev.ts` refuses to
+ * set one when NODE_ENV=production. Nothing in the device path reads it.
+ *
  * Dev-grade HS256 JWTs (jose). Claims: { tid, uid, role, locs } — tid is the
  * ONLY source of tenant identity for every query and write (CLAUDE.md §2.1).
  *
@@ -32,10 +41,20 @@ export type Claims = z.infer<typeof claimsSchema>;
 export interface VerifiedIdentity {
   tenantId: string;
   userId: string;
+  /** Opaque label for logs. NEVER branched on (CLAUDE.md §2.9). */
   role: string;
+  /**
+   * Where this session may WRITE — the device ceiling. On the device path it
+   * is resolved from app.device_location_scope per request; on the dev path it
+   * is the HS256 `locs` claim. The permission check decides everything else.
+   */
   locationIds: readonly string[];
   deviceId: string;
   platformOperator: boolean;
+  /** `sid` — per USER per DEVICE. Absent on the dev path. */
+  sessionId?: string | undefined;
+  /** Which verifier produced this identity. Never an authorisation input. */
+  authKind: 'dev' | 'device';
 }
 
 const encoder = new TextEncoder();
@@ -69,5 +88,6 @@ export async function verifyToken(secret: string, token: string): Promise<Verifi
     // without a registered device gets a stable uid-derived one.
     deviceId: claims.dev ?? deterministicUuid('derived-device', claims.uid),
     platformOperator: claims.platform_operator === true,
+    authKind: 'dev',
   };
 }

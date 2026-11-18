@@ -27,6 +27,7 @@
  * identity (tid) always comes from this verified token, never from the client.
  * Never commit a minted token, and never use this against anything real.
  */
+import { createHash } from 'node:crypto';
 import { SignJWT } from 'jose';
 import pg from 'pg';
 import { readFileSync } from 'node:fs';
@@ -92,7 +93,62 @@ const { rows: scope } = principals[0]
       [tenant.id, principals[0].id],
     )
   : { rows: [] };
+
+// ── THE DEV DEVICE ──────────────────────────────────────────────────────
+// Since migration 0024 every sync bucket is keyed on the token's `did` AND
+// `sub` through app.device_sync_*: a token whose device is not an ACTIVE row
+// in app.device, with this location as its ceiling, downloads NOTHING. So the
+// dev token speaks for a real (dev-enrolled) device, one per location, shared
+// by every dev principal — exactly the shared counter tablet of 02 §2.5. Its
+// key is a placeholder: the HS256 dev path carries no proof-of-possession.
+// Real devices enrol through POST /auth/enrol with a code (DevicesAdmin).
+let deviceId = null;
+if (principals[0] && rows[0]) {
+  deviceId = uuidFrom(`dev-device:${tenant.id}:${rows[0].id}`);
+  const jkt = createHash('sha256').update(`dev-device-key:${deviceId}`).digest('base64url');
+  try {
+    await client.query('begin');
+    await client.query('set local role app_user');
+    await client.query(`select set_config('app.tenant_id', $1, true)`, [tenant.id]);
+    const exists = await client.query(`select status from app.device where id = $1`, [deviceId]);
+    if (exists.rows.length === 0) {
+      const writeId = deviceId; // one unit of work per dev device, ever
+      await client.query(
+        `insert into app.write_log (tenant_id, id, origin, hlc, device_id, op, schema_version, request_hash)
+         values ($1, $2, 'SERVER', $3, $2, 'dev.enrol_device', 1, decode(md5($2::text), 'hex'))
+         on conflict do nothing`,
+        [tenant.id, writeId, `${String(Date.now()).padStart(13, '0')}-00000-${'0'.repeat(28)}dee7`],
+      );
+      await client.query(
+        `insert into app.device (tenant_id, id, write_id, hlc, label, form_factor, public_jwk, jkt, status, enrolled_by)
+         values ($1, $2, $2, $3, $4, 'tablet', '{"kty":"EC","crv":"P-256","dev":true}'::jsonb, $5, 'active', $6)`,
+        [tenant.id, deviceId, `${String(Date.now()).padStart(13, '0')}-00001-${'0'.repeat(28)}dee7`,
+         `DEV tablet ${rows[0].code}`.slice(0, 80), jkt, principals[0].id],
+      );
+      await client.query(
+        `insert into app.device_location_scope (tenant_id, id, write_id, hlc, device_id, location_id, added_by)
+         values ($1, $2, $3, $4, $3, $5, $6)`,
+        [tenant.id, uuidFrom(`dls:${deviceId}`), deviceId,
+         `${String(Date.now()).padStart(13, '0')}-00002-${'0'.repeat(28)}dee7`, rows[0].id, principals[0].id],
+      );
+    } else if (exists.rows[0].status !== 'active') {
+      console.error(`The dev device for ${rows[0].code} is ${exists.rows[0].status} — it was revoked. ` +
+        `Reset the stack (pnpm stack:reset) or enrol a real device.`);
+    }
+    await client.query('commit');
+  } catch (err) {
+    await client.query('rollback').catch(() => undefined);
+    console.error(`Could not enrol the dev device (migrations 0023/0024 applied? pnpm stack:up): ${err.message ?? err}`);
+    process.exit(1);
+  }
+}
 await client.end();
+
+/** A stable uuid-shaped id from a seed (version nibble 8, variant a). */
+function uuidFrom(seed) {
+  const h = createHash('sha256').update(seed).digest('hex');
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-8${h.slice(13, 16)}-a${h.slice(17, 20)}-${h.slice(20, 32)}`;
+}
 
 if (principals.length === 0) {
   console.error(`No dev principal "dev-${roleRef}" on tenant ${which}.`);
@@ -121,9 +177,9 @@ if (!scopeIds.has(location.id)) {
   process.exit(1);
 }
 
-// No `dev` claim: it must be a uuid, and when absent the API derives a stable
-// device id from uid — the documented behaviour for a browser session without
-// a registered device (apps/api/src/auth.ts).
+// `dev` names the dev-enrolled device above, so the sync token's `did`
+// matches an ACTIVE app.device row whose ceiling is this location — without
+// it every sync bucket is empty (migration 0024).
 //
 // `locs` stays ONE location: it is a DEVICE scope — which counter this tablet
 // is standing at — and is deliberately narrower than the principal's grant
@@ -134,6 +190,7 @@ const token = await new SignJWT({
   uid: principal.id,
   role: roleRef,
   locs: [location.id],
+  ...(deviceId ? { dev: deviceId } : {}),
 })
   .setProtectedHeader({ alg: 'HS256' })
   .setIssuedAt()

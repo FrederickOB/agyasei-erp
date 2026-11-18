@@ -18,6 +18,7 @@ import type { HlcClock, PermissionCode } from '@erp/db';
 import type { VerifiedIdentity } from './auth.js';
 import type { CreditPolicyStore } from './credit-policy.js';
 import type { AdminRunner, TenantRunner } from './db.js';
+import type { IdentityService } from './identity/service.js';
 import { DENY, permissionState, type PermissionState } from './permissions.js';
 
 export interface ApiDeps {
@@ -30,6 +31,9 @@ export interface ApiDeps {
 export interface Context {
   deps: ApiDeps;
   identity: VerifiedIdentity | null;
+  /** The production identity service, when configured — the admin routers
+   *  use it to drop cached revocation answers the moment a device is revoked. */
+  identityService?: IdentityService | undefined;
 }
 
 const t = initTRPC.context<Context>().create({

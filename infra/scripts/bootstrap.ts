@@ -53,6 +53,9 @@ import { applyDevPurchaseUnits } from './dev-purchase-units.js';
 const DATABASE_URL =
   process.env.DATABASE_URL ?? 'postgresql://erp:erp_dev@localhost:5433/erp';
 
+/** The dev IdP's issuer (infra/dev-idp/server.mjs; `pnpm dev:idp`). */
+const DEV_IDP_ISSUER = process.env.OIDC_ISSUER ?? 'http://localhost:9400';
+
 /** Fixed dev tenant ids (uuidv7-shaped, obviously synthetic) so every reset
  *  produces the same ids and infra/dev-tenants.json stays stable. */
 const TENANT_A = {
@@ -79,11 +82,13 @@ const PUBLICATION_TABLES = [
   'app.price_list_item',
   'app.movement_reason',
   'app.customer',
-  // Credit (migration 0013). The two *_scope tables are PARAMETER-query
-  // sources — the gate itself — and must replicate or every credit bucket
-  // fails closed to zero rows. The rest are the data queries.
-  'app.credit_sync_book_scope',
-  'app.credit_sync_location_scope',
+  // THE GATE (migration 0024). Every bucket's PARAMETER query reads one of
+  // these two device-keyed projections; if they do not replicate, every
+  // bucket fails closed to zero rows. (0013's credit_sync_* projections are
+  // their inputs now, not parameter sources, so they no longer replicate.)
+  'app.device_sync_grant',
+  'app.device_sync_location_scope',
+  // Credit (migration 0013) — the data queries.
   'app.customer_account',
   'app.credit_limit_version',
   'app.credit_entry',
@@ -94,7 +99,8 @@ const PUBLICATION_TABLES = [
   'app.sale',
   'app.sale_line',
   'app.sale_tax_line',
-  'platform.tenant',
+  // platform.tenant is no longer read: jurisdiction_pack keys on the device
+  // grant's jurisdiction_code (0024).
   'platform.jurisdiction',
   'platform.tax_code',
   'platform.tax_rate',
@@ -320,6 +326,15 @@ async function main(): Promise<void> {
             roleRef: p.roleRef,
             ...(scopeLocationId ? { scopeLocationId } : {}),
           });
+          // Linked to the DEV IdP (infra/dev-idp) as subject `dev-<roleRef>`,
+          // so a dev tablet can sign in through the real OIDC flow. The same
+          // subject in both tenants is deliberate: the TENANT comes from the
+          // enrolled device, never from the IdP (02 §2.2).
+          await tx.query(
+            `update app.user_account set subject_issuer = $2, subject_ref = $3
+              where id = $1 and subject_ref is null`,
+            [userId, DEV_IDP_ISSUER, `dev-${p.roleRef}`],
+          );
           names.push(p.roleRef);
         }
         return names;

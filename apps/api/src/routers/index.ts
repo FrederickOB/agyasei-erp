@@ -1,4 +1,5 @@
 import { router } from '../trpc.js';
+import { adminRouter } from './admin.js';
 import { catalogueRouter } from './catalogue.js';
 import { creditRouter } from './credit.js';
 import { inventoryRouter } from './inventory.js';
@@ -35,6 +36,8 @@ export const appRouter = router({
   // Phase 3 Track A's read surface. Read-only by construction — every
   // procedure is a query, and no write capability exists (see ledger.ts).
   ledger: ledgerRouter,
+  // Go-live work package B: users, assignments, roles, devices (02 §2.4–§2.7).
+  admin: adminRouter,
 });
 
 export type AppRouter = typeof appRouter;

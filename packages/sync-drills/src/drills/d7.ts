@@ -76,6 +76,7 @@ export async function runD7(cx: DrillContext): Promise<DrillResult> {
   const a6 = new DrillDevice('device-a6', tenantA, cx.locA1);
   await a6.open();
   await cx.server.provisionDevicePrincipal(tenantA, a6.userId, a6.name);
+  await cx.server.enrolDevice(tenantA, a6);
 
   try {
     // ---- 1. a block, allocated by the SERVER ------------------------------

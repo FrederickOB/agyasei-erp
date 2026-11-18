@@ -7,6 +7,7 @@
  * used ONLY for cross-checks that deliberately bypass tenant scoping is NOT
  * offered: predictions for D5 are tenant-scoped by construction.
  */
+import { createHash } from 'node:crypto';
 import pg from 'pg';
 import { createHlcClock, hlcNodeFromName, uuidv7, sha256Hex, type HlcClock } from '@erp/db';
 import { provisionPrincipal } from '@erp/db/seed';
@@ -114,6 +115,46 @@ export class ServerDb {
         // roleRef omitted => the tenant's is_owner role. Never resolved by
         // name; `app.role.name` is the tenant's word and nothing reads it.
       });
+    });
+  }
+
+  /**
+   * Enrol a drill device in `app.device`, with its location as its ceiling.
+   *
+   * Since migration 0024 every sync bucket is keyed on the token's `did` AND
+   * `sub` through `app.device_sync_*`: a token whose device is not an ACTIVE
+   * row in `app.device` — or whose user's scope does not meet the device's
+   * ceiling — receives NOTHING, which is the point (02 §2.3 Contract 1). So a
+   * drill device must be a real enrolled device, exactly as a till is. The key
+   * is a placeholder: the drills speak the DEV HS256 path, which carries no
+   * proof-of-possession; the DPoP path is proven in apps/api's identity suite.
+   *
+   * Call AFTER the device's principal is provisioned (enrolled_by is that user).
+   */
+  async enrolDevice(
+    tenantId: string,
+    d: { deviceId: string; userId: string; name: string; locationId: string },
+  ): Promise<void> {
+    const jkt = createHash('sha256').update(`drill-device:${d.deviceId}`).digest('base64url');
+    await this.withTenant(tenantId, async (tx) => {
+      const writeId = uuidv7();
+      await tx.query(
+        `insert into app.write_log (tenant_id, id, origin, hlc, device_id, user_id, op, schema_version, request_hash)
+         values ($1, $2, 'SERVER', $3, $4, $5, 'drill.enrol_device', 1, decode($6, 'hex'))`,
+        [tenantId, writeId, this.clock.next(), d.deviceId, d.userId, sha256Hex(`drill.enrol:${d.deviceId}:${writeId}`)],
+      );
+      await tx.query(
+        `insert into app.device (tenant_id, id, write_id, hlc, label, form_factor, public_jwk, jkt, status, enrolled_by)
+         values ($1, $2, $3, $4, $5, 'tablet', '{"kty":"EC","crv":"P-256","drill":true}'::jsonb, $6, 'active', $7)
+         on conflict do nothing`,
+        [tenantId, d.deviceId, writeId, this.clock.next(), `Drill ${d.name}`.slice(0, 80), jkt, d.userId],
+      );
+      await tx.query(
+        `insert into app.device_location_scope (tenant_id, id, write_id, hlc, device_id, location_id, added_by)
+         values ($1, $2, $3, $4, $5, $6, $7)
+         on conflict do nothing`,
+        [tenantId, uuidv7(), writeId, this.clock.next(), d.deviceId, d.locationId, d.userId],
+      );
     });
   }
 

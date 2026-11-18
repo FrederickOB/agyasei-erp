@@ -17,13 +17,15 @@
  * JS `number` on this path (ADR-0004).
  */
 import pg from 'pg';
-import type { AdminRunner, Queryable, TenantRunner } from './db.js';
+import type { AdminRunner, PreTenantRunner, Queryable, TenantRunner } from './db.js';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export interface PgRunners {
   runner: TenantRunner;
   admin: AdminRunner;
+  /** app_user, no tenant GUC — the two pre-tenant route lookups only. */
+  preTenant: PreTenantRunner;
   close(): Promise<void>;
 }
 
@@ -76,6 +78,13 @@ export function createPgRunners(databaseUrl: string): PgRunners {
     admin: {
       run(fn) {
         return inTransaction(async () => undefined, fn);
+      },
+    },
+    preTenant: {
+      withoutTenant(fn) {
+        return inTransaction(async (tx) => {
+          await tx.query('set local role app_user');
+        }, fn);
       },
     },
     close: () => pool.end(),
