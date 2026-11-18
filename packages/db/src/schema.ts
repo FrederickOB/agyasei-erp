@@ -1456,7 +1456,7 @@ export const opsAlert = platformSchema.table('ops_alert', {
   sourceJob: text('source_job').notNull(),
   kind: text('kind').notNull(),
   severity: text('severity').notNull(),
-  tenantId: uuid('tenant_id'),
+  subjectTenantId: uuid('subject_tenant_id'),
   summary: text('summary').notNull(),
   firstSeenAt: timestamp('first_seen_at', { withTimezone: true }).notNull(),
   lastSeenAt: timestamp('last_seen_at', { withTimezone: true }).notNull(),

@@ -73,7 +73,7 @@ export async function reconcileAlerts(
       last_sent_at: string | null;
       resolved_at: string | null;
     }>(
-      `select key, kind, severity, tenant_id::text, summary, first_seen_at::text,
+      `select key, kind, severity, subject_tenant_id::text as tenant_id, summary, first_seen_at::text,
               last_sent_at::text, resolved_at::text
          from platform.ops_alert where source_job = $1 or key = any($2::text[])
          for update`,
@@ -88,11 +88,11 @@ export async function reconcileAlerts(
       const prev = byKey.get(s.key);
       if (!prev || prev.resolved_at !== null) {
         const row = await tx.query<{ first_seen_at: string }>(
-          `insert into platform.ops_alert (key, source_job, kind, severity, tenant_id, summary)
+          `insert into platform.ops_alert (key, source_job, kind, severity, subject_tenant_id, summary)
            values ($1, $2, $3, $4, $5, $6)
            on conflict (key) do update
              set source_job = excluded.source_job, kind = excluded.kind, severity = excluded.severity,
-                 tenant_id = excluded.tenant_id, summary = excluded.summary,
+                 subject_tenant_id = excluded.subject_tenant_id, summary = excluded.summary,
                  first_seen_at = clock_timestamp(), last_seen_at = clock_timestamp(),
                  last_sent_at = null, resolved_at = null
            returning first_seen_at::text`,

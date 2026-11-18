@@ -111,6 +111,12 @@ const PLATFORM_TABLES: Record<
   string,
   | { class: 'tenant-keyed'; keyColumn: string; appUserSelect: boolean }
   | { class: 'global' }
+  // Operator telemetry (job runs, alerts, restore drills — migration 0029).
+  // app_user holds NO privilege, not even SELECT, and the table carries no
+  // tenant_id: a tenant it is ABOUT is named `subject_tenant_id`, because in
+  // this schema `tenant_id` means "owned by, and RLS-forced on", and the
+  // writer (erp_jobs) is deliberately NOBYPASSRLS.
+  | { class: 'operator-only' }
 > = {
   tenant: { class: 'tenant-keyed', keyColumn: 'id', appUserSelect: true },
   tenant_database: { class: 'tenant-keyed', keyColumn: 'tenant_id', appUserSelect: false },
@@ -119,6 +125,9 @@ const PLATFORM_TABLES: Record<
   tax_rate: { class: 'global' },
   permission: { class: 'global' },
   posting_role_catalog: { class: 'global' },
+  job_run: { class: 'operator-only' },
+  ops_alert: { class: 'operator-only' },
+  restore_drill: { class: 'operator-only' },
 };
 
 const WRITE_PRIVILEGES = ['INSERT', 'UPDATE', 'DELETE', 'TRUNCATE'] as const;
@@ -221,7 +230,12 @@ function platformViolations(facts: PlatformFacts[]): string[] {
     for (const w of t.app_user_writes) out.push(`${name}: app_user holds ${w}`);
     const cls = PLATFORM_TABLES[t.relname];
     if (!cls) {
-      out.push(`${name}: not classified in PLATFORM_TABLES (tenant-keyed or global?)`);
+      out.push(`${name}: not classified in PLATFORM_TABLES (tenant-keyed, global or operator-only?)`);
+      continue;
+    }
+    if (cls.class === 'operator-only') {
+      if (t.has_tenant_id) out.push(`${name}: operator-only but carries tenant_id (name the subject, not the owner)`);
+      if (t.app_user_select) out.push(`${name}: operator-only but app_user can SELECT it`);
       continue;
     }
     if (cls.class === 'global') {
@@ -397,7 +411,7 @@ describe('beyond app: every schema that can hold a tenant’s rows', () => {
         v.startsWith('platform.smoke_tenant_leak:'),
       );
       expect(classified).toContain(
-        'platform.smoke_tenant_leak: not classified in PLATFORM_TABLES (tenant-keyed or global?)',
+        'platform.smoke_tenant_leak: not classified in PLATFORM_TABLES (tenant-keyed, global or operator-only?)',
       );
     } finally {
       await db.asAdmin((tx) => tx.query('drop table platform.smoke_tenant_leak'));

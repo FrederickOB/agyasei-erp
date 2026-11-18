@@ -71,7 +71,13 @@ create table platform.ops_alert (
   source_job    text        not null,
   kind          text        not null,
   severity      text        not null check (severity in ('page', 'ticket')),
-  tenant_id     uuid        references platform.tenant (id),
+  -- WHICH tenant the alert is ABOUT — not the tenant that owns the row. This
+  -- is operator telemetry: app_user holds no privilege on it at all, and the
+  -- writer (erp_jobs) is deliberately NOBYPASSRLS, so the canonical tenant
+  -- policy would silently stop alerting. The column is therefore not named
+  -- tenant_id: in this schema that name means "owned by, and RLS-forced on"
+  -- (packages/db/test/conformance.test.ts rule 12), and nothing is exempt.
+  subject_tenant_id uuid    references platform.tenant (id),
   summary       text        not null,             -- ids and counts only
   first_seen_at timestamptz not null default clock_timestamp(),
   last_seen_at  timestamptz not null default clock_timestamp(),
