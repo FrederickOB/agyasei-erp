@@ -44,7 +44,6 @@ const runners = createPgRunners(cfg.DATABASE_URL, {
     caCert: cfg.caCert,
     max: cfg.DB_POOL_MAX,
     applicationName: 'erp-api',
-    statementTimeoutMs: cfg.DB_STATEMENT_TIMEOUT_MS,
   }),
   operator: cfg.OPERATOR_DATABASE_URL
     ? pgPoolConfig({
@@ -53,7 +52,6 @@ const runners = createPgRunners(cfg.DATABASE_URL, {
         caCert: cfg.caCert,
         max: 2,
         applicationName: 'erp-api-operator',
-        statementTimeoutMs: cfg.DB_STATEMENT_TIMEOUT_MS,
       })
     : 'disabled',
 });

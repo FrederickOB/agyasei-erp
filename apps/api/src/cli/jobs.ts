@@ -56,7 +56,8 @@ async function main(argv: string[]): Promise<number> {
     caCert: ssl.caCert,
     max: 4,
     applicationName: 'erp-jobs',
-    statementTimeoutMs: 10 * 60_000,
+    // Statement bound: erp_jobs' role default (roles.sql), not a startup
+    // parameter a pooler might refuse.
   });
   const sink = env.ALERT_WEBHOOK_URL
     ? webhookSink(env.ALERT_WEBHOOK_URL, { environment: env.ALERT_ENVIRONMENT })

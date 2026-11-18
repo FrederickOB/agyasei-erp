@@ -42,7 +42,10 @@ const apiEnvSchema = z.object({
   /** erp_operator — set only while an operator needs tenant lifecycle; unset disables the operator plane. */
   OPERATOR_DATABASE_URL: pgUrl.optional(),
   DB_POOL_MAX: z.coerce.number().int().min(1).max(100).default(10),
-  DB_STATEMENT_TIMEOUT_MS: z.coerce.number().int().min(1000).default(30_000),
+  // No client-side statement timeout: it travels as a connection STARTUP
+  // parameter, which transaction poolers commonly refuse. The bound is the
+  // role's own default (infra/supabase/roles.sql: erp_api 30s), applied by
+  // the server whatever sits in between.
 
   AUTH_JWT_SECRET: secret,
   POWERSYNC_JWT_SECRET: secret,

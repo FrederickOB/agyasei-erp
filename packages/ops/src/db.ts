@@ -57,6 +57,11 @@ export interface PgConnectOptions {
   readonly caCert?: string | undefined;
   readonly max?: number | undefined;
   readonly applicationName?: string | undefined;
+  /**
+   * Sent as a STARTUP parameter — use only on direct/session connections.
+   * Transaction poolers commonly refuse unknown startup parameters; behind
+   * one, bound statements with the role's default (roles.sql) instead.
+   */
   readonly statementTimeoutMs?: number | undefined;
 }
 
