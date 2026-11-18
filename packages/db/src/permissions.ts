@@ -105,6 +105,12 @@ export const PERMISSION_CODES = [
 
   'logistics.delivery.view',
   'logistics.dispatch.manage',
+
+  // Go-live — the till (migration 0020). Two codes because "anyone at the
+  // counter opens it, a supervisor counts it" is a boundary that falls in
+  // real org charts; tenant #1's template grants both to every selling role.
+  'cash.session.open',
+  'cash.session.close',
 ] as const;
 
 export type PermissionCode = (typeof PERMISSION_CODES)[number];

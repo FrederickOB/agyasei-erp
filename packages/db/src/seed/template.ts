@@ -24,6 +24,7 @@ import { deterministicUuid, sha256Hex } from '../ids.js';
 import type { Queryable } from '../testing/harness.js';
 import { parseOutlets } from './outlets.js';
 import { TEMPLATE_ROLES } from './roles.js';
+import { TEMPLATE_TENDER_METHODS } from './tenders.js';
 import { parseSkus, TEMPLATE_UOMS, type CatalogueLine } from './skus.js';
 import {
   TEMPLATE_CEMENT_SUB_CATEGORY,
@@ -371,6 +372,34 @@ export async function applyTemplate(tx: Queryable, tenantId: string): Promise<Ap
         null,
         TEMPLATE_ID,
         `pricelist:${l.code}`,
+      ]),
+    );
+  }
+
+  // --- module: tender_methods ------------------------------------------------
+  // How a customer may pay, as ORDINARY EDITABLE ROWS (04 §4.8). The platform
+  // reads only each row's posting role; the codes and names are this
+  // template's vocabulary (see src/seed/tenders.ts).
+  {
+    const writeId = await moduleWrite(tx, tenantId, 'tender_methods');
+    await batchInsert(
+      tx,
+      'app.tender_method',
+      ['tenant_id', 'id', 'write_id', 'hlc', 'code', 'name', 'posting_role', 'requires_reference',
+       'is_active', 'sort_order', 'origin_template_id', 'origin_ref'],
+      TEMPLATE_TENDER_METHODS.map((m) => [
+        tenantId,
+        rowId(tenantId, `tender:${m.ref}`),
+        writeId,
+        hlcClock.next(),
+        m.code,
+        m.name,
+        m.postingRole,
+        m.requiresReference,
+        true,
+        m.sortOrder,
+        TEMPLATE_ID,
+        `tender:${m.ref}`,
       ]),
     );
   }

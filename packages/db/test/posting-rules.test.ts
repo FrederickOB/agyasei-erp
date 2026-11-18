@@ -19,6 +19,7 @@ import { describe, expect, it } from 'vitest';
 import fc from 'fast-check';
 import {
   assertBalances,
+  cashSessionCloseEntry,
   clearingNets,
   paymentEntry,
   saleEntry,
@@ -27,6 +28,7 @@ import {
   UnbalancedRuleError,
   type ProposedLine,
 } from '../src/posting/rules.js';
+import { saleWith } from './util.js';
 
 const LOC_A = '018f0000-0000-8000-8000-00000000a001';
 const LOC_B = '018f0000-0000-8000-8000-00000000b001';
@@ -67,7 +69,7 @@ describe('a sale — rules 1, 1b, 2 and 3', () => {
           // A discount cannot exceed the revenue it discounts; the sale path
           // refuses that upstream (`line discount exceeds line amount`).
           const discount = rawDiscount > revenue ? revenue : rawDiscount;
-          const entry = saleEntry({
+          const entry = saleWith({
             saleId: 'sale-1', locationId: LOC_A, businessDate: '2026-08-15', tender,
             ...(tender === 'CREDIT' ? { customerId: CUSTOMER } : {}),
             revenueMinor: revenue, discountMinor: discount,
@@ -90,7 +92,7 @@ describe('a sale — rules 1, 1b, 2 and 3', () => {
       fc.property(fc.bigInt({ min: 1n, max: 10_000_000n }), minor(), fc.array(minor(200_000), { maxLength: 4 }), (revenue, rawDiscount, taxes) => {
         const discount = rawDiscount > revenue ? revenue : rawDiscount;
         const taxTotal = taxes.reduce((a, b) => a + b, 0n);
-        const entry = saleEntry({
+        const entry = saleWith({
           saleId: 's', locationId: LOC_A, businessDate: '2026-08-15', tender: 'CASH',
           revenueMinor: revenue, discountMinor: discount,
           taxes: taxes.map((t, i) => ({ taxCode: `T${i}`, taxMinor: t })), costMinor: 0n,
@@ -108,7 +110,7 @@ describe('a sale — rules 1, 1b, 2 and 3', () => {
     // granting approved overrides all day produce books indistinguishable
     // from lower list prices — and §5.6.4's stated purpose, preserving gross
     // sales for the margin metric, would fail silently.
-    const entry = saleEntry({
+    const entry = saleWith({
       saleId: 's', locationId: LOC_A, businessDate: '2026-08-15', tender: 'CASH',
       revenueMinor: 100_000n, discountMinor: 15_000n,
       taxes: [{ taxCode: 'VAT', taxMinor: 17_000n }], costMinor: 60_000n,
@@ -119,7 +121,7 @@ describe('a sale — rules 1, 1b, 2 and 3', () => {
   });
 
   it('TAX IS A LIABILITY, one credit per component — never revenue', () => {
-    const entry = saleEntry({
+    const entry = saleWith({
       saleId: 's', locationId: LOC_A, businessDate: '2026-08-15', tender: 'CASH',
       revenueMinor: 15_000n, discountMinor: 0n,
       taxes: [
@@ -143,8 +145,8 @@ describe('a sale — rules 1, 1b, 2 and 3', () => {
       revenueMinor: 50_000n, discountMinor: 0n,
       taxes: [{ taxCode: 'VAT', taxMinor: 10_000n }], costMinor: 30_000n,
     } as const;
-    const cash = saleEntry({ ...common, tender: 'CASH' });
-    const credit = saleEntry({ ...common, tender: 'CREDIT', customerId: CUSTOMER });
+    const cash = saleWith({ ...common, tender: 'CASH' });
+    const credit = saleWith({ ...common, tender: 'CREDIT', customerId: CUSTOMER });
 
     expect(amountOn(cash.lines, 'TILL_CASH')).toBe(60_000n);
     expect(amountOn(credit.lines, 'AR_TRADE')).toBe(60_000n);
@@ -164,7 +166,7 @@ describe('a sale — rules 1, 1b, 2 and 3', () => {
     // posting exception says something an operator can act on, rather than
     // complaining about a line count.
     expect(() =>
-      saleEntry({
+      saleWith({
         saleId: 's', locationId: LOC_A, businessDate: '2026-08-15', tender: 'CASH',
         revenueMinor: 0n, discountMinor: 0n, taxes: [], costMinor: 0n,
       }),
@@ -174,7 +176,7 @@ describe('a sale — rules 1, 1b, 2 and 3', () => {
   it('…but a zero-revenue sale that still moved STOCK does post its cost', () => {
     // The positive control, and a real shape: a promotional line priced at
     // nothing still took goods off the shelf, and the cost belongs in COGS.
-    const entry = saleEntry({
+    const entry = saleWith({
       saleId: 's', locationId: LOC_A, businessDate: '2026-08-15', tender: 'CASH',
       revenueMinor: 0n, discountMinor: 0n, taxes: [], costMinor: 4_000n,
     });
@@ -184,11 +186,181 @@ describe('a sale — rules 1, 1b, 2 and 3', () => {
   });
 
   it('a sale with no discount and no cost emits neither line, rather than zeros', () => {
-    const entry = saleEntry({
+    const entry = saleWith({
       saleId: 's', locationId: LOC_A, businessDate: '2026-08-15', tender: 'CASH',
       revenueMinor: 1_000n, discountMinor: 0n, taxes: [], costMinor: 0n,
     });
     expect(entry.lines.map((l) => l.role)).toEqual(['TILL_CASH', 'SALES_REVENUE']);
+  });
+});
+
+describe('rule 1 BY TENDER — the debit follows the method’s posting role, split or not', () => {
+  // Since migration 0021 the tender is RECORDED per row. Before it, every
+  // non-credit sale debited the till — so a mobile-money receipt sat in the
+  // drawer account and momo reconciliation (05 §5.7.1) could never find it.
+  const common = {
+    saleId: 's', locationId: LOC_A, businessDate: '2026-08-15',
+    revenueMinor: 50_000n, discountMinor: 0n,
+    taxes: [{ taxCode: 'VAT', taxMinor: 10_000n }], costMinor: 0n,
+  } as const;
+
+  it('a momo sale debits MOMO_WALLET and a bank transfer debits BANK — never the till', () => {
+    const momo = saleEntry({ ...common, tenders: [{ role: 'MOMO_WALLET', amountMinor: 60_000n }] });
+    const bank = saleEntry({ ...common, tenders: [{ role: 'BANK', amountMinor: 60_000n }] });
+    expect(amountOn(momo.lines, 'MOMO_WALLET')).toBe(60_000n);
+    expect(amountOn(momo.lines, 'TILL_CASH')).toBe(0n);
+    expect(amountOn(bank.lines, 'BANK')).toBe(60_000n);
+    expect(amountOn(bank.lines, 'TILL_CASH')).toBe(0n);
+    expect(momo.sourceKind).toBe('cash_sale');
+  });
+
+  it('a SPLIT tender is one entry with one debit per role, each for its own part', () => {
+    const entry = saleEntry({
+      ...common,
+      customerId: CUSTOMER,
+      tenders: [
+        { role: 'TILL_CASH', amountMinor: 10_000n },
+        { role: 'MOMO_WALLET', amountMinor: 20_000n },
+        { role: 'AR_TRADE', amountMinor: 25_000n },
+        { role: 'TILL_CASH', amountMinor: 5_000n }, // two cash rows aggregate
+      ],
+    });
+    expect(amountOn(entry.lines, 'TILL_CASH')).toBe(15_000n);
+    expect(amountOn(entry.lines, 'MOMO_WALLET')).toBe(20_000n);
+    expect(amountOn(entry.lines, 'AR_TRADE')).toBe(25_000n);
+    expect(entry.lines.filter((l) => l.role === 'TILL_CASH')).toHaveLength(1);
+    // Only the receivable names the customer; the till and the wallet do not.
+    expect(entry.lines.find((l) => l.role === 'AR_TRADE')!.counterpartyId).toBe(CUSTOMER);
+    expect(entry.lines.find((l) => l.role === 'TILL_CASH')!.counterpartyId).toBeUndefined();
+    // Anything on account makes it a credit sale — the classification the
+    // sweep used before tenders were recorded, kept so old exceptions resolve.
+    expect(entry.sourceKind).toBe('credit_sale');
+  });
+
+  it('a cash sale by a KNOWN customer debits the till, not the customer', () => {
+    const entry = saleEntry({ ...common, customerId: CUSTOMER, tenders: [{ role: 'TILL_CASH', amountMinor: 60_000n }] });
+    expect(amountOn(entry.lines, 'AR_TRADE')).toBe(0n);
+    expect(entry.lines.every((l) => l.counterpartyId === undefined)).toBe(true);
+  });
+
+  it('balances for EVERY split of the total across the four roles', () => {
+    fc.assert(
+      fc.property(
+        fc.bigInt({ min: 1n, max: 10_000_000n }),
+        fc.array(fc.bigInt({ min: 0n, max: 200_000n }), { maxLength: 3 }),
+        fc.array(fc.nat({ max: 1_000 }), { minLength: 4, maxLength: 4 }),
+        (revenue, taxes, weights) => {
+          const taxTotal = taxes.reduce((a, b) => a + b, 0n);
+          const total = revenue + taxTotal;
+          // Split the total by integer weights; the last part takes the
+          // remainder so the parts are exact (ADR-0004 — no float shares).
+          const w = weights.map((x) => BigInt(x));
+          const wSum = w.reduce((a, b) => a + b, 0n) || 1n;
+          const roles = ['TILL_CASH', 'MOMO_WALLET', 'BANK', 'AR_TRADE'] as const;
+          let left = total;
+          const tenders = roles.map((role, i) => {
+            const amount = i === roles.length - 1 ? left : (total * w[i]!) / wSum;
+            left -= amount;
+            return { role, amountMinor: amount };
+          });
+          const entry = saleEntry({
+            saleId: 's', locationId: LOC_A, businessDate: '2026-08-15', customerId: CUSTOMER,
+            revenueMinor: revenue, discountMinor: 0n,
+            taxes: taxes.map((t, i) => ({ taxCode: `T${i}`, taxMinor: t })), costMinor: 0n,
+            tenders,
+          });
+          const { dr, cr } = totals(entry.lines);
+          const settled = roles.reduce((a, r) => a + amountOn(entry.lines, r), 0n);
+          return dr === cr && settled === total;
+        },
+      ),
+      { numRuns: 400 },
+    );
+  });
+
+  it('REFUSES tenders that do not sum to the total — no plug, no suspense line', () => {
+    expect(() =>
+      saleEntry({ ...common, tenders: [{ role: 'TILL_CASH', amountMinor: 59_999n }] }),
+    ).toThrow(/tenders sum to 59999 but the sale's total is 60000/);
+    // …and ZERO tenders against a non-zero total is the same refusal: the
+    // case a trigger on sale_tender alone would never have seen (04 §4.8).
+    expect(() => saleEntry({ ...common, tenders: [] })).toThrow(/tenders sum to 0/);
+    // Positive control: the exact total posts.
+    expect(() =>
+      saleEntry({ ...common, tenders: [{ role: 'TILL_CASH', amountMinor: 60_000n }] }),
+    ).not.toThrow();
+  });
+
+  it('REFUSES an on-account part with no customer — a receivable nobody owes', () => {
+    expect(() =>
+      saleEntry({ ...common, tenders: [{ role: 'AR_TRADE', amountMinor: 60_000n }] }),
+    ).toThrow(/no customer/);
+    expect(() =>
+      saleEntry({ ...common, customerId: CUSTOMER, tenders: [{ role: 'AR_TRADE', amountMinor: 60_000n }] }),
+    ).not.toThrow();
+  });
+
+  it('REFUSES a role that is not a settlement role, rather than dropping the part', () => {
+    expect(() =>
+      saleEntry({
+        ...common,
+        tenders: [{ role: 'SALES_REVENUE' as unknown as 'TILL_CASH', amountMinor: 60_000n }],
+      }),
+    ).toThrow(/not a settlement role/);
+  });
+});
+
+describe('closing a till — rules 11 and 11b', () => {
+  const close = (bankedMinor: bigint, varianceMinor: bigint) =>
+    cashSessionCloseEntry({
+      sessionId: 'cs-1', locationId: LOC_A, businessDate: '2026-08-15', bankedMinor, varianceMinor,
+    });
+
+  it('rule 11: banked cash moves from the till to CASH_IN_TRANSIT, at the outlet', () => {
+    const entry = close(450_000n, 0n);
+    expect(amountOn(entry.lines, 'CASH_IN_TRANSIT', LOC_A)).toBe(450_000n);
+    expect(amountOn(entry.lines, 'TILL_CASH', LOC_A)).toBe(-450_000n);
+    expect(entry.lines).toHaveLength(2);
+    expect(entry.sourceKind).toBe('cash_session_close');
+  });
+
+  it('rule 11b: a SHORT count debits CASH_OVER_SHORT and credits the till', () => {
+    const entry = close(0n, -1_250n);
+    expect(amountOn(entry.lines, 'CASH_OVER_SHORT')).toBe(1_250n);
+    expect(amountOn(entry.lines, 'TILL_CASH')).toBe(-1_250n);
+  });
+
+  it('rule 11b: an OVER count reverses the sign', () => {
+    const entry = close(0n, 700n);
+    expect(amountOn(entry.lines, 'CASH_OVER_SHORT')).toBe(-700n);
+    expect(amountOn(entry.lines, 'TILL_CASH')).toBe(700n);
+  });
+
+  it('banking and a variance together are ONE entry — the close is one document', () => {
+    const entry = close(300_000n, -50n);
+    expect(amountOn(entry.lines, 'TILL_CASH')).toBe(-300_050n);
+    expect(amountOn(entry.lines, 'CASH_IN_TRANSIT')).toBe(300_000n);
+    expect(amountOn(entry.lines, 'CASH_OVER_SHORT')).toBe(50n);
+  });
+
+  it('balances, at the outlet, for every banked amount and every signed variance', () => {
+    fc.assert(
+      fc.property(minor(), fc.bigInt({ min: -5_000_000n, max: 5_000_000n }), (banked, variance) => {
+        fc.pre(banked !== 0n || variance !== 0n);
+        const entry = close(banked, variance);
+        const { dr, cr } = totals(entry.lines, LOC_A);
+        // The till moves by exactly −banked + variance: what left for the
+        // bank, and what the count said was really there.
+        return dr === cr && amountOn(entry.lines, 'TILL_CASH') === -banked + variance
+          && entry.lines.every((l) => l.locationId === LOC_A);
+      }),
+      { numRuns: 400 },
+    );
+  });
+
+  it('a till counted to the pesewa with nothing banked has nothing to post — refused by name', () => {
+    expect(() => close(0n, 0n)).toThrow(/nothing to post/);
+    expect(() => close(-1n, 0n)).toThrow(/negative/);
   });
 });
 

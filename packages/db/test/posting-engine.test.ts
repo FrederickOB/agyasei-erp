@@ -14,10 +14,10 @@
 import { beforeAll, afterAll, describe, expect, it } from 'vitest';
 import { uuidv7 } from '../src/ids.js';
 import { POSTING_ERROR, postDocument } from '../src/posting/engine.js';
-import { paymentEntry, saleEntry, type ProposedEntry } from '../src/posting/rules.js';
+import { paymentEntry, type ProposedEntry } from '../src/posting/rules.js';
 import type { Queryable, TestDb } from '../src/testing/harness.js';
 import { makeLocation } from './rbac-fixtures.js';
-import { setupDb, setupTwoTenants, TENANT_A, TENANT_B } from './util.js';
+import { saleWith, setupDb, setupTwoTenants, TENANT_A, TENANT_B, type OneTenderSale } from './util.js';
 
 let db: TestDb;
 let techiman: string;
@@ -68,8 +68,8 @@ async function calendar(tx: Queryable, tenantId: string, periodStatus = 'open'):
   );
 }
 
-function aSale(over: Partial<Parameters<typeof saleEntry>[0]> = {}): ProposedEntry {
-  return saleEntry({
+function aSale(over: Partial<OneTenderSale> = {}): ProposedEntry {
+  return saleWith({
     saleId: uuidv7(), locationId: techiman, businessDate: '2026-08-15', tender: 'CASH',
     revenueMinor: 15_000n, discountMinor: 0n,
     taxes: [{ taxCode: 'GH.VAT.STD', taxMinor: 3_000n }], costMinor: 9_000n,
@@ -312,7 +312,7 @@ describe('tenant isolation on the posting path — §2.7 category 3', () => {
     // is itself the assertion: A's mappings are invisible to it. If mappings
     // leaked, B would post against A's accounts.
     const bLocation = await db.withTenant(TENANT_B, (tx) => makeLocation(tx, TENANT_B, { code: 'ENG-B1' }));
-    const doc = saleEntry({
+    const doc = saleWith({
       saleId: uuidv7(), locationId: bLocation, businessDate: '2026-08-15', tender: 'CASH',
       revenueMinor: 1_000n, discountMinor: 0n, taxes: [], costMinor: 0n,
     });

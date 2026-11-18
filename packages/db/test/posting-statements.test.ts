@@ -15,13 +15,13 @@
 import { beforeAll, afterAll, describe, expect, it } from 'vitest';
 import { uuidv7 } from '../src/ids.js';
 import { postDocument } from '../src/posting/engine.js';
-import { paymentEntry, saleEntry, transferEntry } from '../src/posting/rules.js';
+import { paymentEntry, transferEntry } from '../src/posting/rules.js';
 import {
   balanceSheet, clearingNet, profitAndLoss, statementsReconcile, trialBalance,
 } from '../src/posting/statements.js';
 import type { Queryable, TestDb } from '../src/testing/harness.js';
 import { makeLocation } from './rbac-fixtures.js';
-import { setupDb, setupTwoTenants, TENANT_A, TENANT_B } from './util.js';
+import { saleWith, setupDb, setupTwoTenants, TENANT_A, TENANT_B } from './util.js';
 
 let db: TestDb;
 let techiman: string;
@@ -89,18 +89,18 @@ beforeAll(async () => {
   // ── A DAY OF TRADE, posted through the real engine. ─────────────────────
   // Techiman: a cash sale and a credit sale.
   for (const doc of [
-    saleEntry({
+    saleWith({
       saleId: uuidv7(), locationId: techiman, businessDate: '2026-08-15', tender: 'CASH',
       revenueMinor: 15_000n, discountMinor: 0n,
       taxes: [{ taxCode: 'GH.VAT.STD', taxMinor: 3_000n }], costMinor: 9_000n,
     }),
-    saleEntry({
+    saleWith({
       saleId: uuidv7(), locationId: techiman, businessDate: '2026-08-15', tender: 'CREDIT',
       customerId: CUSTOMER, revenueMinor: 500_000n, discountMinor: 0n,
       taxes: [{ taxCode: 'GH.VAT.STD', taxMinor: 100_000n }], costMinor: 300_000n,
     }),
     // Sunyani: a cash sale.
-    saleEntry({
+    saleWith({
       saleId: uuidv7(), locationId: sunyani, businessDate: '2026-08-16', tender: 'CASH',
       revenueMinor: 40_000n, discountMinor: 0n,
       taxes: [{ taxCode: 'GH.VAT.STD', taxMinor: 8_000n }], costMinor: 25_000n,
