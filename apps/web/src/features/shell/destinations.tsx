@@ -41,6 +41,9 @@ const Books = lazy(async () => ({ default: (await import('../books/Books')).Book
 const Deliveries = lazy(async () => ({
   default: (await import('../deliveries/Deliveries')).Deliveries,
 }));
+const PrinterSettings = lazy(async () => ({
+  default: (await import('../printing/PrinterSettings')).PrinterSettings,
+}));
 
 export type DestinationId =
   | 'reports'
@@ -52,15 +55,16 @@ export type DestinationId =
   | 'suppliers'
   | 'deliveries'
   | 'review'
-  | 'books';
+  | 'books'
+  | 'printer';
 
 export interface DestinationDef {
   readonly id: DestinationId;
   /** Product chrome. Never tenant vocabulary. */
   readonly label: string;
   readonly icon: IconName;
-  /** The PLATFORM capability that makes this worth offering. */
-  readonly requires: string;
+  /** The PLATFORM capability that makes this worth offering. Null = always. */
+  readonly requires: string | null;
   /** Which group of the office rail it sits in. Product chrome. */
   readonly group: 'trade' | 'stock' | 'control';
   /** True for the two outbox writers that belong at the counter, radio off. */
@@ -85,6 +89,10 @@ export const DESTINATIONS: readonly DestinationDef[] = [
   { id: 'review', label: 'Decisions', icon: 'alert', requires: CAPABILITY.conflictReview, group: 'control', counterWork: false },
   // Read-only: the books are the server's; a correction is a reversing entry.
   { id: 'books', label: 'Books', icon: 'book', requires: CAPABILITY.glView, group: 'control', counterWork: false },
+  // The printer beside THIS device. Local, offered to everyone: choosing the
+  // printer at the counter must not need a manager, it must work offline, and
+  // a laptop at HQ needs it for A4 invoices just as a tablet does for receipts.
+  { id: 'printer', label: 'Printer', icon: 'printer', requires: null, group: 'control', counterWork: false },
 ];
 
 export interface DestinationProps {
@@ -162,6 +170,12 @@ export function renderDestination(id: DestinationId, { db, permissions, apiOptio
       return (
         <Suspense fallback={<ServerPending what="The books" rows={4} />}>
           <Books {...api} />
+        </Suspense>
+      );
+    case 'printer':
+      return (
+        <Suspense fallback={<ServerPending what="Printer settings" rows={3} />}>
+          <PrinterSettings db={db} />
         </Suspense>
       );
   }

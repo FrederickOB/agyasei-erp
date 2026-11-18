@@ -99,10 +99,19 @@ export function holdsTenantWide(state: PermissionState, code: PermissionCode): b
   return state.rootLocationIds.every((root) => state.holdsAt(code, root));
 }
 
+// Every query in this file carries an EXPLICIT tenant predicate as well as
+// running under RLS (CLAUDE.md §2.1: "application queries scope by tenant
+// AND row-level security enforces it"). This file resolves the location set
+// every report and every network aggregate is computed over, so it is the
+// one place where a second, independent control is cheapest and matters
+// most: a broken policy here would pour another tenant's locations into
+// this tenant's totals. app.current_tenant() reads the GUC withTenant set
+// from the verified token — never anything from the request.
 const LOCATIONS_SQL = `
   select id, code, name, kind, parent_id
     from app.location
-   where deleted_at is null
+   where tenant_id = app.current_tenant()
+     and deleted_at is null
    order by code
 `;
 
@@ -175,7 +184,8 @@ export async function resolveLocationScope(
       const expanded = await tx.query<{ descendant_id: string }>(
         `select distinct descendant_id
            from app.location_closure
-          where ancestor_id = any($1::uuid[])`,
+          where tenant_id = app.current_tenant()
+            and ancestor_id = any($1::uuid[])`,
         [[...req.requested]],
       );
       const ids = new Set<string>(req.requested);
@@ -238,7 +248,8 @@ export async function resolveGroupRollup(
       `select c.ancestor_id, l.code, l.name, l.kind, l.parent_id, c.descendant_id
          from app.location_closure c
          join app.location l on l.tenant_id = c.tenant_id and l.id = c.ancestor_id
-        where c.descendant_id = any($1::uuid[])
+        where c.tenant_id = app.current_tenant()
+          and c.descendant_id = any($1::uuid[])
           and l.kind = 'GROUP'
           and l.deleted_at is null
         order by l.code`,
