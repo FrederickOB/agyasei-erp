@@ -20,9 +20,10 @@
  *     itself scrubbed (echoing the caller's own input back is not a leak).
  *
  * Isolation failures are thrown as `IsolationBreach` (isolation-world.ts).
- * The final describe block removes the RLS backstop and shows the probes go
- * red WITH an IsolationBreach — a control is not a control until something
- * has been shown to depend on it.
+ * The final describe block removes the RLS backstop — plus, for paths that
+ * carry a second control, the second failure they need — and shows every
+ * probe goes red WITH an IsolationBreach, not an incidental error. A control
+ * is not a control until something has been shown to depend on it.
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createApiHarness, type ApiHarness } from './util.js';
