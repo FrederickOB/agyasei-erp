@@ -148,8 +148,8 @@ describe('the inferred types give the client compile-time safety', () => {
       locationId: '018f3a1e-0000-7000-8000-000000000001',
       priceListCode: 'RETAIL',
       receiptNo: 'SUN-RCT-004312',
-      businessDate: '2026-08-20',
-      tender: 'CASH',
+      cashSessionId: '018f3a1e-0000-7000-8000-0000000000aa',
+      tenders: [{ methodId: '018f3a1e-0000-7000-8000-0000000000c1', settlement: 'IMMEDIATE', amountMinor: '2550' }],
       clientTotalMinor: '2550',
       lines: [{ productId: '018f3a1e-0000-7000-8000-000000000002', qty: '3000' }],
     };

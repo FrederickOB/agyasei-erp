@@ -68,13 +68,13 @@ async function storedTotal(saleId: string): Promise<string> {
 
 describe('clientTotalMinor: the server compares, and never obeys', () => {
   it('omits priceCheck entirely when the client did not send a total', async () => {
-    const sale = await caller.sales.createSale(saleInput('R-PC-NONE'));
+    const sale = await caller.sales.createSale(await h.legacySale(saleInput('R-PC-NONE')));
     expect(sale.totalMinor).toBe(SERVER_TOTAL);
     expect('priceCheck' in sale).toBe(false);
   });
 
   it('records agreement when the till priced the sale correctly', async () => {
-    const sale = await caller.sales.createSale(saleInput('R-PC-OK', SERVER_TOTAL));
+    const sale = await caller.sales.createSale(await h.legacySale(saleInput('R-PC-OK', SERVER_TOTAL)));
     expect(sale.priceCheck).toEqual({
       clientTotalMinor: SERVER_TOTAL,
       serverTotalMinor: SERVER_TOTAL,
@@ -85,7 +85,7 @@ describe('clientTotalMinor: the server compares, and never obeys', () => {
 
   it('records the divergence when the device traded on a stale price list', async () => {
     // The till believed GH₵300.00; the server reprices to GH₵330.01.
-    const sale = await caller.sales.createSale(saleInput('R-PC-STALE', '30000'));
+    const sale = await caller.sales.createSale(await h.legacySale(saleInput('R-PC-STALE', '30000')));
     expect(sale.priceCheck).toEqual({
       clientTotalMinor: '30000',
       serverTotalMinor: SERVER_TOTAL,
@@ -98,17 +98,17 @@ describe('clientTotalMinor: the server compares, and never obeys', () => {
   });
 
   it('never lets the client number reach app.sale, in either direction', async () => {
-    const high = await caller.sales.createSale(saleInput('R-PC-HIGH', '99999999'));
+    const high = await caller.sales.createSale(await h.legacySale(saleInput('R-PC-HIGH', '99999999')));
     expect(high.priceCheck).toMatchObject({ deltaMinor: '-99966998', matches: false });
     expect(await storedTotal(high.saleId)).toBe(SERVER_TOTAL);
 
-    const zero = await caller.sales.createSale(saleInput('R-PC-ZERO', '0'));
+    const zero = await caller.sales.createSale(await h.legacySale(saleInput('R-PC-ZERO', '0')));
     expect(zero.priceCheck).toMatchObject({ deltaMinor: SERVER_TOTAL, matches: false });
     expect(await storedTotal(zero.saleId)).toBe(SERVER_TOTAL);
   });
 
   it('carries every magnitude as a decimal string, never a JSON number', async () => {
-    const sale = await caller.sales.createSale(saleInput('R-PC-STRINGS', '30000'));
+    const sale = await caller.sales.createSale(await h.legacySale(saleInput('R-PC-STRINGS', '30000')));
     const check = sale.priceCheck!;
     for (const field of ['clientTotalMinor', 'serverTotalMinor', 'deltaMinor'] as const) {
       expect(typeof check[field]).toBe('string');
@@ -119,8 +119,8 @@ describe('clientTotalMinor: the server compares, and never obeys', () => {
 
   it('is durable: an idempotent retry replays the recorded discrepancy verbatim', async () => {
     const input = saleInput('R-PC-REPLAY', '30000');
-    const first = await caller.sales.createSale(input);
-    const replay = await caller.sales.createSale(input);
+    const first = await caller.sales.createSale(await h.legacySale(input));
+    const replay = await caller.sales.createSale(await h.legacySale(input));
     expect(replay).toEqual(first);
     expect(replay.priceCheck).toMatchObject({ matches: false, deltaMinor: '3001' });
   });
@@ -128,7 +128,7 @@ describe('clientTotalMinor: the server compares, and never obeys', () => {
   it('refuses a client total that is not a decimal string of minor units', async () => {
     for (const bad of [30000, '300.00', '-1', null]) {
       await expect(
-        caller.sales.createSale({ ...saleInput('R-PC-BAD'), clientTotalMinor: bad } as never),
+        caller.sales.createSale(await h.legacySale({ ...saleInput('R-PC-BAD'), clientTotalMinor: bad } as never)),
       ).rejects.toThrow();
     }
   });

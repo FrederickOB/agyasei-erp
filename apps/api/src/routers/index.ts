@@ -1,4 +1,5 @@
 import { router } from '../trpc.js';
+import { cashSessionRouter } from './cash-session.js';
 import { catalogueRouter } from './catalogue.js';
 import { creditRouter } from './credit.js';
 import { inventoryRouter } from './inventory.js';
@@ -19,6 +20,8 @@ export const appRouter = router({
   catalogue: catalogueRouter,
   inventory: inventoryRouter,
   sales: salesRouter,
+  // The till: open, close, and the online pre-open check (04 §4.8a).
+  cashSession: cashSessionRouter,
   credit: creditRouter,
   sequence: sequenceRouter,
   reports: reportsRouter,

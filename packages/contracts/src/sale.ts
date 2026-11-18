@@ -14,8 +14,10 @@
  * THE SERVER IS THE PRICING AUTHORITY. This is the load-bearing rule.
  * ─────────────────────────────────────────────────────────────────────────
  * The client sends WHAT WAS SOLD — product, quantity, unit, discount,
- * location, receipt number, business date, tender kind. It does NOT send
- * unit prices, line totals or a sale total as facts. The server reprices
+ * location, receipt number, the till it was rung in, and how it was paid. It
+ * does NOT send unit prices, line totals or a sale total as facts. The
+ * business date is the TILL's (`cashSessionId` → `app.cash_session`), never
+ * a field of its own (03 §3.4.2). The server reprices
  * from the price list in force on the BUSINESS DATE and computes tax from
  * the effective-dated `platform.tax_rate` rows in force on that same date
  * (CLAUDE.md §2.5 — a historical transaction always reprices against the
@@ -47,7 +49,6 @@ import { z } from 'zod';
 import {
   mutationEnvelope,
   wire,
-  zBusinessDate,
   zScaledIntNonNeg,
   zScaledIntPos,
   zUuid,
@@ -73,16 +74,85 @@ export const saleLineInput = z
   })
   .strict();
 
-export const createSaleInput = z
+/**
+ * HOW THE MONEY WAS SETTLED — platform vocabulary, per tender line.
+ *
+ * A tender line names a TENANT's method (`methodId` → `app.tender_method`,
+ * whose code and name are the tenant's words and are never read) and DECLARES
+ * which of the two platform kinds of settlement it is:
+ *
+ *   IMMEDIATE  — the money was received now: cash, mobile money, a transfer,
+ *                a cheque. Needs `sale.record`.
+ *   ON_ACCOUNT — the money is the customer's debt. Needs `sale.record.credit`,
+ *                bounded by its `max_order_value_minor` against the SERVER's
+ *                figure for that line.
+ *
+ * Why the device declares it rather than the server simply looking it up: the
+ * capability check runs BEFORE the plan reads anything (it is what refuses a
+ * principal who may not sell at all), so the authority a request needs has to
+ * be derivable from the validated payload — exactly as the old
+ * `tender: 'CASH' | 'CREDIT'` was. The plan then resolves each method and
+ * REFUSES a line whose method's posting role disagrees with what it declared,
+ * so a device cannot dress an on-account line up as cash to dodge the bound.
+ * Two independent answers, and they must agree.
+ */
+export const TENDER_SETTLEMENTS = ['IMMEDIATE', 'ON_ACCOUNT'] as const;
+export type TenderSettlement = (typeof TENDER_SETTLEMENTS)[number];
+
+/** A split tender rarely has more than three parts; eight is generous. */
+export const MAX_TENDER_LINES = 8;
+
+export const saleTenderInput = z
+  .object({
+    /** The tenant's tender method (synced to the device in the reference bucket). */
+    methodId: zUuid,
+    settlement: z.enum(TENDER_SETTLEMENTS),
+    /**
+     * The amount this line settles, minor units, as a decimal string — the
+     * part of the DEVICE's total paid this way. For cash it is the amount
+     * applied, never the note handed over: change is the device's to give and
+     * the drawer only keeps the applied amount.
+     *
+     * A claim, like `clientTotalMinor`: if the server's repriced total
+     * differs, the server reconciles the split onto its own figure by a stated
+     * rule, keeps this value as `claimed_minor`, and opens a review
+     * (apps/api/src/tender.ts). The sale is never refused for it.
+     *
+     * OMITTED on at most one line: the BALANCE line, which settles whatever
+     * the stated lines do not — "50.00 by mobile money, the rest in cash". It
+     * claims nothing, so the server giving it its own remainder overwrites
+     * nothing and opens no review.
+     */
+    amountMinor: zScaledIntNonNeg.optional(),
+    /** A momo transaction id, a bank reference, a cheque number. */
+    reference: z.string().trim().min(1).max(64).optional(),
+  })
+  .strict();
+
+export type SaleTenderInput = z.input<typeof saleTenderInput>;
+export type SaleTenderParsed = z.output<typeof saleTenderInput>;
+
+const createSaleObject = z
   .object({
     ...mutationEnvelope,
     locationId: zUuid,
+    /**
+     * The till this sale was rung in — the open's idempotency key
+     * (`./cash-session.ts`). The business date the server prices and taxes
+     * against is THE SESSION'S. There is no path to a sale without a session
+     * (03 §3.4.2), and no `businessDate` field for a device to assert one.
+     */
+    cashSessionId: zUuid,
     priceListCode: z.string().min(1),
     /** Device-allocated per-outlet receipt number (03 §3.7.5). */
     receiptNo: z.string().min(1).max(64),
-    businessDate: zBusinessDate,
     occurredAt: z.string().datetime({ offset: true }).optional(),
-    tender: z.enum(['CASH', 'CREDIT']),
+    /**
+     * How the customer paid — one line per method, so part cash and part
+     * mobile money is two lines. Σ amountMinor is the device's total.
+     */
+    tenders: z.array(saleTenderInput).min(1).max(MAX_TENDER_LINES),
+    /** Required when any tender is ON_ACCOUNT; optional for a known cash customer. */
     customerId: zUuid.optional(),
     lines: z.array(saleLineInput).min(1).max(200),
 
@@ -90,7 +160,8 @@ export const createSaleInput = z
      * ── DESIGN DECISION (b): ACCEPTED — the stale-price-list detector ──────
      *
      * The till's own belief about what this sale came to, in minor units, as
-     * a decimal string. OPTIONAL, and NEVER authoritative.
+     * a decimal string. OPTIONAL, and NEVER authoritative. When present it
+     * must equal Σ tenders — the device is asserting one total, not two.
      *
      * Why it is here: a device that has traded offline for days against a
      * superseded price list produces correct-looking receipts at the wrong
@@ -112,44 +183,62 @@ export const createSaleInput = z
     clientTotalMinor: zScaledIntNonNeg.optional(),
 
     /**
-     * ── DESIGN DECISION (a): REJECTED, for now, with a named unblock ───────
+     * ── DESIGN DECISION (a): RESOLVED by the tender lines above ────────────
      *
-     * The PWA computes `tendered_minor` and `change_minor` for a cash sale
-     * and its payload carried both. They are NOT in this contract, and the
-     * reason is not that they are pricing authority (they are not — the
-     * argument for accepting them is a good one and it will win later).
+     * This contract used to refuse tendered/change detail because "THE SERVER
+     * HAS NOWHERE TO PUT THEM" — there was no `app.sale_tender` and no
+     * `app.cash_session`. Both exist now (migrations 0020, 0021), and the
+     * record cash-up needs — the cash APPLIED to each sale in each session —
+     * is `tenders[].amountMinor` on an IMMEDIATE cash line, persisted in
+     * `app.sale_tender` in the same transaction as the sale.
      *
-     * The reason is that THE SERVER HAS NOWHERE TO PUT THEM. `app.sale` is
-     * append-only and has no tender columns; there is no `app.sale_tender`
-     * table; there is no `app.cash_session` — migration 0004 defers it
-     * explicitly ("§4.8a: cash_session_id lands with the POS migration").
-     * `app.write_log` stores a request HASH, not the request body. A field
-     * accepted here today would be parsed, validated, and dropped.
-     *
-     * A contract field the server silently discards is worse than one it
-     * refuses. The till would show the sale as recorded and cash-up would
-     * find nothing — the failure mode 03 §3.7.5 argues against in so many
-     * words when it refuses to claim a gaplessness it cannot deliver. The
-     * current loud rejection is at least honest.
-     *
-     * The asymmetry with (b) is deliberate and principled:
-     *   (b) is a SIGNAL. Its whole value is delivered by reporting it back to
-     *       the device and recording it in `write_log.response_body`; the
-     *       authoritative number lives in `app.sale` either way.
-     *   (a) is a RECORD. Its value is a query — "cash tendered at this till
-     *       today" — that a per-write jsonb response body cannot serve.
-     *       A record's home is a table, and that table does not exist.
-     *
-     * UNBLOCK: when the POS work-package lands `app.cash_session` and
-     * `app.sale_tender`, add `cashTenderedMinor` here (tendered ONLY —
-     * change is `tendered − serverTotal` and belongs in the response,
-     * computed from the server's total, never sent by the client) and persist
-     * it in the same transaction as the sale. Until then the device keeps
-     * tendered/change in its own local record, which is where cash-up reads
-     * them from today anyway.
+     * The note the customer handed over, and the change, are still NOT on the
+     * wire, and now for a better reason than before: they are receipt-printing
+     * facts with no ledger or drawer consequence (the drawer keeps the applied
+     * amount; the change left with the customer). The device keeps them on
+     * its own record for the receipt. A field the server would only parse and
+     * drop stays refused (`.strict()`).
      */
   })
   .strict();
+
+export const createSaleInput = createSaleObject.superRefine((v, ctx) => {
+  const onAccount = v.tenders.filter((t) => t.settlement === 'ON_ACCOUNT');
+  if (onAccount.length > 1) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['tenders'],
+      message: 'at most one on-account tender: a sale charges one account once',
+    });
+  }
+  if (onAccount.length > 0 && v.customerId === undefined) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['customerId'],
+      message: 'an on-account tender needs the customer it is charged to',
+    });
+  }
+  const balanceLines = v.tenders.filter((t) => t.amountMinor === undefined).length;
+  if (balanceLines > 1) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['tenders'],
+      message: 'at most one tender line may leave its amount to the balance',
+    });
+  }
+  if (v.clientTotalMinor !== undefined) {
+    let stated = 0n;
+    for (const t of v.tenders) stated += t.amountMinor ?? 0n;
+    const ok = balanceLines === 0 ? stated === v.clientTotalMinor : stated <= v.clientTotalMinor;
+    if (!ok) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['tenders'],
+        message: `the stated tenders sum to ${stated.toString(10)} against the device's total of ${v.clientTotalMinor.toString(10)}`,
+      });
+    }
+  }
+});
 
 export type SaleLineInput = z.input<typeof saleLineInput>;
 export type SaleLineParsed = z.output<typeof saleLineInput>;

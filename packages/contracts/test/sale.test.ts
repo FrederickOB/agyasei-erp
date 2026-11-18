@@ -15,6 +15,10 @@ const LOCATION = '018f3a1e-0000-7000-8000-000000000001';
 const PRODUCT = '018f3a1e-0000-7000-8000-000000000002';
 const CUSTOMER = '018f3a1e-0000-7000-8000-000000000003';
 const KEY = '018f3a1e-0000-7000-8000-0000000000ff';
+const SESSION = '018f3a1e-0000-7000-8000-0000000000aa';
+const CASH = '018f3a1e-0000-7000-8000-0000000000c1';
+const MOMO = '018f3a1e-0000-7000-8000-0000000000c2';
+const ON_ACCOUNT = '018f3a1e-0000-7000-8000-0000000000c3';
 const HLC = '1755600000000-00001-0123456789abcdef0123456789abcdef';
 
 /** A known-good cash sale: two lines, money and quantity as decimal strings. */
@@ -26,9 +30,9 @@ function goodPayload(): Record<string, unknown> {
     locationId: LOCATION,
     priceListCode: 'RETAIL',
     receiptNo: 'SUN-RCT-004312',
-    businessDate: '2026-08-20',
+    cashSessionId: SESSION,
     occurredAt: '2026-08-20T09:14:03.000Z',
-    tender: 'CASH',
+    tenders: [{ methodId: CASH, settlement: 'IMMEDIATE', amountMinor: '2550' }],
     lines: [
       { productId: PRODUCT, qty: '3000', uomCode: 'BAG' },
       { productId: PRODUCT, qty: '1', lineDiscountMinor: '250' },
@@ -68,7 +72,7 @@ describe('createSaleInput — the known-good payload', () => {
   it('accepts a credit sale carrying a customerId', () => {
     const parsed = createSaleInput.safeParse({
       ...goodPayload(),
-      tender: 'CREDIT',
+      tenders: [{ methodId: ON_ACCOUNT, settlement: 'ON_ACCOUNT', amountMinor: '2550' }],
       customerId: CUSTOMER,
     });
     expect(parsed.success).toBe(true);
@@ -126,16 +130,19 @@ describe('createSaleInput — the payload from the bug report', () => {
     }
   });
 
-  it('rejects tender as an object — it is an enum of CASH | CREDIT', () => {
+  it('rejects the old single tender, in either shape — tenders are lines now', () => {
+    expect(failurePaths({ ...goodPayload(), tender: 'CASH' })).toEqual(['']);
     const paths = failurePaths({
       ...goodPayload(),
       tender: { kind: 'cash', tendered_minor: '5000', change_minor: '2450' },
     });
-    expect(paths).toContain('tender');
+    expect(paths).toEqual(['']); // the unrecognised key, at the root
   });
 
-  it('rejects a lowercase tender — the vocabulary is not case-insensitive', () => {
-    expect(failurePaths({ ...goodPayload(), tender: 'cash' })).toContain('tender');
+  it('rejects a lowercase settlement — the vocabulary is not case-insensitive', () => {
+    expect(
+      failurePaths({ ...goodPayload(), tenders: [{ methodId: CASH, settlement: 'immediate', amountMinor: '2550' }] }),
+    ).toContain('tenders.0.settlement');
   });
 
   it('rejects a payload missing locationId', () => {
@@ -150,10 +157,20 @@ describe('createSaleInput — the payload from the bug report', () => {
     expect(failurePaths(without)).toContain('receiptNo');
   });
 
-  it('rejects a payload missing businessDate — pricing and tax are dated by it', () => {
-    const { businessDate, ...without } = goodPayload();
-    expect(businessDate).toBeDefined();
-    expect(failurePaths(without)).toContain('businessDate');
+  it('rejects a payload missing cashSessionId — there is no path to a sale without a till (03 §3.4.2)', () => {
+    const { cashSessionId, ...without } = goodPayload();
+    expect(cashSessionId).toBeDefined();
+    expect(failurePaths(without)).toContain('cashSessionId');
+  });
+
+  it('REFUSES a device-asserted businessDate — the date is the till’s, not the tablet’s', () => {
+    // Positive control first: the good payload carries none and parses.
+    expect(createSaleInput.safeParse(goodPayload()).success).toBe(true);
+    expect(createSaleInput.safeParse({ ...goodPayload(), businessDate: '2026-08-20' }).success).toBe(false);
+  });
+
+  it('rejects a payload with no tender lines — a sale is always settled somehow', () => {
+    expect(failurePaths({ ...goodPayload(), tenders: [] })).toContain('tenders');
   });
 
   it('rejects a payload missing the idempotency key (CLAUDE.md §2.2)', () => {
@@ -192,11 +209,17 @@ describe('createSaleInput — the server is the pricing authority', () => {
     expect(createSaleInput.safeParse({ ...goodPayload(), taxLines: [] }).success).toBe(false);
   });
 
-  it('rejects cash tender detail — decision (a): the server has nowhere to record it', () => {
+  it('still refuses the note handed over and the change — receipt facts, not ledger ones', () => {
     expect(
       createSaleInput.safeParse({ ...goodPayload(), cashTenderedMinor: '5000' }).success,
     ).toBe(false);
     expect(createSaleInput.safeParse({ ...goodPayload(), changeMinor: '2450' }).success).toBe(false);
+    expect(
+      createSaleInput.safeParse({
+        ...goodPayload(),
+        tenders: [{ methodId: CASH, settlement: 'IMMEDIATE', amountMinor: '2550', tenderedMinor: '5000' }],
+      }).success,
+    ).toBe(false);
   });
 });
 
@@ -252,9 +275,21 @@ describe('createSaleInput — money and quantity discipline (ADR-0004)', () => {
     expect(parsed.lines[0]!.qty.toString(10)).toBe(huge);
   });
 
-  it('rejects a malformed business date and a non-calendar one', () => {
-    expect(failurePaths({ ...goodPayload(), businessDate: '20-08-2026' })).toContain('businessDate');
-    expect(failurePaths({ ...goodPayload(), businessDate: '2026-13-40' })).toContain('businessDate');
+  it('rejects a tender amount sent as a JSON number, a fraction or a negative', () => {
+    for (const amountMinor of [2550, '25.50', '-1']) {
+      expect(
+        failurePaths({ ...goodPayload(), tenders: [{ methodId: CASH, settlement: 'IMMEDIATE', amountMinor }] }),
+      ).toContain('tenders.0.amountMinor');
+    }
+  });
+
+  it('a tender amount lands as a bigint, exact past float64 range', () => {
+    const huge = '9007199254740993';
+    const parsed = createSaleInput.parse({
+      ...goodPayload(),
+      tenders: [{ methodId: CASH, settlement: 'IMMEDIATE', amountMinor: huge }],
+    });
+    expect(parsed.tenders[0]!.amountMinor).toBe(BigInt(huge));
   });
 
   it('rejects a malformed claimed HLC', () => {
@@ -323,6 +358,55 @@ describe('clientTotalMinor — decision (b), the stale-price-list detector', () 
     const check = comparePriceCheck(client, server);
     expect(check.deltaMinor).toBe('1');
     expect(check.matches).toBe(false);
+  });
+});
+
+describe('tender lines — split tender, references, and the settlement the capability follows', () => {
+  it('accepts part cash, part mobile money with its transaction id', () => {
+    const parsed = createSaleInput.parse({
+      ...goodPayload(),
+      tenders: [
+        { methodId: CASH, settlement: 'IMMEDIATE', amountMinor: '1000' },
+        { methodId: MOMO, settlement: 'IMMEDIATE', amountMinor: '1550', reference: '  MP240820.1234.A12345  ' },
+      ],
+      clientTotalMinor: '2550',
+    });
+    expect(parsed.tenders.map((t) => t.amountMinor)).toEqual([1000n, 1550n]);
+    expect(parsed.tenders[1]!.reference).toBe('MP240820.1234.A12345'); // trimmed, never padded
+  });
+
+  it('an ON_ACCOUNT line needs the customer it is charged to', () => {
+    const onAccount = [{ methodId: ON_ACCOUNT, settlement: 'ON_ACCOUNT', amountMinor: '2550' }];
+    expect(failurePaths({ ...goodPayload(), tenders: onAccount })).toEqual(['customerId']);
+    expect(createSaleInput.safeParse({ ...goodPayload(), tenders: onAccount, customerId: CUSTOMER }).success).toBe(true);
+  });
+
+  it('at most ONE on-account line: a sale charges one account once', () => {
+    const half = { methodId: ON_ACCOUNT, settlement: 'ON_ACCOUNT', amountMinor: '1275' };
+    expect(failurePaths({ ...goodPayload(), customerId: CUSTOMER, tenders: [half, half] })).toEqual(['tenders']);
+  });
+
+  it('when the device states its total, the tenders must sum to it — one claim, not two', () => {
+    expect(failurePaths({ ...goodPayload(), clientTotalMinor: '2551' })).toEqual(['tenders']);
+    expect(createSaleInput.safeParse({ ...goodPayload(), clientTotalMinor: '2550' }).success).toBe(true);
+  });
+
+  it('a reference is bounded: never empty, never longer than 64', () => {
+    const t = (reference: string) => ({
+      ...goodPayload(),
+      tenders: [{ methodId: MOMO, settlement: 'IMMEDIATE', amountMinor: '2550', reference }],
+    });
+    expect(failurePaths(t('   '))).toContain('tenders.0.reference');
+    expect(failurePaths(t('x'.repeat(65)))).toContain('tenders.0.reference');
+    expect(createSaleInput.safeParse(t('x'.repeat(64))).success).toBe(true);
+  });
+
+  it('caps the number of tender lines, and refuses a method that is not an id', () => {
+    const one = { methodId: CASH, settlement: 'IMMEDIATE', amountMinor: '1' };
+    expect(failurePaths({ ...goodPayload(), tenders: Array.from({ length: 9 }, () => one) })).toContain('tenders');
+    expect(
+      failurePaths({ ...goodPayload(), tenders: [{ ...one, methodId: 'CASH' }] }),
+    ).toContain('tenders.0.methodId');
   });
 });
 

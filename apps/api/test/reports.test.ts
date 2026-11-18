@@ -90,7 +90,7 @@ async function sell(
   receiptNo: string,
   opts: { customerId?: string; product?: string } = {},
 ): Promise<void> {
-  await caller.sales.createSale({
+  await caller.sales.createSale(await h.legacySale({
     idempotencyKey: uuidv7(),
     locationId,
     priceListCode: 'WHOLESALE',
@@ -99,7 +99,7 @@ async function sell(
     tender: opts.customerId === undefined ? 'CASH' : 'CREDIT',
     ...(opts.customerId === undefined ? {} : { customerId: opts.customerId }),
     lines: [{ productId: opts.product ?? productId, qty: '5' }],
-  });
+  }));
 }
 
 /** Move stock between two of the tenant's own locations. Never a sale. */
@@ -214,7 +214,7 @@ beforeAll(async () => {
     businessDate: FROM,
     unitCostE4: '90000000',
   });
-  await ownerB.sales.createSale({
+  await ownerB.sales.createSale(await h.legacySale({
     idempotencyKey: uuidv7(),
     locationId: bOutlet,
     priceListCode: 'WHOLESALE',
@@ -222,7 +222,7 @@ beforeAll(async () => {
     businessDate: '2026-08-05',
     tender: 'CASH',
     lines: [{ productId: bProduct, qty: '5' }],
-  });
+  }));
 }, 300_000);
 
 afterAll(async () => {
@@ -433,8 +433,10 @@ describe('cash position by location, by tender', () => {
     const cash = await accounts.reports.cashPosition({ from: FROM, to: TO });
     expect(cash.unattributed.creditReceiptsMinor).toBe('10000');
     expect(cash.unattributed.reason).toMatch(/no location_id/);
-    // The caveats are part of the answer: this is what the till BILLED.
-    expect(cash.caveats.some((c) => /not what is in the drawer/.test(c))).toBe(true);
+    // The caveats are part of the answer: settlement is RECORDED per tender
+    // now, and the drawer figures are the cash applied, not the note handed over.
+    expect(cash.caveats.some((c) => /recorded per tender/.test(c))).toBe(true);
+    expect(cash.caveats.some((c) => /cash applied/.test(c))).toBe(true);
   });
 });
 
