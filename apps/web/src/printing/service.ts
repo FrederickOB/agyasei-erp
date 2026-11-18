@@ -59,7 +59,9 @@ export const AUTO_RETRY_WINDOW_MS = 6 * 60 * 60 * 1000;
 export type AfterSaleResult =
   | { readonly status: 'queued' }
   /** No committed sale with this id on this device. Nothing was queued or printed. */
-  | { readonly status: 'no-such-sale' };
+  | { readonly status: 'no-such-sale' }
+  /** The receipt could not be queued. The sale is unaffected; the on-screen receipt still works. */
+  | { readonly status: 'error' };
 
 export interface PrintServiceOptions {
   readonly now?: () => number;
@@ -185,12 +187,17 @@ export class PrintService {
     cart: PricedCartForReceipt,
     currency: CurrencySpec,
   ): Promise<AfterSaleResult> {
-    const facts = await readCommittedSale(this.db, saleId);
-    if (facts === null) return { status: 'no-such-sale' };
-    const doc = await documentForCommittedSale(this.db, facts, cart, currency);
-    await enqueueReceipt(this.db, doc, new Date(this.now()).toISOString());
-    if (this.settingsNow.autoPrint) void this.print(saleId);
-    return { status: 'queued' };
+    try {
+      const facts = await readCommittedSale(this.db, saleId);
+      if (facts === null) return { status: 'no-such-sale' };
+      const doc = await documentForCommittedSale(this.db, facts, cart, currency);
+      await enqueueReceipt(this.db, doc, new Date(this.now()).toISOString());
+      if (this.settingsNow.autoPrint) void this.print(saleId);
+      return { status: 'queued' };
+    } catch {
+      // A receipt problem must never become a sale problem.
+      return { status: 'error' };
+    }
   }
 
   // ---- printing ------------------------------------------------------------
