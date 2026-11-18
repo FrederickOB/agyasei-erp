@@ -54,15 +54,18 @@ server {
         include /etc/nginx/conf.d/security-headers.inc;
     }
 
+    # `immutable` WITHOUT `always`: nginx then adds it to successful responses
+    # only. With `always`, a chunk requested mid-deploy and not found would be
+    # cached as a 404 for a year.
     location ~ ^/workbox-[A-Za-z0-9_-]+\.js$ {
-        add_header Cache-Control "public, max-age=31536000, immutable" always;
+        add_header Cache-Control "public, max-age=31536000, immutable";
         include /etc/nginx/conf.d/security-headers.inc;
     }
 
     # Hashed build output. A missing asset is a 404, NEVER index.html: an HTML
     # page served as a stale chunk is a MIME error that breaks the till.
     location /assets/ {
-        add_header Cache-Control "public, max-age=31536000, immutable" always;
+        add_header Cache-Control "public, max-age=31536000, immutable";
         include /etc/nginx/conf.d/security-headers.inc;
         try_files $uri =404;
     }
