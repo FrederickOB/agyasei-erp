@@ -2524,3 +2524,282 @@ button {
   border-radius: var(--r-2); padding: var(--s-3);
 }
 .books-exceptions ul { margin: var(--s-1) 0 0; padding-left: 1.2em; font-size: 0.875rem; }
+
+/* ─── PRINTING (§8.8) ────────────────────────────────────────────────────────
+   Print status, the on-screen receipt, and the per-device printer settings.
+   Same rules as the rest of the counter: 48-56px targets, an icon AND words for
+   every state (never colour alone), nothing that animates layout. */
+.print-status {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+}
+.print-status-line {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s-2);
+  margin: 0;
+  padding: var(--s-3) var(--s-4);
+  border: 1px solid;
+  border-radius: var(--r-2);
+  font-size: var(--t-sm);
+}
+.print-status-detail {
+  display: block;
+  font-weight: 400;
+}
+.print-tone-ok {
+  color: var(--ok-ink);
+  border-color: var(--ok);
+  background: var(--ok-tint);
+}
+.print-tone-wait,
+.print-tone-plain {
+  color: var(--wait-ink);
+  border-color: var(--wait);
+  background: var(--wait-tint);
+}
+.print-tone-attention {
+  color: var(--attn-ink);
+  border-color: var(--attn);
+  background: var(--attn-tint);
+}
+.print-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-3);
+}
+.print-actions > button {
+  flex: 1 1 10rem;
+}
+
+/* The on-screen receipt: the mandatory fallback, full screen, number first. */
+.receipt-sheet {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-gate);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--s-3);
+  padding: var(--s-4);
+  overflow-y: auto;
+  background: var(--surface);
+  color: var(--text);
+}
+.receipt-sheet-bar {
+  align-self: stretch;
+  display: flex;
+  justify-content: flex-end;
+}
+.receipt-sheet-label {
+  margin: 0;
+  font-size: var(--t-lg);
+  color: var(--text-muted);
+}
+.receipt-sheet-number {
+  margin: 0;
+  font-size: clamp(3rem, 18vw, 7rem);
+  font-weight: 800;
+  line-height: 1;
+  letter-spacing: 0.02em;
+  word-break: break-all;
+  text-align: center;
+}
+.receipt-sheet-missing {
+  max-width: 32rem;
+  text-align: center;
+}
+.receipt-sheet-paper {
+  width: 100%;
+  max-width: 40ch;
+  padding: var(--s-3);
+  border: 1px dashed var(--control-border);
+  border-radius: var(--r-1);
+  background: #fff;
+  color: #000;
+  font: 15px/1.3 ui-monospace, 'Courier New', monospace;
+  overflow-x: auto;
+}
+.rs-line {
+  white-space: pre;
+}
+.rs-center {
+  text-align: center;
+}
+.rs-right {
+  text-align: right;
+}
+.rs-bold {
+  font-weight: 700;
+}
+.rs-tall {
+  font-size: 18px;
+}
+.rs-rule {
+  height: 0;
+  margin: var(--s-1) 0;
+  border-top: 1px dashed #000;
+}
+
+/* Printer settings. One column at phone width; two on a laptop. */
+.printer-screen {
+  display: grid;
+  gap: var(--s-4);
+  max-width: 72rem;
+  margin: 0 auto;
+}
+.printer-h2 {
+  margin: 0;
+  font-size: var(--t-2xl);
+}
+.printer-h3 {
+  margin: 0 0 var(--s-2);
+  padding: 0;
+  font-size: var(--t-lg);
+}
+.printer-note {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--t-sm);
+}
+.printer-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+  min-width: 0;
+  margin: 0;
+  padding: var(--s-4);
+  border: 1px solid var(--border);
+  border-radius: var(--r-3);
+  background: var(--surface);
+  box-shadow: var(--shadow-1);
+}
+@media (min-width: 900px) {
+  .printer-screen {
+    grid-template-columns: 1fr 1fr;
+    align-items: start;
+  }
+  .printer-h2,
+  .printer-screen > .printer-note,
+  .printer-screen > fieldset.printer-card {
+    grid-column: 1 / -1;
+  }
+}
+.printer-routes {
+  display: grid;
+  gap: var(--s-2);
+}
+.printer-route {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s-3);
+  min-height: var(--tap);
+  padding: var(--s-3) var(--s-4);
+  border: 1px solid var(--control-border);
+  border-radius: var(--r-2);
+  background: var(--surface);
+}
+.printer-route input {
+  width: 24px;
+  height: 24px;
+  margin-top: 2px;
+  flex: none;
+}
+.printer-route-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: var(--t-sm);
+}
+.printer-route-on {
+  border-color: var(--brand);
+  border-width: 2px;
+  background: var(--brand-tint);
+}
+.printer-route-off {
+  color: var(--text-muted);
+  background: var(--surface-2);
+}
+.printer-health {
+  display: flex;
+  gap: var(--s-2);
+  margin: 0;
+  font-size: var(--t-sm);
+}
+.printer-toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  min-height: var(--tap-min);
+}
+.printer-toggle input {
+  width: 24px;
+  height: 24px;
+  flex: none;
+}
+.printer-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-3);
+}
+.printer-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-1);
+  flex: 1 1 10rem;
+  font-size: var(--t-sm);
+  font-weight: 600;
+}
+.printer-field input,
+.printer-field select,
+.printer-field textarea {
+  min-height: var(--tap-min);
+  padding: 0 var(--s-3);
+  border: 1px solid var(--control-border);
+  border-radius: var(--r-1);
+  background: var(--surface);
+  font: inherit;
+  font-weight: 400;
+}
+.printer-field textarea {
+  padding: var(--s-2) var(--s-3);
+  font-family: ui-monospace, monospace;
+  font-size: var(--t-xs);
+}
+.printer-field small {
+  font-weight: 400;
+  color: var(--text-muted);
+}
+.printer-advanced summary {
+  min-height: var(--tap-min);
+  display: flex;
+  align-items: center;
+  font-weight: 650;
+}
+.printer-pending {
+  margin: 0;
+  padding-left: var(--s-5);
+  font-size: var(--t-sm);
+}
+.spike-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(8.5rem, 1fr));
+  gap: var(--s-2);
+  margin: 0;
+}
+.spike-stats > div {
+  padding: var(--s-2) var(--s-3);
+  border: 1px solid var(--border);
+  border-radius: var(--r-1);
+  background: var(--surface-2);
+}
+.spike-stats dt {
+  font-size: var(--t-xs);
+  color: var(--text-muted);
+}
+.spike-stats dd {
+  margin: 0;
+  font-size: var(--t-lg);
+  font-weight: 700;
+}

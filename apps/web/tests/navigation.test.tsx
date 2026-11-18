@@ -95,12 +95,29 @@ function renderShell(db: LocalDb, permissions: PermissionsState) {
 beforeEach(() => setLayout(false));
 afterEach(cleanup);
 
+/**
+ * The destinations a capability list decides. The printer settings destination
+ * is offered to every session (it is this device's own, local, and needed to set
+ * up a counter), so it is asserted once on its own below and left out of the
+ * capability-by-capability lists, which are about what a capability ADDS.
+ */
+function offered(nav: HTMLElement): (string | null)[] {
+  return [...nav.querySelectorAll('button')].map((b) => b.textContent).filter((t) => t !== 'Printer');
+}
+
 describe('which destinations are offered', () => {
+  it('always offers the printer settings, whatever the capabilities', async () => {
+    const db = await till();
+    renderShell(db, holding([]));
+    const nav = await screen.findByRole('navigation', { name: 'Main' });
+    expect([...nav.querySelectorAll('button')].map((b) => b.textContent)).toContain('Printer');
+  });
+
   it('always offers the counter and this device’s own sales', async () => {
     const db = await till();
     renderShell(db, holding([]));
     const nav = await screen.findByRole('navigation', { name: 'Main' });
-    const labels = [...nav.querySelectorAll('button')].map((b) => b.textContent);
+    const labels = offered(nav);
     expect(labels).toEqual(['Counter', 'Sales']);
   });
 
@@ -108,7 +125,7 @@ describe('which destinations are offered', () => {
     const db = await till();
     renderShell(db, holding([CAPABILITY.reportLocation]));
     const nav = await screen.findByRole('navigation', { name: 'Main' });
-    expect([...nav.querySelectorAll('button')].map((b) => b.textContent)).toEqual([
+    expect(offered(nav)).toEqual([
       'Counter',
       'Sales',
       'Reports',
@@ -122,7 +139,7 @@ describe('which destinations are offered', () => {
     // `stock.view` is READING what is low. It is deliberately NOT the same
     // capability as changing a count, so the Adjust destination is absent —
     // which is exactly the template's counter-staff shape.
-    expect([...nav.querySelectorAll('button')].map((b) => b.textContent)).toEqual([
+    expect(offered(nav)).toEqual([
       'Counter',
       'Sales',
       'Stock',
@@ -133,7 +150,7 @@ describe('which destinations are offered', () => {
     const db = await till();
     renderShell(db, holding([CAPABILITY.stockAdjust]));
     const nav = await screen.findByRole('navigation', { name: 'Main' });
-    expect([...nav.querySelectorAll('button')].map((b) => b.textContent)).toEqual([
+    expect(offered(nav)).toEqual([
       'Counter',
       'Sales',
       'Adjust',
@@ -144,7 +161,7 @@ describe('which destinations are offered', () => {
     const db = await till();
     renderShell(db, holding([CAPABILITY.creditView]));
     const nav = await screen.findByRole('navigation', { name: 'Main' });
-    expect([...nav.querySelectorAll('button')].map((b) => b.textContent)).toEqual([
+    expect(offered(nav)).toEqual([
       'Counter',
       'Sales',
       'Credit',
@@ -155,7 +172,7 @@ describe('which destinations are offered', () => {
     const db = await till();
     renderShell(db, { status: 'no-session' });
     const nav = await screen.findByRole('navigation', { name: 'Main' });
-    expect([...nav.querySelectorAll('button')].map((b) => b.textContent)).toEqual([
+    expect(offered(nav)).toEqual([
       'Counter',
       'Sales',
     ]);
@@ -170,7 +187,7 @@ describe('which destinations are offered', () => {
     // authorise an order and also sign for its goods can fabricate a receipt
     // against an order they invented. So the yard sees Receive and nothing
     // else that buying opens.
-    expect([...nav.querySelectorAll('button')].map((b) => b.textContent)).toEqual([
+    expect(offered(nav)).toEqual([
       'Counter',
       'Sales',
       'Receive',
@@ -181,7 +198,7 @@ describe('which destinations are offered', () => {
     const db = await till();
     renderShell(db, holding([CAPABILITY.purchaseOrderView]));
     const nav = await screen.findByRole('navigation', { name: 'Main' });
-    expect([...nav.querySelectorAll('button')].map((b) => b.textContent)).toEqual([
+    expect(offered(nav)).toEqual([
       'Counter',
       'Sales',
       'Buying',
@@ -191,7 +208,7 @@ describe('which destinations are offered', () => {
     const db2 = await till();
     renderShell(db2, holding([CAPABILITY.supplierView]));
     const nav2 = await screen.findByRole('navigation', { name: 'Main' });
-    expect([...nav2.querySelectorAll('button')].map((b) => b.textContent)).toEqual([
+    expect(offered(nav2)).toEqual([
       'Counter',
       'Sales',
       'Supply',
@@ -202,7 +219,7 @@ describe('which destinations are offered', () => {
     const db = await till();
     renderShell(db, holding([CAPABILITY.deliveryView]));
     const nav = await screen.findByRole('navigation', { name: 'Main' });
-    expect([...nav.querySelectorAll('button')].map((b) => b.textContent)).toEqual([
+    expect(offered(nav)).toEqual([
       'Counter',
       'Sales',
       'On the road',
@@ -216,7 +233,7 @@ describe('which destinations are offered', () => {
     const db = await till();
     renderShell(db, holding([CAPABILITY.conflictReview]));
     const nav = await screen.findByRole('navigation', { name: 'Main' });
-    expect([...nav.querySelectorAll('button')].map((b) => b.textContent)).toEqual([
+    expect(offered(nav)).toEqual([
       'Counter',
       'Sales',
       'Decisions',
@@ -228,7 +245,7 @@ describe('which destinations are offered', () => {
     const db2 = await till();
     renderShell(db2, holding([CAPABILITY.stockView]));
     const nav2 = await screen.findByRole('navigation', { name: 'Main' });
-    expect([...nav2.querySelectorAll('button')].map((b) => b.textContent)).not.toContain(
+    expect(offered(nav2)).not.toContain(
       'Decisions',
     );
   });
@@ -237,7 +254,7 @@ describe('which destinations are offered', () => {
     const db = await till();
     renderShell(db, holding([CAPABILITY.glView]));
     const nav = await screen.findByRole('navigation', { name: 'Main' });
-    expect([...nav.querySelectorAll('button')].map((b) => b.textContent)).toEqual([
+    expect(offered(nav)).toEqual([
       'Counter',
       'Sales',
       'Books',
@@ -249,7 +266,7 @@ describe('which destinations are offered', () => {
     // open the books, or the gl.view split means nothing on the client.
     renderShell(db2, holding([CAPABILITY.reportMargin, CAPABILITY.reportLocation]));
     const nav2 = await screen.findByRole('navigation', { name: 'Main' });
-    expect([...nav2.querySelectorAll('button')].map((b) => b.textContent)).not.toContain('Books');
+    expect(offered(nav2)).not.toContain('Books');
   });
 
   it('offers everything when the capability list could not be fetched', async () => {
@@ -259,7 +276,7 @@ describe('which destinations are offered', () => {
       failure: { kind: 'offline', message: 'Not available offline.', detail: null, status: null },
     });
     const nav = await screen.findByRole('navigation', { name: 'Main' });
-    expect([...nav.querySelectorAll('button')].map((b) => b.textContent)).toEqual([
+    expect(offered(nav)).toEqual([
       'Counter',
       'Sales',
       'Reports',

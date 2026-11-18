@@ -213,11 +213,11 @@ export async function documentForCommittedSale(
   const names = await taxNames(db);
 
   // The committed total is the truth. If what the counter was showing does not
-  // add up to it (the price list moved between render and commit, say), the
-  // line detail is still real but the tax split is not provably this sale's, so
-  // it is left off rather than printed wrong.
-  const agrees = cart.pricing.grossMinor === facts.totalMinor && cart.pricing.breakdown !== null;
-  const breakdown = agrees ? cart.pricing.breakdown : null;
+  // add up to it (the price list moved between render and commit, say), neither
+  // the lines nor the tax split are provably this sale's, so they are left off
+  // rather than printed wrong.
+  const grossAgrees = cart.pricing.grossMinor === facts.totalMinor;
+  const breakdown = grossAgrees ? cart.pricing.breakdown : null;
   const rateByCode = new Map(cart.basis.components.map((c) => [c.code, c.rateBp] as const));
   const taxLines: ReceiptTaxLine[] =
     breakdown === null
@@ -229,7 +229,10 @@ export async function documentForCommittedSale(
           baseMinor: t.baseMinor,
           taxMinor: t.taxMinor,
         }));
-  const lines: ReceiptLineInput[] = cart.lines.map((l) => ({
+  // The same test gates the lines themselves: a cart that does not add up to
+  // the committed total is not provably THIS sale's cart, so no lines are
+  // printed under a total they do not sum to.
+  const lines: ReceiptLineInput[] = (grossAgrees ? cart.lines : []).map((l) => ({
     name: l.name,
     qtyScaled: l.qtyScaled,
     qtyScale: l.qtyScale,

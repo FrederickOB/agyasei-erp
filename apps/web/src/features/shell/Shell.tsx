@@ -88,6 +88,9 @@ const Suppliers = lazy(async () => ({
 }));
 const Review = lazy(async () => ({ default: (await import('../review/Review')).Review }));
 const Books = lazy(async () => ({ default: (await import('../books/Books')).Books }));
+const PrinterSettings = lazy(async () => ({
+  default: (await import('../printing/PrinterSettings')).PrinterSettings,
+}));
 const Deliveries = lazy(async () => ({
   default: (await import('../deliveries/Deliveries')).Deliveries,
 }));
@@ -104,7 +107,8 @@ export type ViewId =
   | 'suppliers'
   | 'deliveries'
   | 'review'
-  | 'books';
+  | 'books'
+  | 'printer';
 
 interface ViewDef {
   readonly id: ViewId;
@@ -157,6 +161,9 @@ const VIEWS: readonly ViewDef[] = [
   // The general ledger. Strictly online and read-only — the books are the
   // server's, and a correction is a reversing entry, never an edit.
   { id: 'books', label: 'Books', icon: 'receipt', requires: CAPABILITY.glView, keepMounted: false },
+  // The printer beside THIS device. Local, offered to everyone: choosing the
+  // printer at the counter must not need a manager, and it must work offline.
+  { id: 'printer', label: 'Printer', icon: 'printer', requires: null, keepMounted: false },
 ];
 
 export interface ShellProps {
@@ -233,9 +240,14 @@ export function Shell({ db, permissions, status, notice, apiOptions }: ShellProp
         {/* The counter is always rendered; `hidden` removes it from the
             accessibility tree and the tab order without unmounting it. */}
         <div className="view-pane" hidden={active !== 'counter'}>
-          <Counter db={db} />
+          <Counter db={db} onOpenPrinterSettings={() => setView('printer')} />
         </div>
-        {active === 'sales' ? <SalesList db={db} /> : null}
+        {active === 'sales' ? <SalesList db={db} onOpenPrinterSettings={() => setView('printer')} /> : null}
+        {active === 'printer' ? (
+          <Suspense fallback={<ServerPending what="Printer settings" rows={3} />}>
+            <PrinterSettings db={db} />
+          </Suspense>
+        ) : null}
         {/* The fallback is the same skeleton a server read shows, so arriving
             at a destination never flashes a blank screen — on these devices
             the chunk comes off eMMC, and that is not instant. */}

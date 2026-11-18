@@ -47,6 +47,7 @@ import { createTransports, defaultTransportEnvs, type TransportEnvs } from './tr
 import type {
   PairResult,
   PrintAttempt,
+  PrintJob,
   ReceiptTransport,
   RememberedDevice,
   TransportHealth,
@@ -163,6 +164,11 @@ export class PrintService {
 
   get isBusy(): boolean {
     return this.busy > 0;
+  }
+
+  /** Whether a print for this sale is in flight right now. */
+  isPrinting(saleId: string): boolean {
+    return this.inflight.has(saleId);
   }
 
   private emit(): void {
@@ -400,6 +406,14 @@ export class PrintService {
     const options = { ...this.encodeOptions(false), drawerKick: null };
     const bytes = transport.raw ? encodeReceipt(doc, options) : new Uint8Array(0);
     return transport.print({ doc, bytes, isCopy: false }, this.settingsNow.timeoutMs);
+  }
+
+  /** A synthetic job for the spike runner: 12 lines at the configured paper width. Never a sale. */
+  spikeJob(currency: CurrencySpec, n: number): PrintJob {
+    const doc = buildTestDocument(currency, this.settingsNow.paperWidthMm, n, new Date(this.now()).toISOString());
+    const transport = this.transport();
+    const bytes = transport.raw ? encodeReceipt(doc, { ...this.encodeOptions(false), drawerKick: null }) : new Uint8Array(0);
+    return { doc, bytes, isCopy: false };
   }
 
   codePageFor(): (typeof CODE_PAGES)[keyof typeof CODE_PAGES] {

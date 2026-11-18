@@ -18,7 +18,7 @@ import { getCartLines } from '../src/data/queries/cart';
 import { fromBase64, toHex } from '../src/printing/escpos';
 import { enqueueReceipt, getQueueEntry, listPending, PRINT_QUEUE_TTL_MS, purgeExpired } from '../src/printing/queue';
 import { PrintService } from '../src/printing/service';
-import { documentFromSyncedSale } from '../src/printing/sources';
+import { documentForCommittedSale, documentFromSyncedSale, readCommittedSale } from '../src/printing/sources';
 import type { PrintAttempt, PrintJob, ReceiptTransport, TransportId } from '../src/printing/transports/types';
 import { fixedHlc, provisionDevice, seedProduct } from './helpers/fixtures';
 import { openTestDb } from './helpers/node-db';
@@ -157,7 +157,7 @@ describe('the sale comes first', () => {
     expect(entry?.doc?.changeMinor).toBe(260_000n);
   });
 
-  it('drops the tax split rather than print one that disagrees with the committed total', async () => {
+  it('drops the lines and tax split rather than print ones that disagree with the committed total', async () => {
     const db = openTestDb();
     const { saleId, cart } = await ringSale(db);
     const svc = services(db, fake('ble-escpos'));
@@ -173,6 +173,7 @@ describe('the sale comes first', () => {
     await svc.afterSale(saleId, stale, TEST_CURRENCY);
     const doc = (await getQueueEntry(db, saleId))?.doc;
     expect(doc?.taxLines).toEqual([]);
+    expect(doc?.lines).toEqual([]); // not provably this sale's cart, so not printed under its total
     expect(doc?.netMinor).toBeNull();
     expect(doc?.totalMinor).toBe(1_240_000n);
   });
@@ -451,5 +452,26 @@ describe('queue ordering', () => {
     const doc = (await getQueueEntry(db, a.saleId))!.doc!;
     await enqueueReceipt(db, { ...doc, saleId: 'later', receiptNo: 'later' }, new Date(NOW + 1000).toISOString());
     expect((await listPending(db)).map((e) => e.saleId)).toEqual([a.saleId, 'later']);
+  });
+});
+
+describe('tax lines on a just-rung sale', () => {
+  it('carries the basis\'s own rate and the pack\'s tax-code name, and the split foots to the total', async () => {
+    const db = openTestDb();
+    const { saleId, cart } = await ringSale(db);
+    await db.execute(`INSERT INTO tax_code (id, jurisdiction_code, code, name, input_deductible) VALUES ('tc', 'X', 'T1', 'Levy one', 0)`);
+    const basis = {
+      isTaxInclusive: false,
+      components: [
+        { code: 'T1', rateBp: 1500n, baseKind: 'net' as const, baseIncludes: [], roundingLevel: 'line' as const, roundingMode: 'half-up' as const },
+      ],
+    };
+    const pricing = priceCart(cart.lines, basis);
+    const facts = { ...(await readCommittedSale(db, saleId))!, totalMinor: pricing.grossMinor };
+    const doc = await documentForCommittedSale(db, facts, { lines: cart.lines, pricing, basis }, TEST_CURRENCY);
+    expect(doc.pricesIncludeTax).toBe(false);
+    expect(doc.netMinor).toBe(1_240_000n);
+    expect(doc.taxLines).toEqual([{ code: 'T1', name: 'Levy one', rateBp: 1500n, baseMinor: 1_240_000n, taxMinor: 186_000n }]);
+    expect(doc.netMinor! + doc.taxLines[0]!.taxMinor).toBe(doc.totalMinor);
   });
 });
