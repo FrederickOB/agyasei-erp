@@ -413,4 +413,32 @@ describe('tenant isolation on payroll — §2.7 category 3', () => {
     });
     expect(aSeen).toBe(2);
   });
+
+  it('the payroll REGISTER EXPORT, asked from B for A’s period, refuses exactly as for a period that does not exist', async () => {
+    // Positive control: the export really produces A's register.
+    const own = await db.withTenant(TENANT_A, (tx) => buildRegister(tx, periodId));
+    expect(own.lines.length).toBe(2);
+
+    const refusal = async (id: string) => {
+      try {
+        await db.withTenant(TENANT_B, (tx) => buildRegister(tx, id));
+        return 'answered';
+      } catch (err) {
+        return (err as Error).message.split(id).join('<id>');
+      }
+    };
+    const foreign = await refusal(periodId);
+    expect(foreign).toBe(await refusal(uuidv7()));
+    expect(foreign).toBe('no pay period <id>');
+
+    // …and the refusal depends on RLS: with pay_period's policy disabled the
+    // same call from B hands over A's register. Restored in finally.
+    await db.asAdmin((tx) => tx.query('alter table app.pay_period disable row level security'));
+    try {
+      expect(await refusal(periodId)).toBe('answered');
+    } finally {
+      await db.asAdmin((tx) => tx.query('alter table app.pay_period enable row level security'));
+    }
+    expect(await refusal(periodId)).toBe('no pay period <id>');
+  });
 });

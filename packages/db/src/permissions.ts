@@ -215,7 +215,8 @@ const EFFECTIVE_PERMISSION_SQL = `
   select permission_code, location_id, scope_location_id, scope_depth,
          grant_id, role_id, bound, via_owner_role
     from app.effective_permission
-   where user_id = $1
+   where tenant_id = app.current_tenant()
+     and user_id = $1
 `;
 
 /**

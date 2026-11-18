@@ -21,6 +21,8 @@ import { useLiveQuery } from '../../data/use-live-query';
 import { recordBadgeLabel } from '../../lib/badges';
 import { Money } from '../../money/Money';
 import { Icon } from '../../ui/Icon';
+import { usePrintService } from '../printing/PrintingContext';
+import { PrintStatus } from '../printing/PrintStatus';
 
 export function shortSaleNumber(saleId: string): string {
   return saleId.slice(-6).toUpperCase();
@@ -36,14 +38,19 @@ export function ReceiptView({
   saleId,
   changeMinor,
   onNewSale,
+  onOpenPrinterSettings,
 }: {
   readonly db: LocalDb;
   readonly saleId: string;
   readonly changeMinor: bigint | null;
   readonly onNewSale: () => void;
+  readonly onOpenPrinterSettings?: () => void;
 }): ReactNode {
   const sale = useLiveQuery(db, (d) => getRecordedSale(d, saleId), [saleId]);
   const tenders = useLiveQuery(db, (d) => getRecordedSaleTenders(d, saleId), [saleId]);
+  // On the no-printer route the on-screen receipt IS the receipt (§8.8, `none`).
+  const printing = usePrintService();
+  const showReceiptNow = printing !== null && printing.settings.transport === 'none';
   const heading =
     sale === undefined || sale === null ? shortSaleNumber(saleId) : saleNumberLabel(sale);
 
@@ -89,6 +96,10 @@ export function ReceiptView({
           </p>
         </>
       )}
+      {/* After the sale facts and before the next sale: what happened to the
+          paper copy, said as weakly as it is known, with a way to retry or to
+          show the receipt on screen. The sale above is already saved. */}
+      <PrintStatus db={db} saleId={saleId} onOpenSettings={onOpenPrinterSettings} autoOpen={showReceiptNow} />
       <button type="button" className="primary-action pressable" onClick={onNewSale}>
         <Icon name="cart" size={20} />
         New sale

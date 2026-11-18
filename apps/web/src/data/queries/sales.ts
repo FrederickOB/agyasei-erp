@@ -4,7 +4,7 @@
  * go through?" must never require the network or a manager.
  */
 import { deriveRecordSyncState, type RecordSyncState } from '../../lib/badges';
-import type { DbRow, LocalDb } from '../db';
+import type { DbExecutor, DbRow, LocalDb } from '../db';
 import { OUTBOX_QUEUE_ORDER_DESC } from '../sync/queue-seq';
 
 export interface RecordedSale {
@@ -96,7 +96,7 @@ export interface RecordedTender {
  * ever touches the stored JSON; amounts come off the wire as decimal strings
  * and become bigint exactly once, here.
  */
-export async function getRecordedSaleTenders(db: LocalDb, saleId: string): Promise<RecordedTender[]> {
+export async function getRecordedSaleTenders(db: DbExecutor, saleId: string): Promise<RecordedTender[]> {
   const rows = await db.getAll(
     `SELECT payload, CAST(total_minor AS TEXT) AS total_minor
        FROM outbox WHERE kind = 'sale' AND id = ? LIMIT 1`,

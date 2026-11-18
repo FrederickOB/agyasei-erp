@@ -203,9 +203,16 @@ export function Shell({ db, permissions, status, notice, apiOptions }: ShellProp
           {/* The counter is always rendered; `hidden` removes it from the
               accessibility tree and the tab order without unmounting it. */}
           <div className="view-pane" hidden={active !== 'counter'}>
-            <Counter db={db} permissions={permissions} {...(apiOptions === undefined ? {} : { apiOptions })} />
+            <Counter
+              db={db}
+              permissions={permissions}
+              {...(apiOptions === undefined ? {} : { apiOptions })}
+              onOpenPrinterSettings={() => setView('printer')}
+            />
           </div>
-          {active === 'sales' ? <SalesList db={db} /> : null}
+          {active === 'sales' ? (
+            <SalesList db={db} onOpenPrinterSettings={() => setView('printer')} />
+          ) : null}
           {active !== 'counter' && active !== 'sales'
             ? renderDestination(active, { db, permissions, apiOptions })
             : null}

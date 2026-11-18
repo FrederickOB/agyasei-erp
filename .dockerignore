@@ -1,0 +1,21 @@
+# Build context for every image in infra/docker/ (context = repo root).
+# Keep it small and keep secrets out: nothing below may ever reach an image.
+**/node_modules
+**/dist
+**/.turbo
+**/coverage
+**/*.log
+.git
+.github
+.claude
+.env
+.env.*
+**/.env
+**/.env.*
+!**/env.example
+docs
+infra/postgres
+infra/dev-tenants.json
+**/*.dump
+**/*.manifest.json
+.DS_Store

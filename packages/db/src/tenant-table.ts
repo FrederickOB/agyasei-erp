@@ -101,6 +101,10 @@ export const WRITE_ID_EXEMPT: readonly string[] = [
   'credit_position_snapshot',
   'credit_position_bucket',
   'credit_allowance',
+  // Migration 0029. Requirement 9.5-A's digest is computed by a scheduled
+  // server job from rows that already carry their own spine; no device can
+  // author one and no sync rule names the table.
+  'table_digest',
 ];
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any

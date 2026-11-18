@@ -142,6 +142,102 @@ describe('two-tenant isolation at the SQL level (as app_user)', () => {
     ).rejects.toThrow(/permission denied/i);
   });
 
+  it('control: the operator plane (admin role) sees BOTH tenants in the registry', async () => {
+    const res = await db.asAdmin((tx) =>
+      tx.query<{ id: string }>('select id from platform.tenant order by id'),
+    );
+    expect(res.rows.map((r) => r.id)).toEqual([TENANT_A, TENANT_B].sort());
+  });
+
+  it("platform.tenant, UNPREDICATED, under tenant A returns ONLY A's row — RLS, not the resolver (0027)", async () => {
+    // The Phase 2 gate's probe, verbatim: before 0027 this returned both
+    // tenants' slugs and legal names to app_user with A's GUC set.
+    const a = await db.withTenant(TENANT_A, (tx) =>
+      tx.query<{ id: string; legal_name: string }>('select id, legal_name from platform.tenant'),
+    );
+    expect(a.rows).toEqual([{ id: TENANT_A, legal_name: 'Tenant A Ltd' }]);
+    const b = await db.withTenant(TENANT_B, (tx) =>
+      tx.query<{ id: string }>('select id from platform.tenant'),
+    );
+    expect(b.rows).toEqual([{ id: TENANT_B }]);
+  });
+
+  it("B's registry row is invisible to A even by primary key, and with no context there is none", async () => {
+    const byPk = await db.withTenant(TENANT_A, (tx) =>
+      tx.query('select * from platform.tenant where id = $1', [TENANT_B]),
+    );
+    expect(byPk.rows).toEqual([]);
+    const none = await db.asAppUserWithoutTenant((tx) => tx.query('select * from platform.tenant'));
+    expect(none.rows).toEqual([]);
+  });
+
+  it('platform.tenant_database is closed to app_user outright — not even its own row', async () => {
+    // dsn_ref / sync_service_ref are operator secret-store pointers; no
+    // application path reads them. Refused, not filtered.
+    await expect(
+      db.withTenant(TENANT_A, (tx) => tx.query('select * from platform.tenant_database')),
+    ).rejects.toThrow(/permission denied/i);
+    // The operator plane still reads both placements.
+    const admin = await db.asAdmin((tx) =>
+      tx.query<{ n: string }>('select count(*)::text as n from platform.tenant_database'),
+    );
+    expect(admin.rows[0]!.n).toBe('2');
+  });
+
+  it('the operator plane needs BYPASSRLS on platform.tenant: with it, the registry; without it, nothing — never a leak', async () => {
+    // 0027 FORCES row security on the registry, which binds the table owner
+    // too. PGlite's admin (and the dev stack's `erp`) is a superuser and is
+    // exempt; a deployed operator credential is not, and must carry
+    // BYPASSRLS (02-security §2.3's app_migrate). This pins both halves.
+    await db.asAdmin(async (tx) => {
+      await tx.query('create role iso_operator nosuperuser bypassrls');
+      await tx.query('create role iso_operator_nobypass nosuperuser nobypassrls');
+      await tx.query('grant usage on schema platform, app to iso_operator, iso_operator_nobypass');
+      await tx.query('grant select on platform.tenant to iso_operator, iso_operator_nobypass');
+    });
+    const readAs = (role: string) =>
+      db.asAdmin(async (tx) => {
+        await tx.query(`set local role ${role}`);
+        return (await tx.query<{ id: string }>('select id from platform.tenant order by id')).rows;
+      });
+    try {
+      expect((await readAs('iso_operator')).map((r) => r.id)).toEqual([TENANT_A, TENANT_B].sort());
+      expect(await readAs('iso_operator_nobypass')).toEqual([]);
+    } finally {
+      await db.asAdmin(async (tx) => {
+        for (const role of ['iso_operator', 'iso_operator_nobypass']) {
+          await tx.query(`drop owned by ${role}`);
+          await tx.query(`drop role ${role}`);
+        }
+      });
+    }
+  });
+
+  it('global reference data is read in full by every tenant and written by none', async () => {
+    const all = await db.asAdmin((tx) =>
+      tx.query<{ n: string }>('select count(*)::text as n from platform.tax_rate'),
+    );
+    expect(Number(all.rows[0]!.n)).toBeGreaterThan(0);
+    for (const tenant of [TENANT_A, TENANT_B]) {
+      const seen = await db.withTenant(tenant, (tx) =>
+        tx.query<{ n: string }>('select count(*)::text as n from platform.tax_rate'),
+      );
+      expect(seen.rows[0]!.n).toBe(all.rows[0]!.n);
+    }
+    await expect(
+      db.withTenant(TENANT_A, (tx) =>
+        tx.query(`update platform.tax_rate set rate_bp = 0 where jurisdiction_code = 'GH'`),
+      ),
+    ).rejects.toThrow(/permission denied/i);
+    await expect(
+      db.withTenant(TENANT_A, (tx) =>
+        tx.query(
+          `insert into platform.permission (code, domain, description) values ('x.y', 'x', 'minted')`,
+        ),
+      ),
+    ).rejects.toThrow(/permission denied/i);
+  });
+
   it('the derived stock view is tenant-scoped too (security_invoker)', async () => {
     const res = await db.withTenant(TENANT_A, (tx) => tx.query('select * from app.stock_on_hand'));
     expect(res.rows).toEqual([]); // no movements yet — and no error, and no cross-tenant rows

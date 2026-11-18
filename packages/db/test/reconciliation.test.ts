@@ -297,4 +297,30 @@ describe('tenant isolation on reconciliation — §2.7 category 3', () => {
     });
     expect(aSeen).toBeGreaterThan(0);
   });
+
+  it('the monthly reconciliation view, asked from B for A’s cash account, refuses exactly as for one that does not exist', async () => {
+    const own = await db.withTenant(TENANT_A, (tx) => monthlyView(tx, cashAccountId, '2026-08-31'));
+    expect(own).toBeTruthy();
+
+    const refusal = async (id: string) => {
+      try {
+        await db.withTenant(TENANT_B, (tx) => monthlyView(tx, id, '2026-08-31'));
+        return 'answered';
+      } catch (err) {
+        return (err as Error).message.split(id).join('<id>');
+      }
+    };
+    const foreign = await refusal(cashAccountId);
+    expect(foreign).toBe(await refusal(uuidv7()));
+    expect(foreign).toBe('no cash account <id>');
+
+    // The refusal depends on RLS: without cash_account's policy, B reads A's.
+    await db.asAdmin((tx) => tx.query('alter table app.cash_account disable row level security'));
+    try {
+      expect(await refusal(cashAccountId)).not.toBe('no cash account <id>');
+    } finally {
+      await db.asAdmin((tx) => tx.query('alter table app.cash_account enable row level security'));
+    }
+    expect(await refusal(cashAccountId)).toBe('no cash account <id>');
+  });
 });

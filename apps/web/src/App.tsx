@@ -31,6 +31,7 @@ import { usePermissions } from './data/api/use-permissions';
 import { countCartLines, getOpenCart } from './data/queries/cart';
 import { reconcileCurrencySpec } from './data/session/currency-spec';
 import { useLiveQuery } from './data/use-live-query';
+import { PrintingProvider } from './features/printing/PrintingContext';
 import { Shell } from './features/shell/Shell';
 import { StatusBar } from './features/shell/StatusBar';
 import { useUpdateReady } from './features/shell/use-update';
@@ -159,6 +160,8 @@ export function App({ db, deviceLocation, devicePriceList }: AppProps): ReactNod
 
   return (
     <CurrencyProvider spec={spec}>
+      {/* Printing is optional plumbing around the counter, never a gate on it. */}
+      <PrintingProvider db={db}>
       <Shell
         db={db}
         permissions={permissions.state}
@@ -187,6 +190,7 @@ export function App({ db, deviceLocation, devicePriceList }: AppProps): ReactNod
           ) : null
         }
       />
+      </PrintingProvider>
     </CurrencyProvider>
   );
 }

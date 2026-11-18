@@ -757,6 +757,11 @@ describe('two-tenant isolation on every new read path', () => {
   it('stock and cost aggregates exclude the other tenant entirely', async () => {
     const accountsA = await principalAt('accounts', root);
     const stockA = await accountsA.reports.stockOnHand({});
+    // Non-vacuity (Phase 2 gate §4.4.2): without these two lines an EMPTY
+    // report passed both loops below. The exhaustive two-tenant probe for
+    // this route is `[isolation:reports.stockOnHand]` in isolation-read-paths.
+    expect(stockA.locations.flatMap((l) => l.lines).length).toBeGreaterThan(0);
+    expect(stockA.networkByProduct.some((p) => p.productId === productId)).toBe(true);
     for (const l of stockA.locations) expect(l.locationId).not.toBe(bOutlet);
     for (const p of stockA.networkByProduct) expect(p.productId).not.toBe(bProduct);
 

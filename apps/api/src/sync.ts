@@ -164,6 +164,12 @@ export interface SyncRouteOptions {
   powersyncUrl?: string;
   /** Client-token lifetime in seconds. Short-lived: ≤ 5 min is PowerSync's norm. */
   tokenTtlSeconds?: number;
+  /**
+   * Body cap for POST /sync/upload, which legitimately carries up to
+   * MAX_UPLOAD_BATCH ops and so needs more than the server-wide default.
+   * Unset: the server-wide limit applies.
+   */
+  uploadBodyLimit?: number;
 }
 
 const DEFAULT_POWERSYNC_URL = 'http://localhost:8080';
@@ -175,7 +181,8 @@ export async function registerSyncRoutes(
   app: FastifyInstance,
   opts: ContextOptions & { sync?: SyncRouteOptions | undefined },
 ): Promise<void> {
-  app.post('/sync/upload', async (req, reply) => {
+  const uploadBodyLimit = opts.sync?.uploadBodyLimit;
+  app.post('/sync/upload', uploadBodyLimit !== undefined ? { bodyLimit: uploadBodyLimit } : {}, async (req, reply) => {
     const ctx = await createContextFromHeader(opts, req.headers.authorization);
     if (!ctx.identity) {
       return reply.code(401).send({ error: 'UNAUTHORIZED: missing or invalid bearer token' });

@@ -1506,3 +1506,56 @@ export const reconciliationMatch = appSchema.table('reconciliation_match', {
   note: text('note'),
 });
 registerAppTable('reconciliation_match', reconciliationMatch);
+
+// ---------------------------------------------------------------------------
+// OPERATIONS (migration 0029, docs/production-runbook.md)
+// ---------------------------------------------------------------------------
+
+/**
+ * Requirement 9.5-A's continuous digest: per tenant, per table, a row count
+ * and two order-independent digests, written by the scheduled digest job AS
+ * app_user inside the tenant's own RLS context. Server-derived and never
+ * synced, so it carries no write spine (WRITE_ID_EXEMPT).
+ */
+export const tableDigest = appSchema.table('table_digest', {
+  tenantId: uuid('tenant_id').notNull(),
+  id: uuid('id').notNull(),
+  asOf: timestamp('as_of', { withTimezone: true }).notNull(),
+  tableName: text('table_name').notNull(),
+  rowCount: bigint('row_count', { mode: 'bigint' }).notNull(),
+  pkDigest: text('pk_digest').notNull(),
+  rowDigest: text('row_digest').notNull(),
+  jobRunId: uuid('job_run_id'),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull(),
+});
+registerAppTable('table_digest', tableDigest);
+
+/** One row per scheduled-job attempt. Counts and tenant ids only. */
+export const jobRun = platformSchema.table('job_run', {
+  id: uuid('id').primaryKey(),
+  jobName: text('job_name').notNull(),
+  status: text('status').notNull(),
+  startedAt: timestamp('started_at', { withTimezone: true }).notNull(),
+  finishedAt: timestamp('finished_at', { withTimezone: true }),
+  durationMs: integer('duration_ms'),
+  runner: text('runner').notNull(),
+  build: text('build'),
+  summary: jsonb('summary').notNull(),
+  error: text('error'),
+});
+
+/** Alert lifecycle per key — page once, repeat on schedule, announce resolution. */
+export const opsAlert = platformSchema.table('ops_alert', {
+  key: text('key').primaryKey(),
+  sourceJob: text('source_job').notNull(),
+  kind: text('kind').notNull(),
+  severity: text('severity').notNull(),
+  subjectTenantId: uuid('subject_tenant_id'),
+  summary: text('summary').notNull(),
+  firstSeenAt: timestamp('first_seen_at', { withTimezone: true }).notNull(),
+  lastSeenAt: timestamp('last_seen_at', { withTimezone: true }).notNull(),
+  lastSentAt: timestamp('last_sent_at', { withTimezone: true }),
+  sendCount: integer('send_count').notNull(),
+  resolvedAt: timestamp('resolved_at', { withTimezone: true }),
+});

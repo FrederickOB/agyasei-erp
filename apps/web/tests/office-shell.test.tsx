@@ -158,7 +158,7 @@ describe('inside the office', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Open the office' }));
     const rail = await screen.findByRole('navigation', { name: 'Office' });
     const labels = [...rail.querySelectorAll('button')].map((b) => b.textContent);
-    expect(labels).toEqual(['Dashboard', 'Reports', 'Stock', 'Books']);
+    expect(labels).toEqual(['Dashboard', 'Reports', 'Stock', 'Books', 'Printer']);
   });
 
   it('composes the dashboard from capabilities, and every tile refuses on its own', async () => {

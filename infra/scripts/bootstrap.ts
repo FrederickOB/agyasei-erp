@@ -46,6 +46,7 @@ import {
   provisionPrincipal,
   seedGhanaJurisdiction,
 } from '@erp/db/seed';
+import { POWERSYNC_PUBLICATION_TABLES } from '@erp/ops/converge';
 import { applyDevPrices } from './dev-prices.js';
 import { seedDevLedger } from '@erp/db';
 import { applyDevPurchaseUnits } from './dev-purchase-units.js';
@@ -66,45 +67,10 @@ const TENANT_B = {
   legalName: 'Kumasi Builders Supply Ltd',
 };
 
-/** Tables the sync rules read — data queries AND parameter queries. The
- *  publication carries exactly these; extend it when sync_rules.yaml grows. */
-const PUBLICATION_TABLES = [
-  'app.location',
-  'app.location_type',
-  'app.unit_of_measure',
-  'app.product_category',
-  'app.product',
-  'app.product_uom',
-  'app.price_list',
-  'app.price_list_item',
-  'app.movement_reason',
-  // The till and the tenders (migrations 0020–0021): methods and the period
-  // calendar in tenant_reference, sessions and tender rows in location_ops.
-  'app.tender_method',
-  'app.accounting_period',
-  'app.cash_session',
-  'app.sale_tender',
-  'app.customer',
-  // Credit (migration 0013). The two *_scope tables are PARAMETER-query
-  // sources — the gate itself — and must replicate or every credit bucket
-  // fails closed to zero rows. The rest are the data queries.
-  'app.credit_sync_book_scope',
-  'app.credit_sync_location_scope',
-  'app.customer_account',
-  'app.credit_limit_version',
-  'app.credit_entry',
-  'app.credit_position_snapshot',
-  'app.credit_position_bucket',
-  'app.credit_allowance',
-  'app.stock_movement',
-  'app.sale',
-  'app.sale_line',
-  'app.sale_tax_line',
-  'platform.tenant',
-  'platform.jurisdiction',
-  'platform.tax_code',
-  'platform.tax_rate',
-];
+/** Tables the sync rules read — data queries AND parameter queries. ONE list,
+ *  shared with production's release step (packages/ops/src/converge.ts);
+ *  extend it THERE when sync_rules.yaml grows — a test fails if you don't. */
+const PUBLICATION_TABLES = POWERSYNC_PUBLICATION_TABLES;
 
 async function main(): Promise<void> {
   const client = new pg.Client({ connectionString: DATABASE_URL });

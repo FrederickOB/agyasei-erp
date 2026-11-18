@@ -72,7 +72,9 @@ export function OfficeShell({
 }: OfficeShellProps): ReactNode {
   const [view, setView] = useState<OfficeViewId>('dashboard');
   // The two outbox writers are counter work; the office does not offer them.
-  const offered = DESTINATIONS.filter((d) => !d.counterWork && holdsCapability(permissions, d.requires));
+  const offered = DESTINATIONS.filter(
+    (d) => !d.counterWork && (d.requires === null || holdsCapability(permissions, d.requires)),
+  );
   const active: OfficeViewId =
     view === 'dashboard' || offered.some((d) => d.id === view) ? view : 'dashboard';
   const props = { db, permissions, apiOptions };
