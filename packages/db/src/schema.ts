@@ -648,6 +648,10 @@ export const userAccount = tenantTable(
     displayName: text('display_name').notNull(),
     staffId: uuid('staff_id'),
     status: text('status').notNull(),
+    /** The IdP's `iss` for subject_ref (migration 0023). Never a tenant claim. */
+    subjectIssuer: text('subject_issuer'),
+    /** The IdP's `sub`. No password material in this schema, ever (02 §2.2). */
+    subjectRef: text('subject_ref'),
   },
   (t) => [index('user_account_staff_ix').on(t.tenantId, t.staffId)],
 );
@@ -1411,3 +1415,142 @@ export const reconciliationMatch = appSchema.table('reconciliation_match', {
   note: text('note'),
 });
 registerAppTable('reconciliation_match', reconciliationMatch);
+
+// ---------------------------------------------------------------------------
+// Migration 0023 — identity, devices, sessions (02-security §2.2, §2.5, §2.7).
+// ---------------------------------------------------------------------------
+
+const bytea = customType<{ data: Uint8Array }>({
+  dataType() {
+    return 'bytea';
+  },
+});
+
+/**
+ * The ONE device registry. A device IS its key: `jkt` (RFC 7638 thumbprint of
+ * `public_jwk`) is bound into every access token as `cnf.jkt`. `retired` is
+ * terminal; `retired_reason = 'stolen'` closes the drain window to zero.
+ * `form_factor` is descriptive only — nothing authorises on it.
+ */
+export const device = tenantTable(
+  'device',
+  {
+    label: text('label').notNull(),
+    formFactor: text('form_factor').notNull(),
+    publicJwk: jsonb('public_jwk').notNull(),
+    jkt: text('jkt').notNull(),
+    status: text('status').notNull(),
+    retiredReason: text('retired_reason'),
+    retiredBy: uuid('retired_by'),
+    retiredAt: timestamp('retired_at', { withTimezone: true }),
+    drainOpenedAt: timestamp('drain_opened_at', { withTimezone: true }),
+    enrolledBy: uuid('enrolled_by').notNull(),
+    enrolledAt: timestamp('enrolled_at', { withTimezone: true }).notNull(),
+    enrolmentCodeId: uuid('enrolment_code_id'),
+    lastAuthenticatedAt: timestamp('last_authenticated_at', { withTimezone: true }),
+    lastSeenAt: timestamp('last_seen_at', { withTimezone: true }),
+    appVersion: text('app_version'),
+  },
+  (t) => [index('device_status_ix').on(t.tenantId, t.status)],
+);
+
+/** The device CEILING (§2.5). Effective sync scope = user scope ∩ this. */
+export const deviceLocationScope = tenantTable(
+  'device_location_scope',
+  {
+    deviceId: uuid('device_id').notNull(),
+    locationId: uuid('location_id').notNull(),
+    addedBy: uuid('added_by').notNull(),
+    removedBy: uuid('removed_by'),
+  },
+  (t) => [index('device_location_scope_location_ix').on(t.tenantId, t.locationId)],
+);
+
+/** One-time enrolment code. The code is never stored — only its SHA-256. */
+export const deviceEnrolmentCode = tenantTable(
+  'device_enrolment_code',
+  {
+    codeHash: bytea('code_hash').notNull(),
+    locationId: uuid('location_id'),
+    label: text('label').notNull(),
+    formFactor: text('form_factor').notNull(),
+    issuedBy: uuid('issued_by').notNull(),
+    expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+    consumedAt: timestamp('consumed_at', { withTimezone: true }),
+    outcome: text('outcome'),
+    deviceId: uuid('device_id'),
+  },
+  (t) => [index('device_enrolment_code_issued_ix').on(t.tenantId, t.createdAt)],
+);
+
+/**
+ * Per USER per DEVICE session (`sid`). Server-authored security state with a
+ * rotating refresh credential — WRITE_ID_EXEMPT (see tenant-table.ts).
+ */
+export const deviceSession = appSchema.table('device_session', {
+  tenantId: uuid('tenant_id').notNull(),
+  id: uuid('id').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull(),
+  deviceId: uuid('device_id').notNull(),
+  userId: uuid('user_id').notNull(),
+  refreshHash: bytea('refresh_hash').notNull(),
+  refreshPrevHash: bytea('refresh_prev_hash'),
+  refreshCount: integer('refresh_count').notNull(),
+  lastRefreshedAt: timestamp('last_refreshed_at', { withTimezone: true }),
+  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+  revokedAt: timestamp('revoked_at', { withTimezone: true }),
+  revokedReason: text('revoked_reason'),
+});
+registerAppTable('device_session', deviceSession);
+
+/** Append-only audit of identity and device acts (a subset of §2.6's audit_event). */
+export const identityEvent = appSchema.table('identity_event', {
+  tenantId: uuid('tenant_id').notNull(),
+  id: uuid('id').notNull(),
+  writeId: uuid('write_id').notNull(),
+  hlc: text('hlc').notNull(),
+  eventClass: text('event_class').notNull(),
+  actorKind: text('actor_kind').notNull(),
+  actorUserId: uuid('actor_user_id'),
+  actorDeviceId: uuid('actor_device_id'),
+  action: text('action').notNull(),
+  permissionUsed: text('permission_used'),
+  subjectTable: text('subject_table').notNull(),
+  subjectId: uuid('subject_id'),
+  before: jsonb('before'),
+  after: jsonb('after'),
+  reasonCode: text('reason_code'),
+  reasonNote: text('reason_note'),
+  serverReceivedAt: timestamp('server_received_at', { withTimezone: true }).notNull(),
+});
+registerAppTable('identity_event', identityEvent);
+
+// ---------------------------------------------------------------------------
+// Migration 0024 — the device-keyed sync projections (02 §2.3 Contract 1).
+// Server-derived, like 0013's: WRITE_ID_EXEMPT.
+// ---------------------------------------------------------------------------
+
+/** (device, user) pairs that may sync at all. Tenant-keyed buckets read this. */
+export const deviceSyncGrant = appSchema.table('device_sync_grant', {
+  tenantId: uuid('tenant_id').notNull(),
+  id: uuid('id').notNull(),
+  deviceId: uuid('device_id').notNull(),
+  userId: uuid('user_id').notNull(),
+  jurisdictionCode: text('jurisdiction_code').notNull(),
+  creditBook: text('credit_book').notNull(),
+  refreshedAt: timestamp('refreshed_at', { withTimezone: true }).notNull(),
+});
+registerAppTable('device_sync_grant', deviceSyncGrant);
+
+/** user_location_scope ∩ device_location_scope. Location-keyed buckets read this. */
+export const deviceSyncLocationScope = appSchema.table('device_sync_location_scope', {
+  tenantId: uuid('tenant_id').notNull(),
+  id: uuid('id').notNull(),
+  deviceId: uuid('device_id').notNull(),
+  userId: uuid('user_id').notNull(),
+  locationId: uuid('location_id').notNull(),
+  creditAllowance: text('credit_allowance').notNull(),
+  refreshedAt: timestamp('refreshed_at', { withTimezone: true }).notNull(),
+});
+registerAppTable('device_sync_location_scope', deviceSyncLocationScope);
