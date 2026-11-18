@@ -37,6 +37,8 @@
  */
 import {
   cashPositionReportInput,
+  salesByDayReportInput,
+  type SalesByDayReportInput,
   distributionCostReportInput,
   inventoryDaysReportInput,
   salesReportInput,
@@ -96,6 +98,24 @@ export interface SalesByLocationReport {
   readonly days: number;
   readonly scope: ReportScope;
   readonly locations: readonly (LocationHeader & SalesFigures)[];
+  readonly total: SalesFigures;
+}
+
+export interface SalesDay extends SalesFigures {
+  /** The business date at the tills, `YYYY-MM-DD`. */
+  readonly date: string;
+}
+
+/**
+ * Sales by business day. Every day of the range is present; a day with no
+ * trade is a ZERO row. The screen draws it as a dip to nothing, never a gap.
+ */
+export interface SalesByDayReport {
+  readonly from: string;
+  readonly to: string;
+  readonly days: number;
+  readonly scope: ReportScope;
+  readonly series: readonly SalesDay[];
   readonly total: SalesFigures;
 }
 
@@ -276,6 +296,22 @@ function mapSalesByLocation(json: unknown): SalesByLocationReport {
     locations: asArray(root['locations'], 'locations').map((entry, i) => {
       const row = asRecord(entry, `locations[${String(i)}]`);
       return { ...mapHeader(row, `locations[${String(i)}]`), ...mapSalesFigures(row, `locations[${String(i)}]`) };
+    }),
+    total: mapSalesFigures(asRecord(root['total'], 'total'), 'total'),
+  };
+}
+
+function mapSalesByDay(json: unknown): SalesByDayReport {
+  const root = asRecord(json, 'reports.salesByDay');
+  return {
+    from: asString(root['from'], 'from'),
+    to: asString(root['to'], 'to'),
+    days: asCount(root['days'], 'days'),
+    scope: mapScope(root['scope'], 'scope'),
+    series: asArray(root['series'], 'series').map((entry, i) => {
+      const what = `series[${String(i)}]`;
+      const row = asRecord(entry, what);
+      return { date: asString(row['date'], `${what}.date`), ...mapSalesFigures(row, what) };
     }),
     total: mapSalesFigures(asRecord(root['total'], 'total'), 'total'),
   };
@@ -506,6 +542,13 @@ export function fetchSalesByLocation(
   options: ApiCallOptions = {},
 ): Promise<ApiResult<SalesByLocationReport>> {
   return guarded(salesReportInput, 'reports.salesByLocation', input, mapSalesByLocation, options);
+}
+
+export function fetchSalesByDay(
+  input: SalesByDayReportInput,
+  options: ApiCallOptions = {},
+): Promise<ApiResult<SalesByDayReport>> {
+  return guarded(salesByDayReportInput, 'reports.salesByDay', input, mapSalesByDay, options);
 }
 
 export function fetchCashPosition(

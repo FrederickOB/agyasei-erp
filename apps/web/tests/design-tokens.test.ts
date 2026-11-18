@@ -71,6 +71,31 @@ const PAIRS: readonly (readonly [string, string, string, number])[] = [
   ['a control’s edge on a surface', 'control-border', 'surface', 3],
   ['a control’s edge on the page', 'control-border', 'bg', 3],
   ['a control’s edge on a sunken surface', 'control-border', 'surface-2', 3],
+  // The chart series (ui/charts). Slots 1 and 2 must stand on their own as
+  // marks; slots 3 and 4 are allowed under 3:1 ONLY because every mark drawn
+  // in them carries a direct label (dataviz relief rule) — so they are not
+  // listed here, and a chart that uses them without a label is the bug.
+  ['the first chart series as a mark on a surface', 'chart-1', 'surface', 3],
+  ['the second chart series as a mark on a surface', 'chart-2', 'surface', 3],
+  ['the target line on a surface', 'chart-target', 'surface', 3],
+  ['the Unavailable word on its tint', 'wait-ink', 'wait-tint', 4.5],
+  // The back office's own palette (features/office). Every pill's ink against
+  // its own tint, and the two body inks against both card surfaces.
+  ['office body text on a card', 'o-text', 'o-card', 4.5],
+  ['office secondary text on a card', 'o-text-2', 'o-card', 4.5],
+  ['office muted text on a card', 'o-muted', 'o-card', 4.5],
+  ['office muted text on a sunken card', 'o-muted', 'o-card-2', 4.5],
+  ['office muted text on the canvas', 'o-muted', 'o-canvas', 4.5],
+  ['an office "good" pill', 'o-mint-text', 'o-mint-tint', 4.5],
+  ['an office "warning" pill', 'o-amber-text', 'o-amber-tint', 4.5],
+  ['an office "attention" pill', 'o-red-text', 'o-red-tint', 4.5],
+  ['an office "info" pill', 'o-blue-text', 'o-blue-tint', 4.5],
+  ['an office link on a card', 'o-violet-text', 'o-card', 4.5],
+  ['an office neutral pill', 'o-grey-text', 'o-grey-tint', 4.5],
+  ['the first chart series on an office card', 'chart-1', 'o-card', 3],
+  ['the second chart series on an office card', 'chart-2', 'o-card', 3],
+  ['the office primary button label', 'brand-ink', 'o-violet', 4.5],
+  ['the office primary button label, gradient end', 'brand-ink', 'o-violet-2', 4.5],
 ];
 
 describe('the counter’s colour tokens', () => {
