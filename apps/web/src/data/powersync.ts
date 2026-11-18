@@ -367,6 +367,11 @@ export async function openLocalDb(): Promise<LocalDb> {
   if (auth) {
     let lastUser = auth.current()?.userId ?? null;
     auth.onChange(() => {
+      // A 423 heard anywhere (sync token, upload, an API read) starts the
+      // revoked-device drain at once rather than on the next retry tick.
+      void auth.revoked().then((r) => {
+        if (r) void runtime.drainNow();
+      });
       const now = auth.current()?.userId ?? null;
       if (now !== null && now !== lastUser) {
         credentials.invalidate();

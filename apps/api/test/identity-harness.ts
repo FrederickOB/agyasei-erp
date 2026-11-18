@@ -21,6 +21,7 @@ import { preTenantRunnerFrom } from '../src/db.js';
 import { accessTokenHash } from '../src/identity/dpop.js';
 import { generateKeyRing, type KeyRing } from '../src/identity/keys.js';
 import { createIdTokenVerifier, type OidcConfig } from '../src/identity/oidc.js';
+import { HOUR_MS, createRateLimiter } from '../src/identity/rate-limit.js';
 import { createIdentityService, type IdentityService, type IdentityServiceOptions } from '../src/identity/service.js';
 import { buildServer } from '../src/server.js';
 import { createApiHarness, JWT_SECRET, type ApiHarness } from './util.js';
@@ -80,6 +81,8 @@ export interface IdentityRig {
   signing: KeyRing;
   leaseKeys: KeyRing;
   idpPrivate: KeyLike;
+  /** ONE owner-at-root admin identity per tenant, reused — see issueCode. */
+  admin(tenantId: string): Promise<import('../src/auth.js').VerifiedIdentity>;
   idToken(sub: string, nonce: string, extra?: Record<string, unknown>, opts?: { aud?: string; key?: KeyLike; iatOffsetS?: number }): Promise<string>;
   /** Issue a code as the given (dev-path) admin identity's tenant. */
   issueCode(tenantId: string, locationId: string | null, label?: string): Promise<string>;
@@ -121,6 +124,9 @@ export async function createIdentityRig(
     oidc: { config: oidcConfig, verifier },
     revocationCacheMs: 0,
     onAlert: () => undefined,
+    // A suite enrols far more than 20 devices into one tenant; the per-tenant
+    // limit is proven by its own test with its own limiter.
+    perTenant: createRateLimiter(10_000, HOUR_MS),
     ...serviceOverrides,
   });
   const app = await buildServer({
@@ -147,9 +153,23 @@ export async function createIdentityRig(
       .sign(opts.key ?? idpPrivate);
   }
 
+  // Every h.identityFor() mints a NEW owner at the tenant root. A rig that
+  // did that per code grew dozens of root users × dozens of devices, and
+  // every trigger recomputed the whole product — the suite slowed to minutes
+  // per test. One administrator per tenant, like a real back office.
+  const admins = new Map<string, Promise<import('../src/auth.js').VerifiedIdentity>>();
+  function admin(tenantId: string) {
+    let a = admins.get(tenantId);
+    if (!a) {
+      a = h.identityFor(tenantId);
+      admins.set(tenantId, a);
+    }
+    return a;
+  }
+
   async function issueCode(tenantId: string, locationId: string | null, label = 'Counter tablet'): Promise<string> {
-    const admin = await h.identityFor(tenantId); // owner at root, dev path
-    const res = await h.callerFor(admin).admin.devices.issueCode({
+    const adminIdentity = await admin(tenantId); // owner at root, dev path
+    const res = await h.callerFor(adminIdentity).admin.devices.issueCode({
       idempotencyKey: uuidv7(),
       label,
       formFactor: 'tablet',
@@ -236,6 +256,7 @@ export async function createIdentityRig(
     signing,
     leaseKeys,
     idpPrivate,
+    admin,
     idToken,
     issueCode,
     enrol,

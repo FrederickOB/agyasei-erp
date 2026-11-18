@@ -10,6 +10,7 @@ import {
   assignRoleInput,
   createRoleInput,
   createUserInput,
+  deleteRoleInput,
   endAssignmentInput,
   issueEnrolmentCodeInput,
   revokeDeviceInput,
@@ -20,6 +21,7 @@ import {
   type AssignRoleInput,
   type CreateRoleInput,
   type CreateUserInput,
+  type DeleteRoleInput,
   type EndAssignmentInput,
   type IssueEnrolmentCodeInput,
   type RevokeDeviceInput,
@@ -231,6 +233,7 @@ export const assignRole = (i: AssignRoleInput, o: ApiCallOptions = {}) => mutate
 export const endAssignment = (i: EndAssignmentInput, o: ApiCallOptions = {}) => mutate(endAssignmentInput, 'admin.users.endAssignment', i, o);
 export const createRole = (i: CreateRoleInput, o: ApiCallOptions = {}) => mutate(createRoleInput, 'admin.roles.create', i, o);
 export const updateRole = (i: UpdateRoleInput, o: ApiCallOptions = {}) => mutate(updateRoleInput, 'admin.roles.update', i, o);
+export const deleteRole = (i: DeleteRoleInput, o: ApiCallOptions = {}) => mutate(deleteRoleInput, 'admin.roles.delete', i, o);
 export const revokeDevice = (i: RevokeDeviceInput, o: ApiCallOptions = {}) => mutate(revokeDeviceInput, 'admin.devices.revoke', i, o);
 export const setDeviceStatus = (i: SetDeviceStatusInput, o: ApiCallOptions = {}) => mutate(setDeviceStatusInput, 'admin.devices.setStatus', i, o);
 export const setDeviceScope = (i: SetDeviceScopeInput, o: ApiCallOptions = {}) => mutate(setDeviceScopeInput, 'admin.devices.setScope', i, o);

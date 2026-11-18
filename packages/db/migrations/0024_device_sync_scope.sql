@@ -117,7 +117,13 @@ create function app.refresh_device_sync_scope(p_tenant uuid) returns void
 language plpgsql as $$
 begin
   -- ---- the location intersection ------------------------------------------
-  with dev_scope as (
+  -- ONE statement: the wanted set is computed ONCE (materialised), and the
+  -- delete and the upsert both run against it. The first draft re-evaluated
+  -- the user_location_scope view inside a per-row NOT EXISTS on delete, which
+  -- is quadratic in devices × users — measured: a test tenant with a few dozen
+  -- devices took minutes per refresh. The two halves touch disjoint rows (a
+  -- row is either wanted or not), so one statement is safe.
+  with dev_scope as materialized (
     select distinct dls.tenant_id, dls.device_id, lc.descendant_id as location_id
       from app.device_location_scope dls
       join app.device d
@@ -129,16 +135,26 @@ begin
         on l.tenant_id = lc.tenant_id and l.id = lc.descendant_id
        and l.deleted_at is null and l.kind in ('OUTLET', 'WAREHOUSE', 'TRANSIT')
      where dls.tenant_id = p_tenant and dls.deleted_at is null
-  ), want as (
-    select ds.tenant_id, ds.device_id, uls.user_id, ds.location_id,
-           case when exists (
-                  select 1 from app.credit_sync_location_scope cls
-                   where cls.tenant_id = ds.tenant_id and cls.user_id = uls.user_id
-                     and cls.location_id = ds.location_id)
-                then 'allowance' else 'none' end as credit_allowance
+  ), uls as materialized (
+    select distinct tenant_id, user_id, location_id
+      from app.user_location_scope
+     where tenant_id = p_tenant
+  ), want as materialized (
+    select ds.tenant_id, ds.device_id, u.user_id, ds.location_id,
+           case when cls.user_id is not null then 'allowance' else 'none' end as credit_allowance
       from dev_scope ds
-      join app.user_location_scope uls
-        on uls.tenant_id = ds.tenant_id and uls.location_id = ds.location_id
+      join uls u
+        on u.tenant_id = ds.tenant_id and u.location_id = ds.location_id
+      left join app.credit_sync_location_scope cls
+        on cls.tenant_id = ds.tenant_id and cls.user_id = u.user_id
+       and cls.location_id = ds.location_id
+  ), gone as (
+    delete from app.device_sync_location_scope s
+     where s.tenant_id = p_tenant
+       and not exists (
+         select 1 from want w
+          where w.device_id = s.device_id and w.user_id = s.user_id and w.location_id = s.location_id)
+    returning 1
   )
   insert into app.device_sync_location_scope
     (tenant_id, device_id, user_id, location_id, credit_allowance)
@@ -147,27 +163,6 @@ begin
   do update set credit_allowance = excluded.credit_allowance,
                 refreshed_at     = transaction_timestamp()
    where app.device_sync_location_scope.credit_allowance is distinct from excluded.credit_allowance;
-
-  delete from app.device_sync_location_scope s
-   where s.tenant_id = p_tenant
-     and not exists (
-       select 1
-         from app.device_location_scope dls
-         join app.device d
-           on d.tenant_id = dls.tenant_id and d.id = dls.device_id
-          and d.status = 'active' and d.deleted_at is null
-         join app.location_closure lc
-           on lc.tenant_id = dls.tenant_id and lc.ancestor_id = dls.location_id
-         join app.location l
-           on l.tenant_id = lc.tenant_id and l.id = lc.descendant_id
-          and l.deleted_at is null and l.kind in ('OUTLET', 'WAREHOUSE', 'TRANSIT')
-         join app.user_location_scope uls
-           on uls.tenant_id = dls.tenant_id and uls.location_id = lc.descendant_id
-        where dls.tenant_id = s.tenant_id
-          and dls.deleted_at is null
-          and dls.device_id = s.device_id
-          and uls.user_id = s.user_id
-          and lc.descendant_id = s.location_id);
 
   -- ---- the pair grant, derived from the intersection ------------------------
   insert into app.device_sync_grant (tenant_id, device_id, user_id, jurisdiction_code, credit_book)

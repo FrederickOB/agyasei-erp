@@ -15,6 +15,7 @@ import { uuidv7 } from '@erp/db';
 import { leaseClaims } from '@erp/contracts';
 import { signDevToken } from '../src/auth.js';
 import { createIdentityService } from '../src/identity/service.js';
+import { HOUR_MS, createRateLimiter } from '../src/identity/rate-limit.js';
 import { preTenantRunnerFrom } from '../src/db.js';
 import { buildServer } from '../src/server.js';
 import { createIdentityRig, newDevice, API, ISSUER, IDP_ISSUER, type IdentityRig } from './identity-harness.js';
@@ -36,6 +37,9 @@ beforeAll(async () => {
   const [a1, a2] = await rig.h.outlets(tenantA, 2);
   outletA = a1!.id;
   outletA2 = a2!.id;
+  // The pilot network ships with one live outlet; open a second for the
+  // ceiling tests (issuing a code at an INACTIVE location is refused).
+  await rig.h.db.withTenant(tenantA, (tx) => tx.query(`update app.location set is_active = true where id = $1`, [outletA2]));
   outletB = (await rig.h.firstOutlet(tenantB)).id;
 });
 
@@ -138,6 +142,48 @@ describe('enrolment (§2.7)', () => {
     expect((await rig.enrol(await newDevice(), 'ZZZZ-ZZZY', { remote })).status).toBe(429);
     // A different source is unaffected (positive control).
     expect((await rig.enrol(await newDevice(), 'ZZZZ-ZZZY', { remote: '10.99.99.98' })).status).toBe(404);
+  });
+
+  it('rate-limits per TENANT and raises an alert, not merely a refusal', async () => {
+    const alerts: string[] = [];
+    const svc = createIdentityService({
+      runner: rig.h.db,
+      preTenant: preTenantRunnerFrom(rig.h.db),
+      clock: rig.h.deps.clock,
+      issuer: ISSUER,
+      signing: rig.signing,
+      leaseKeys: rig.leaseKeys,
+      perTenant: createRateLimiter(2, HOUR_MS),
+      onAlert: (a) => alerts.push(`${a.kind}:${a.tenantId}`),
+    });
+    const app = await buildServer({ deps: rig.h.deps, identity: svc, publicUrl: API });
+    try {
+      const statuses: number[] = [];
+      for (let i = 0; i < 3; i += 1) {
+        const device = await newDevice();
+        const code = await rig.issueCode(tenantB, outletB);
+        const res = await app.inject({
+          method: 'POST',
+          url: '/auth/enrol',
+          remoteAddress: `10.77.0.${i}`,
+          headers: { dpop: await device.proof('POST', '/auth/enrol') },
+          payload: { code, publicJwk: device.publicJwk, idempotencyKey: uuidv7() },
+        });
+        statuses.push(res.statusCode);
+      }
+      expect(statuses).toEqual([200, 200, 429]);
+      expect(alerts).toEqual([`enrolment_rate_limit:${tenantB}`]);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('refuses a code for an INACTIVE location at issue time', async () => {
+    const inactive = await rig.h.db.withTenant(tenantA, async (tx) =>
+      (await tx.query<{ id: string }>(`select id from app.location where kind = 'OUTLET' and not is_active limit 1`)).rows[0]?.id,
+    );
+    expect(inactive).toBeTruthy();
+    await expect(rig.issueCode(tenantA, inactive!)).rejects.toThrow(/no such active location/);
   });
 
   it('a code for tenant A enrols into tenant A whatever the device claims — there is no field to claim with', async () => {
@@ -339,7 +385,7 @@ describe('revocation answers 423 and drains before wipe (§2.7)', () => {
     // Positive control: live before revocation.
     expect((await rig.trpcQuery(device, s, 'session.permissions')).status).toBe(200);
 
-    const admin = await rig.h.identityFor(tenantA);
+    const admin = await rig.admin(tenantA);
     await rig.h.callerFor(admin).admin.devices.revoke({ idempotencyKey: uuidv7(), deviceId, reason: 'lost' });
 
     const api = await rig.trpcQuery(device, s, 'session.permissions');
@@ -410,7 +456,7 @@ describe('revocation answers 423 and drains before wipe (§2.7)', () => {
     const sub = `idp|${uuidv7()}`;
     await rig.linkedUser(tenantA, sub, 'counter_staff', outletA);
     const s = await rig.signedIn(device, sub);
-    const admin = await rig.h.identityFor(tenantA);
+    const admin = await rig.admin(tenantA);
     await rig.h.callerFor(admin).admin.devices.revoke({ idempotencyKey: uuidv7(), deviceId, reason: 'stolen' });
     const r = await rig.trpcQuery(device, s, 'session.permissions');
     expect(r.status).toBe(423);
@@ -440,7 +486,7 @@ describe('revocation answers 423 and drains before wipe (§2.7)', () => {
     const sub = `idp|${uuidv7()}`;
     await rig.linkedUser(tenantA, sub, 'counter_staff', outletA);
     const s = await rig.signedIn(device, sub);
-    const admin = rig.h.callerFor(await rig.h.identityFor(tenantA));
+    const admin = rig.h.callerFor(await rig.admin(tenantA));
     await admin.admin.devices.setStatus({ idempotencyKey: uuidv7(), deviceId, status: 'suspended' });
     expect((await rig.trpcQuery(device, s, 'session.permissions')).status).toBe(403);
     await admin.admin.devices.setStatus({ idempotencyKey: uuidv7(), deviceId, status: 'active' });
@@ -561,8 +607,8 @@ describe('the sync token and the offline lease', () => {
 describe('two tenants — every new read path', () => {
   it('admin reads in tenant B see none of tenant A\'s devices, codes, users or roles', async () => {
     await enrolled(tenantA, outletA);
-    const callerA = rig.h.callerFor(await rig.h.identityFor(tenantA));
-    const callerB = rig.h.callerFor(await rig.h.identityFor(tenantB));
+    const callerA = rig.h.callerFor(await rig.admin(tenantA));
+    const callerB = rig.h.callerFor(await rig.admin(tenantB));
     const aDevices = await callerA.admin.devices.list();
     const bDevices = await callerB.admin.devices.list();
     expect(aDevices.length).toBeGreaterThan(0); // positive control
@@ -590,7 +636,7 @@ describe('two tenants — every new read path', () => {
 
   it('tenant B cannot revoke, suspend or rescope a tenant-A device', async () => {
     const { deviceId } = await enrolled(tenantA, outletA);
-    const callerB = rig.h.callerFor(await rig.h.identityFor(tenantB));
+    const callerB = rig.h.callerFor(await rig.admin(tenantB));
     await expect(callerB.admin.devices.revoke({ idempotencyKey: uuidv7(), deviceId, reason: 'lost' })).rejects.toThrow();
     await expect(callerB.admin.devices.setStatus({ idempotencyKey: uuidv7(), deviceId, status: 'suspended' })).rejects.toThrow();
     const status = await rig.h.db.withTenant(tenantA, async (tx) =>
@@ -602,15 +648,21 @@ describe('two tenants — every new read path', () => {
   it('a tenant-A device key cannot sign anyone into tenant B, and the sync projections never cross', async () => {
     const { device, deviceId } = await enrolled(tenantA, outletA);
     const sub = `idp|${uuidv7()}`;
-    await rig.linkedUser(tenantA, sub, 'counter_staff', outletA);
+    const userId = await rig.linkedUser(tenantA, sub, 'counter_staff', outletA);
     await rig.signedIn(device, sub);
+    // The same subject linked in tenant B gets nothing on this (tenant-A) key.
+    await rig.linkedUser(tenantB, sub, 'counter_staff', outletB);
+    const again = await rig.signIn(device, sub);
+    expect((again.body as { tenantId?: string }).tenantId).toBe(tenantA);
     const inB = await rig.h.db.withTenant(tenantB, async (tx) =>
       (await tx.query(`select 1 from app.device_sync_grant where device_id = $1`, [deviceId])).rows.length,
     );
     const inA = await rig.h.db.withTenant(tenantA, async (tx) =>
-      (await tx.query(`select 1 from app.device_sync_grant where device_id = $1`, [deviceId])).rows.length,
+      (await tx.query<{ user_id: string }>(`select user_id from app.device_sync_grant where device_id = $1`, [deviceId])).rows,
     );
-    expect(inA).toBe(1);
+    // One grant row per user whose scope meets this tablet's ceiling — the
+    // clerk, and the tenant's root-scoped people (founder, accounts).
+    expect(inA.map((r) => r.user_id)).toContain(userId);
     expect(inB).toBe(0);
   });
 });

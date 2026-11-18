@@ -21,6 +21,7 @@ import {
   assignRole,
   createRole,
   createUser,
+  deleteRole,
   endAssignment,
   fetchAdminCatalogue,
   fetchAdminDevices,
@@ -29,6 +30,7 @@ import {
   fetchAdminUsers,
   issueEnrolmentCode,
   revokeDevice,
+  setDeviceScope,
   setDeviceStatus,
   setUserStatus,
   updateRole,
@@ -122,6 +124,7 @@ export function PeopleAdmin({ apiOptions }: Props): ReactNode {
   const [assignFor, setAssignFor] = useState<string | null>(null);
   const [roleId, setRoleId] = useState('');
   const [scope, setScope] = useState<string | null>(null);
+  const [from, setFrom] = useState('');
   const [until, setUntil] = useState('');
 
   const refresh = (): void => users.refresh();
@@ -213,19 +216,34 @@ export function PeopleAdmin({ apiOptions }: Props): ReactNode {
                   Give a role
                 </button>
                 {u.status === 'ACTIVE' ? (
-                  <button
-                    type="button"
-                    className="secondary-action pressable"
-                    disabled={act.busy}
-                    onClick={() =>
-                      act.run(
-                        () => setUserStatus({ idempotencyKey: key(), userId: u.id, status: 'DISABLED', reason: 'disabled from the back office' }, o),
-                        refresh,
-                      )
-                    }
-                  >
-                    Disable
-                  </button>
+                  <>
+                    <button
+                      type="button"
+                      className="secondary-action pressable"
+                      disabled={act.busy}
+                      onClick={() =>
+                        act.run(
+                          () => setUserStatus({ idempotencyKey: key(), userId: u.id, status: 'SUSPENDED', reason: 'suspended from the back office' }, o),
+                          refresh,
+                        )
+                      }
+                    >
+                      Suspend
+                    </button>
+                    <button
+                      type="button"
+                      className="secondary-action pressable"
+                      disabled={act.busy}
+                      onClick={() =>
+                        act.run(
+                          () => setUserStatus({ idempotencyKey: key(), userId: u.id, status: 'DISABLED', reason: 'disabled from the back office' }, o),
+                          refresh,
+                        )
+                      }
+                    >
+                      Disable
+                    </button>
+                  </>
                 ) : (
                   <button
                     type="button"
@@ -256,6 +274,7 @@ export function PeopleAdmin({ apiOptions }: Props): ReactNode {
                             userId: u.id,
                             roleId,
                             scopeLocationId: scope,
+                            ...(from ? { effectiveFrom: new Date(from).toISOString() } : {}),
                             ...(until ? { effectiveTo: new Date(until).toISOString() } : {}),
                           },
                           o,
@@ -279,6 +298,10 @@ export function PeopleAdmin({ apiOptions }: Props): ReactNode {
                     </select>
                   </label>
                   <LocationPicker label="Where" locations={locs} value={scope} onChange={setScope} />
+                  <label className="admin-field">
+                    <span>From (optional — default now)</span>
+                    <input type="datetime-local" value={from} onChange={(e) => setFrom(e.target.value)} />
+                  </label>
                   <label className="admin-field">
                     <span>Until (optional)</span>
                     <input type="datetime-local" value={until} onChange={(e) => setUntil(e.target.value)} />
@@ -406,6 +429,18 @@ export function DevicesAdmin({ apiOptions }: Props): ReactNode {
                   <button type="button" className="secondary-action pressable danger" onClick={() => setRevoking({ id: d.id, reason: 'lost' })}>
                     Revoke…
                   </button>
+                  <LocationPicker
+                    label="Move to"
+                    locations={locs}
+                    value={d.locations[0]?.id ?? null}
+                    allowNone="Nowhere — holds no data"
+                    onChange={(id) =>
+                      act.run(
+                        () => setDeviceScope({ idempotencyKey: key(), deviceId: d.id, locationIds: id === null ? [] : [id] }, o),
+                        devices.refresh,
+                      )
+                    }
+                  />
                 </div>
               ) : null}
               {revoking?.id === d.id ? (
@@ -510,9 +545,20 @@ export function RolesAdmin({ apiOptions }: Props): ReactNode {
                 </span>
               </div>
               {!r.isOwner ? (
-                <button type="button" className="secondary-action pressable" onClick={() => open(r.id)}>
-                  Edit
-                </button>
+                <div className="admin-actions">
+                  <button type="button" className="secondary-action pressable" onClick={() => open(r.id)}>
+                    Edit
+                  </button>
+                  <button
+                    type="button"
+                    className="secondary-action pressable danger"
+                    disabled={act.busy || r.liveAssignments > 0}
+                    title={r.liveAssignments > 0 ? 'End its assignments first' : undefined}
+                    onClick={() => act.run(() => deleteRole({ idempotencyKey: key(), roleId: r.id }, o), roles.refresh)}
+                  >
+                    Delete
+                  </button>
+                </div>
               ) : null}
             </li>
           ))}
