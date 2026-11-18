@@ -41,6 +41,10 @@ const Books = lazy(async () => ({ default: (await import('../books/Books')).Book
 const Deliveries = lazy(async () => ({
   default: (await import('../deliveries/Deliveries')).Deliveries,
 }));
+// Back-office administration (work package B). Office-only, online-only.
+const PeopleAdmin = lazy(async () => ({ default: (await import('../admin/Admin')).PeopleAdmin }));
+const DevicesAdmin = lazy(async () => ({ default: (await import('../admin/Admin')).DevicesAdmin }));
+const RolesAdmin = lazy(async () => ({ default: (await import('../admin/Admin')).RolesAdmin }));
 
 export type DestinationId =
   | 'reports'
@@ -52,7 +56,10 @@ export type DestinationId =
   | 'suppliers'
   | 'deliveries'
   | 'review'
-  | 'books';
+  | 'books'
+  | 'people'
+  | 'devices'
+  | 'roles';
 
 export interface DestinationDef {
   readonly id: DestinationId;
@@ -65,6 +72,11 @@ export interface DestinationDef {
   readonly group: 'trade' | 'stock' | 'control';
   /** True for the two outbox writers that belong at the counter, radio off. */
   readonly counterWork: boolean;
+  /**
+   * Back office only: never on the counter's rail. Administration is a laptop
+   * job (ADR-0003 A1) and is online-only by construction.
+   */
+  readonly officeOnly?: boolean;
 }
 
 /** In rail order. The counter room offers the same list in the same order. */
@@ -85,6 +97,11 @@ export const DESTINATIONS: readonly DestinationDef[] = [
   { id: 'review', label: 'Decisions', icon: 'alert', requires: CAPABILITY.conflictReview, group: 'control', counterWork: false },
   // Read-only: the books are the server's; a correction is a reversing entry.
   { id: 'books', label: 'Books', icon: 'book', requires: CAPABILITY.glView, group: 'control', counterWork: false },
+  // Administration (02 §2.4–§2.7). Offered by the capability that makes each
+  // screen useful; the server re-checks every act, escalation rule included.
+  { id: 'people', label: 'People', icon: 'grid', requires: CAPABILITY.adminUser, group: 'control', counterWork: false, officeOnly: true },
+  { id: 'devices', label: 'Devices', icon: 'pin', requires: CAPABILITY.adminDeviceEnrol, group: 'control', counterWork: false, officeOnly: true },
+  { id: 'roles', label: 'Roles', icon: 'tag', requires: CAPABILITY.adminRole, group: 'control', counterWork: false, officeOnly: true },
 ];
 
 export interface DestinationProps {
@@ -162,6 +179,24 @@ export function renderDestination(id: DestinationId, { db, permissions, apiOptio
       return (
         <Suspense fallback={<ServerPending what="The books" rows={4} />}>
           <Books {...api} />
+        </Suspense>
+      );
+    case 'people':
+      return (
+        <Suspense fallback={<ServerPending what="People" rows={3} />}>
+          <PeopleAdmin {...api} />
+        </Suspense>
+      );
+    case 'devices':
+      return (
+        <Suspense fallback={<ServerPending what="Devices" rows={3} />}>
+          <DevicesAdmin {...api} />
+        </Suspense>
+      );
+    case 'roles':
+      return (
+        <Suspense fallback={<ServerPending what="Roles" rows={3} />}>
+          <RolesAdmin {...api} />
         </Suspense>
       );
   }

@@ -41,6 +41,7 @@ import { CartPanel, type RemovedLine } from './CartPanel';
 import { ProductSearch } from './ProductSearch';
 import { ReceiptView } from './ReceiptView';
 import { TenderPanel } from './TenderPanel';
+import { useLeaseGate } from '../auth/lease-gate';
 
 type CounterMode =
   | { readonly step: 'cart' }
@@ -67,6 +68,7 @@ function refusalMessage(err: unknown): string {
 }
 
 export function Counter({ db }: { readonly db: LocalDb }): ReactNode {
+  const lease = useLeaseGate();
   const [mode, setMode] = useState<CounterMode>({ step: 'cart' });
   const [removed, setRemoved] = useState<RemovedLine | null>(null);
   const [refusal, setRefusal] = useState<string | null>(null);
@@ -294,9 +296,13 @@ export function Counter({ db }: { readonly db: LocalDb }): ReactNode {
       </div>
     );
 
+  // The offline lease (02 §2.7): SEALED is read-only — the cart stays, the
+  // queue stays, nothing is lost, and no new sale is taken until a sync.
+  const leaseAllowsSale = lease.allows('sale.record');
+
   const takePayment = (): void => {
     // A disabled attribute is a hint, not a policy.
-    if (cartBlocked) return;
+    if (cartBlocked || !leaseAllowsSale) return;
     setCartOpen(false);
     setMode({ step: 'tender' });
   };
@@ -310,7 +316,7 @@ export function Counter({ db }: { readonly db: LocalDb }): ReactNode {
     pricing,
     // Preventing the tap beats refusing it: walking someone to the tender
     // screen only to turn them back is a worse way to say the same thing.
-    sellable: !cartBlocked,
+    sellable: !cartBlocked && leaseAllowsSale,
   };
 
   if (mode.step === 'tender') {

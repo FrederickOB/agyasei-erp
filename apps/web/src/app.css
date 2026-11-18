@@ -3788,3 +3788,208 @@ button {
   font-size: var(--t-sm);
   font-weight: 700;
 }
+
+/* ===========================================================================
+   Identity: enrolment, PIN pad, lease banner (02-security §2.7), and the
+   back-office administration screens (work package B). Tokens only.
+   =========================================================================== */
+.enrol-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+  width: 100%;
+}
+.enrol-code,
+.admin-field input,
+.admin-field select {
+  min-height: var(--tap);
+  padding: 0 var(--s-3);
+  border: 1px solid var(--control-border);
+  border-radius: var(--r-2);
+  background: var(--surface);
+  color: var(--text);
+  font-size: var(--t-lg);
+}
+.enrol-code {
+  font-size: var(--t-2xl);
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+}
+.pin-pad {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+  width: 100%;
+  max-width: 22rem;
+}
+.pin-dots {
+  display: flex;
+  gap: var(--s-3);
+  margin: 0;
+}
+.pin-dot {
+  width: 1rem;
+  height: 1rem;
+  border-radius: var(--r-full);
+  border: 2px solid var(--control-border);
+}
+.pin-dot.filled {
+  background: var(--brand);
+  border-color: var(--brand);
+}
+.pin-keys {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: var(--s-2);
+}
+.pin-key {
+  min-height: calc(var(--tap) * 1.25);
+  border: 1px solid var(--control-border);
+  border-radius: var(--r-2);
+  background: var(--surface);
+  color: var(--text);
+  font-size: var(--t-2xl);
+  font-weight: 650;
+}
+.lease-banner {
+  display: flex;
+  gap: var(--s-2);
+  align-items: center;
+  margin: 0;
+  padding: var(--s-2) var(--s-3);
+  background: var(--wait-tint);
+  color: var(--wait-ink);
+  font-weight: 650;
+}
+.lease-banner.sealed {
+  background: var(--attn-tint);
+  color: var(--attn-ink);
+}
+.lease-banner span {
+  flex: 1;
+}
+.lease-banner button {
+  min-height: var(--tap-min);
+  padding: 0 var(--s-3);
+  border: 1px solid currentColor;
+  border-radius: var(--r-2);
+  background: transparent;
+  color: inherit;
+  font-weight: 650;
+}
+.session-bar {
+  display: flex;
+  gap: var(--s-2);
+  align-items: center;
+  justify-content: flex-end;
+  padding: var(--s-1, 0.25rem) var(--s-3);
+  color: var(--text-muted);
+}
+.session-bar button {
+  min-height: var(--tap-min);
+  padding: 0 var(--s-3);
+  border: 1px solid var(--control-border);
+  border-radius: var(--r-2);
+  background: var(--surface);
+  color: var(--text);
+}
+.admin-screen {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-4);
+  padding: var(--s-4);
+  max-width: 72rem;
+}
+.admin-head h1 {
+  margin: 0;
+  font-size: var(--t-2xl);
+}
+.admin-head p,
+.admin-meta {
+  color: var(--text-muted);
+}
+.admin-card {
+  padding: var(--s-4);
+  border: 1px solid var(--border);
+  border-radius: var(--r-3);
+  background: var(--surface);
+}
+.admin-card.retired {
+  background: var(--surface-2);
+}
+.admin-form {
+  display: grid;
+  gap: var(--s-3);
+}
+.admin-form h2 {
+  margin: 0;
+  font-size: var(--t-lg);
+}
+.admin-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+}
+.admin-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.admin-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-2);
+  align-items: baseline;
+}
+.admin-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-2);
+  margin-top: var(--s-2);
+}
+.admin-assignments {
+  margin: var(--s-2) 0 0;
+  padding-left: var(--s-4);
+}
+.admin-assignments li.ended {
+  color: var(--text-muted);
+  text-decoration: line-through;
+}
+.admin-perms {
+  border: 1px solid var(--border);
+  border-radius: var(--r-2);
+}
+.admin-perm {
+  display: flex;
+  gap: var(--s-2);
+  align-items: flex-start;
+  min-height: var(--tap-min);
+}
+.enrol-issued {
+  padding: var(--s-3);
+  border-radius: var(--r-2);
+  background: var(--ok-tint);
+  color: var(--ok-ink);
+}
+.enrol-code-display {
+  margin: 0;
+  font-size: var(--t-3xl);
+  font-weight: 700;
+  letter-spacing: 0.15em;
+}
+.danger {
+  color: var(--attn-ink);
+}
+@media (min-width: 900px) {
+  .admin-form {
+    grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
+    align-items: end;
+  }
+  .admin-form h2,
+  .admin-perms {
+    grid-column: 1 / -1;
+  }
+}

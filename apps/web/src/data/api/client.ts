@@ -62,6 +62,7 @@
  */
 import type { MinorUnits } from '@erp/money';
 import { deserializeMoney } from '@erp/money';
+import { authMode, deviceAuth } from '../auth/runtime';
 
 // ---------------------------------------------------------------------------
 // The transport seam — small on purpose, so a test can drive it
@@ -178,7 +179,16 @@ export function invalidRequest(what: string, issues: readonly string[]): ApiResu
 export interface ApiEndpoint {
   /** Base URL with no trailing slash. */
   readonly url: string;
+  /** DEV ONLY static bearer (`VITE_API_TOKEN`). Empty on the device path. */
   readonly bearer: string;
+  /**
+   * THE DEVICE PATH: headers for one request — the DPoP-bound access token and
+   * a fresh proof from the enrolled key (data/auth/device-auth.ts). Throws when
+   * nobody is signed in, which this module reports as `unauthenticated`.
+   */
+  readonly authorize?: (method: string, url: string) => Promise<Record<string, string>>;
+  /** Told about a `423 device_revoked`, so the device can drain then wipe. */
+  readonly onRevoked?: (body: Record<string, unknown>) => Promise<void>;
 }
 
 /**
@@ -195,10 +205,22 @@ export interface ApiEndpoint {
  */
 export function readApiEndpoint(): ApiEndpoint | null {
   const url = import.meta.env.VITE_API_URL;
-  const bearer = import.meta.env.VITE_API_TOKEN;
   if (typeof url !== 'string' || url.length === 0) return null;
+  const base = url.endsWith('/') ? url.slice(0, -1) : url;
+  if (authMode() === 'device') {
+    const auth = deviceAuth();
+    if (auth === null) return null;
+    return {
+      url: base,
+      bearer: '',
+      authorize: (method, target) => auth.authorize(method, target),
+      onRevoked: (body) => auth.markRevoked(body),
+    };
+  }
+  // DEV ONLY: the static bearer from `pnpm dev:token`.
+  const bearer = import.meta.env.VITE_API_TOKEN;
   if (typeof bearer !== 'string' || bearer.length === 0) return null;
-  return { url: url.endsWith('/') ? url.slice(0, -1) : url, bearer };
+  return { url: base, bearer };
 }
 
 // ---------------------------------------------------------------------------
@@ -290,12 +312,29 @@ async function call<T>(
       ? `${endpoint.url}/trpc/${path}?${new URLSearchParams({ input: serialized }).toString()}`
       : `${endpoint.url}/trpc/${path}`;
 
+  let authHeaders: Record<string, string>;
+  try {
+    authHeaders = endpoint.authorize
+      ? await endpoint.authorize(method, url)
+      : { authorization: `Bearer ${endpoint.bearer}` };
+  } catch (err) {
+    if (timer !== null) clearTimeout(timer);
+    // Nobody signed in, or the session could not be renewed (offline). Not the
+    // server's answer — this device has no credential to ask with right now.
+    return failure(
+      'unauthenticated',
+      HEADLINES.unauthenticated,
+      err instanceof Error ? err.message : String(err),
+      null,
+    );
+  }
+
   let res: ApiResponseLike;
   try {
     res = await fetchFn(url, {
       method,
       headers: {
-        authorization: `Bearer ${endpoint.bearer}`,
+        ...authHeaders,
         ...(method === 'POST' ? { 'content-type': 'application/json' } : {}),
       },
       ...(method === 'POST' ? { body: serialized } : {}),
@@ -329,6 +368,12 @@ async function call<T>(
     const detail = message ?? (code === null ? null : code);
     if (res.status === 401) {
       return failure('unauthenticated', HEADLINES.unauthenticated, detail, res.status);
+    }
+    if (res.status === 423 && endpoint.onRevoked && body !== null && typeof body === 'object') {
+      // §2.7: the device was revoked. Recorded so the device drains its
+      // outbox to review and then wipes — never the other way round.
+      await endpoint.onRevoked(body as Record<string, unknown>);
+      return failure('refused', 'This device has been withdrawn from service.', 'device_revoked', res.status);
     }
     if (res.status === 403) return failure('forbidden', HEADLINES.forbidden, detail, res.status);
     if (res.status >= 500) return failure('server-error', HEADLINES['server-error'], detail, res.status);

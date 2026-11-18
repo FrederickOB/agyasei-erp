@@ -140,6 +140,12 @@ export const CAPABILITY = {
   deliveryView: 'logistics.delivery.view',
   /** Hand a load to a haulier and move its status along. */
   dispatchManage: 'logistics.dispatch.manage',
+  /** Create people and link them to a sign-in identity. Tenant-wide. */
+  adminUser: 'admin.user.manage',
+  /** Issue enrolment codes for devices at a location (and see them). */
+  adminDeviceEnrol: 'admin.device.enrol',
+  /** Compose the tenant's own roles from the platform catalogue. */
+  adminRole: 'admin.role.manage',
 } as const;
 
 export interface CapabilityGrant {

@@ -33,6 +33,8 @@ import { SyncRuntime } from './sync/runtime';
 import { httpUploadTransport } from './sync/transport';
 import { drainOutbox, needsClockResync } from './sync/upload';
 import { sequenceResultHandler } from './sequence';
+import { runRevokedDrain } from './auth/drain';
+import { authMode, deviceAuth, sessionDescriptor } from './auth/runtime';
 
 function toPowerSyncTable(def: LocalTableDef): Table {
   const columns: ColumnsType = {};
@@ -55,25 +57,30 @@ export function buildPowerSyncSchema(): Schema {
 export interface SyncEnv {
   readonly apiUrl: string;
   readonly powersyncUrl: string;
+  /** DEV ONLY static bearer. Empty on the device path. */
   readonly apiToken: string;
+  /** True when credentials come from the enrolled device's session (data/auth). */
+  readonly device: boolean;
 }
 
-/** The sync env, or null → local-only fallback. All three are required. */
+/**
+ * The sync env, or null → local-only fallback.
+ *
+ * THE DEVICE PATH (production): VITE_API_URL + VITE_POWERSYNC_URL, and the
+ * credential is the enrolled device's DPoP-bound session — no token in the
+ * build at all.
+ * THE DEV PATH: the same two URLs plus VITE_API_TOKEN from `pnpm dev:token`.
+ */
 export function readSyncEnv(): SyncEnv | null {
   const apiUrl = import.meta.env.VITE_API_URL;
   const powersyncUrl = import.meta.env.VITE_POWERSYNC_URL;
   const apiToken = import.meta.env.VITE_API_TOKEN;
-  if (
-    typeof apiUrl !== 'string' ||
-    apiUrl.length === 0 ||
-    typeof powersyncUrl !== 'string' ||
-    powersyncUrl.length === 0 ||
-    typeof apiToken !== 'string' ||
-    apiToken.length === 0
-  ) {
+  if (typeof apiUrl !== 'string' || apiUrl.length === 0 || typeof powersyncUrl !== 'string' || powersyncUrl.length === 0) {
     return null;
   }
-  return { apiUrl, powersyncUrl, apiToken };
+  if (authMode() === 'device') return { apiUrl, powersyncUrl, apiToken: '', device: true };
+  if (typeof apiToken !== 'string' || apiToken.length === 0) return null;
+  return { apiUrl, powersyncUrl, apiToken, device: false };
 }
 
 export function syncConfigured(): boolean {
@@ -89,6 +96,10 @@ export function syncConfigured(): boolean {
  * to dev placeholders.
  */
 export function readApiBearerToken(): string | null {
+  // THE DEVICE PATH: a local, unsigned description of the unlocked session in
+  // the same claim format (uid, locs) — read by the self-configuration
+  // modules, never sent (data/auth/runtime.ts).
+  if (authMode() === 'device') return sessionDescriptor(deviceAuth()?.current() ?? null);
   const token = import.meta.env.VITE_API_TOKEN;
   return typeof token === 'string' && token.length > 0 ? token : null;
 }
@@ -114,12 +125,11 @@ export function readApiBearerToken(): string | null {
  * like from the counter, so the queue is drained and reported here rather than
  * left to accumulate silently.
  */
-export function buildConnector(env: SyncEnv, runtime: SyncRuntime): PowerSyncBackendConnector {
-  const credentials = new CredentialCache({
-    apiUrl: env.apiUrl,
-    apiToken: env.apiToken,
-    powersyncUrl: env.powersyncUrl,
-  });
+export function buildConnector(
+  env: SyncEnv,
+  runtime: SyncRuntime,
+  credentials: CredentialCache = credentialCacheFor(env),
+): PowerSyncBackendConnector {
   return {
     async fetchCredentials() {
       const fresh = await credentials.get();
@@ -143,6 +153,25 @@ export function buildConnector(env: SyncEnv, runtime: SyncRuntime): PowerSyncBac
       await runtime.drainNow();
     },
   };
+}
+
+function credentialCacheFor(env: SyncEnv): CredentialCache {
+  const auth = env.device ? deviceAuth() : null;
+  return new CredentialCache({
+    apiUrl: env.apiUrl,
+    apiToken: env.apiToken,
+    powersyncUrl: env.powersyncUrl,
+    ...(auth
+      ? {
+          authorize: (method: string, url: string) => auth.authorize(method, url),
+          // Every successful sync carries a fresh lease (§2.7).
+          onLease: async (lease) => {
+            await auth.acceptLease(lease);
+          },
+          onRevoked: (body) => auth.markRevoked(body),
+        }
+      : {}),
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -231,7 +260,17 @@ export async function openLocalDb(): Promise<LocalDb> {
     { tables: syncedTables },
   );
 
-  const transport = httpUploadTransport({ apiUrl: env.apiUrl, apiToken: env.apiToken });
+  const auth = env.device ? deviceAuth() : null;
+  const transport = httpUploadTransport({
+    apiUrl: env.apiUrl,
+    apiToken: env.apiToken,
+    ...(auth
+      ? {
+          authorize: (method: string, url: string) => auth.authorize(method, url),
+          onRevoked: (body: Record<string, unknown>) => auth.markRevoked(body),
+        }
+      : {}),
+  });
   // The runtime drains against the same LocalDb seam the app writes through,
   // so ack marking rides the same change bus the badges re-render from.
   const runtime = new SyncRuntime({
@@ -247,6 +286,30 @@ export async function openLocalDb(): Promise<LocalDb> {
     // wired. `packages/wire-conformance/test/sequence-client-to-api.test.ts`
     // and drill D7 exercise the whole path explicitly.
     drain: async (onProgress) => {
+      // ── A REVOKED DEVICE NEVER USES THE NORMAL QUEUE AGAIN (§2.7) ────────
+      // The outbox drains to /sync/revoked-drain (review, posts nothing),
+      // and the device wipes only once the server has every write.
+      if (auth && (await auth.revoked())) {
+        const outcome = await runRevokedDrain({
+          apiUrl: env.apiUrl,
+          db: base,
+          auth,
+          wipeLocal: async () => {
+            await ps.disconnectAndClear({ clearLocal: true });
+          },
+        });
+        if (outcome.kind === 'wiped') {
+          console.error(`[sync] device revoked: drained and wiped (${outcome.undrained} write(s) undelivered)`);
+        }
+        return {
+          batchSize: 0,
+          completed: 0,
+          rejected: 0,
+          deferred: outcome.kind === 'wiped' ? 0 : outcome.remaining,
+          deferredReasons: [],
+          transportOk: outcome.kind !== 'waiting',
+        };
+      }
       const report = await drainOutbox(base, transport, {
         onProgress,
         onResult: sequenceResultHandler(base),
@@ -290,7 +353,28 @@ export async function openLocalDb(): Promise<LocalDb> {
     window.addEventListener('online', () => void runtime.drainNow());
   }
 
-  await ps.connect(buildConnector(env, runtime));
+  const credentials = credentialCacheFor(env);
+  await ps.connect(buildConnector(env, runtime, credentials));
   runtime.start();
+
+  // ── THE SHARED COUNTER TABLET: a user switch is a reconnect (§2.5) ─────
+  // The stream carries one user's token, and every bucket keys on `sub`. On a
+  // switch the cached token is dropped and the client reconnects under the
+  // new user: PowerSync drops buckets no longer subscribed and downloads the
+  // new ones; unchanged buckets are not re-downloaded. Locking does NOT
+  // disconnect the outbox — sales already queued still drain under the next
+  // session; nothing is deleted.
+  if (auth) {
+    let lastUser = auth.current()?.userId ?? null;
+    auth.onChange(() => {
+      const now = auth.current()?.userId ?? null;
+      if (now !== null && now !== lastUser) {
+        credentials.invalidate();
+        void ps.connect(buildConnector(env, runtime, credentials));
+        void runtime.drainNow();
+      }
+      lastUser = now;
+    });
+  }
   return db;
 }
