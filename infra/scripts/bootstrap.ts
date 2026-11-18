@@ -78,6 +78,12 @@ const PUBLICATION_TABLES = [
   'app.price_list',
   'app.price_list_item',
   'app.movement_reason',
+  // The till and the tenders (migrations 0020–0021): methods and the period
+  // calendar in tenant_reference, sessions and tender rows in location_ops.
+  'app.tender_method',
+  'app.accounting_period',
+  'app.cash_session',
+  'app.sale_tender',
   'app.customer',
   // Credit (migration 0013). The two *_scope tables are PARAMETER-query
   // sources — the gate itself — and must replicate or every credit bucket
