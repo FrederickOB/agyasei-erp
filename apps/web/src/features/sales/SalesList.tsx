@@ -11,6 +11,7 @@ import { recordBadgeLabel } from '../../lib/badges';
 import { Money } from '../../money/Money';
 import { Icon } from '../../ui/Icon';
 import { saleNumberLabel } from '../counter/ReceiptView';
+import { PrintStatus } from '../printing/PrintStatus';
 
 function timeOf(iso: string): string {
   const d = new Date(iso);
@@ -62,7 +63,13 @@ function ServerAnswer({ sale }: { readonly sale: RecordedSale }): ReactNode {
   return null;
 }
 
-export function SalesList({ db }: { readonly db: LocalDb }): ReactNode {
+export function SalesList({
+  db,
+  onOpenPrinterSettings,
+}: {
+  readonly db: LocalDb;
+  readonly onOpenPrinterSettings?: () => void;
+}): ReactNode {
   const sales = useLiveQuery(db, (d) => recentSales(d, 20), []);
 
   // Not `null` while the read resolves: a blank panel where a list belongs
@@ -108,6 +115,7 @@ export function SalesList({ db }: { readonly db: LocalDb }): ReactNode {
             </span>
           </span>
           <ServerAnswer sale={sale} />
+          <PrintStatus db={db} saleId={sale.id} onOpenSettings={onOpenPrinterSettings} showStatus={false} />
         </li>
       ))}
     </ul>

@@ -34,7 +34,9 @@ import {
 } from '../../data/session/device-price-list';
 import { loadActiveProducts, type ProductWithPrice } from '../../data/queries/products';
 import { useLiveQuery } from '../../data/use-live-query';
+import { useCurrencySpec } from '../../money/CurrencyContext';
 import { Money } from '../../money/Money';
+import { usePrintService } from '../printing/PrintingContext';
 import { Icon } from '../../ui/Icon';
 import { useMediaQuery, WIDE_LAYOUT } from '../../ui/use-media-query';
 import { CartPanel, type RemovedLine } from './CartPanel';
@@ -66,7 +68,13 @@ function refusalMessage(err: unknown): string {
   return `This sale was not recorded: ${err instanceof Error ? err.message : String(err)}`;
 }
 
-export function Counter({ db }: { readonly db: LocalDb }): ReactNode {
+export function Counter({
+  db,
+  onOpenPrinterSettings,
+}: {
+  readonly db: LocalDb;
+  readonly onOpenPrinterSettings?: () => void;
+}): ReactNode {
   const [mode, setMode] = useState<CounterMode>({ step: 'cart' });
   const [removed, setRemoved] = useState<RemovedLine | null>(null);
   const [refusal, setRefusal] = useState<string | null>(null);
@@ -79,6 +87,8 @@ export function Counter({ db }: { readonly db: LocalDb }): ReactNode {
   // Which one it IS decides more than styling: `aria-modal`, whether Escape
   // means anything, and where focus belongs.
   const wide = useMediaQuery(WIDE_LAYOUT);
+  const printing = usePrintService();
+  const currency = useCurrencySpec();
 
   useEffect(() => {
     void getOrCreateDeviceNode(db).then((node) => {
@@ -228,6 +238,16 @@ export function Counter({ db }: { readonly db: LocalDb }): ReactNode {
       void checkout(db, { cartId, tenderedMinor, hlc })
         .then((result) => {
           setMode({ step: 'receipt', saleId: result.saleId, changeMinor: result.changeMinor });
+          // The sale is COMMITTED here. Only now is a receipt queued, and
+          // nothing below can fail the sale, delay the next customer, or be
+          // awaited: it is fire-and-forget by design (printing/service.ts).
+          if (printing !== null) {
+            void printing.afterSale(
+              result.saleId,
+              { lines: lines ?? [], pricing, basis: basis ?? UNTAXED_BASIS },
+              currency,
+            );
+          }
           // The next customer's cart opens via the cart === null effect above
           // (checkout's notify re-runs the live query); creating it here too
           // would race that effect into a second open cart.
@@ -243,7 +263,7 @@ export function Counter({ db }: { readonly db: LocalDb }): ReactNode {
           setRefusal(refusalMessage(err));
         });
     },
-    [db, cartId],
+    [db, cartId, printing, lines, pricing, basis, currency],
   );
 
   if (mode.step === 'receipt') {
@@ -253,6 +273,7 @@ export function Counter({ db }: { readonly db: LocalDb }): ReactNode {
         saleId={mode.saleId}
         changeMinor={mode.changeMinor}
         onNewSale={() => setMode({ step: 'cart' })}
+        {...(onOpenPrinterSettings === undefined ? {} : { onOpenPrinterSettings })}
       />
     );
   }

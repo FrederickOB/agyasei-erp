@@ -42,6 +42,7 @@ export type IconName =
   | 'tag'
   | 'undo'
   | 'edit'
+  | 'printer'
   // The back office's rail (features/office). Same grid, same weight.
   | 'grid'
   | 'chart'
@@ -135,6 +136,13 @@ const PATHS: Record<IconName, ReactNode> = {
     <>
       <path d="M4 9h10.5a5 5 0 010 10H9" />
       <path d="M7.5 5L4 9l3.5 4" />
+    </>
+  ),
+  printer: (
+    <>
+      <path d="M7 9V3.8h10V9" />
+      <path d="M7 17.5H4.5v-7a1.5 1.5 0 011.5-1.5h12a1.5 1.5 0 011.5 1.5v7H17" />
+      <path d="M7 14h10v6.2H7z" />
     </>
   ),
   grid: (
