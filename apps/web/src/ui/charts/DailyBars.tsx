@@ -117,11 +117,27 @@ export function DailyBars({
           </text>
         ) : null,
       )}
-      {lastIndex >= 0 && endLabel !== undefined ? (
-        <foreignObject x={x(lastIndex) + bw / 2 - 60} y={Math.max(0, y(points[lastIndex] as bigint) - 20)} width={120} height={18}>
-          <div className="dailybars-end tabular">{endLabel}</div>
-        </foreignObject>
-      ) : null}
+      {lastIndex >= 0 && endLabel !== undefined ? <EndLabel centre={x(lastIndex) + bw / 2} top={y(points[lastIndex] as bigint)} width={width} text={endLabel} /> : null}
     </svg>
+  );
+}
+
+const END_W = 120;
+
+/**
+ * The value over the last bar, kept INSIDE the plot. The last bar sits at the
+ * right edge, so a box centred on it hung 60 units past the chart — and, with
+ * the svg's `overflow: visible`, past the page: a 360px phone zoomed the
+ * whole dashboard out to fit it (found by the browser tests). Clamped, it
+ * aligns to the edge it was pushed against instead of the bar's centre.
+ */
+function EndLabel({ centre, top, width, text }: { readonly centre: number; readonly top: number; readonly width: number; readonly text: ReactNode }): ReactNode {
+  const ideal = centre - END_W / 2;
+  const at = Math.min(Math.max(0, ideal), width - END_W);
+  const align = at < ideal ? ' dailybars-end-right' : at > ideal ? ' dailybars-end-left' : '';
+  return (
+    <foreignObject x={at} y={Math.max(0, top - 20)} width={END_W} height={18}>
+      <div className={`dailybars-end tabular${align}`}>{text}</div>
+    </foreignObject>
   );
 }
