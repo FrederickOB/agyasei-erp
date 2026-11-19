@@ -181,6 +181,32 @@ describe('the receipt document snapshot', () => {
     expect(back).toEqual(doc);
   });
 
+  it('survives a BigInt.prototype.toJSON installed by a dependency, as the shipped bundle has', () => {
+    // @journeyapps/wa-sqlite (src/sqlite-api.js) installs this in every page
+    // that loads the database, and JSON.stringify calls a value's toJSON
+    // BEFORE the replacer — so a replacer testing `typeof v === 'bigint'` never
+    // sees one, nothing is tagged, and every queued receipt deserialises to
+    // null: no on-screen lines, no print, no reprint. Found by the browser
+    // tests (e2e/sale.spec.ts); jsdom never loads wa-sqlite.
+    const proto = BigInt.prototype as unknown as { toJSON?: () => string };
+    const had = Object.prototype.hasOwnProperty.call(proto, 'toJSON');
+    const previous = proto.toJSON;
+    proto.toJSON = function (this: bigint) {
+      return this.toString();
+    };
+    try {
+      const big = 9_007_199_254_740_993n;
+      const doc = sampleDoc({ totalMinor: big, tenders: [{ method: 'Cash', amountMinor: big, reference: 'ref' }] });
+      const back = deserializeDocument(serializeDocument(doc));
+      expect(back).not.toBeNull();
+      expect(back?.totalMinor).toBe(big);
+      expect(back).toEqual(doc);
+    } finally {
+      if (had && previous !== undefined) proto.toJSON = previous;
+      else delete proto.toJSON;
+    }
+  });
+
   it('refuses a snapshot it cannot trust', () => {
     expect(deserializeDocument('{"version":2}')).toBeNull();
     expect(deserializeDocument('not json')).toBeNull();
