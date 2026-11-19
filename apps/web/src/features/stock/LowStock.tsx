@@ -43,6 +43,7 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import type { ApiCallOptions } from '../../data/api/client';
 import {
+  ensureReorderPoints,
   fetchLowStockPicture,
   setReorderPoint,
   type LowStockAlert,
@@ -422,6 +423,58 @@ export function LowStock({ db, permissions, apiOptions }: LowStockProps): ReactN
 /** Stable identity, so a screen with no test seam does not refetch on render. */
 const EMPTY_OPTIONS: ApiCallOptions = {};
 
+/**
+ * THE BUTTON (phase2-gate §5.1 D1): seed a threshold for every product this
+ * location holds that has none yet — a 25-location, 219-SKU tenant does not set
+ * thresholds one at a time. The level is the template's guess (a fraction of
+ * what the location opened with), said so on screen, and every one is then an
+ * ordinary threshold to tune. Pressing it twice changes nothing.
+ */
+function SeedThresholds({
+  locationId,
+  apiOptions,
+  onSeeded,
+}: {
+  readonly locationId: string;
+  readonly apiOptions: ApiCallOptions;
+  readonly onSeeded: () => void;
+}): ReactNode {
+  const [state, setState] = useState<
+    { kind: 'idle' } | { kind: 'busy' } | { kind: 'done'; seeded: number; review: boolean } | { kind: 'failed'; message: string }
+  >({ kind: 'idle' });
+  const run = async (): Promise<void> => {
+    setState({ kind: 'busy' });
+    const r = await ensureReorderPoints(locationId, apiOptions);
+    if (!r.ok) {
+      setState({ kind: 'failed', message: r.failure.message });
+      return;
+    }
+    setState({ kind: 'done', seeded: r.data.seeded, review: r.data.needsFounderReview });
+    onSeeded();
+  };
+  return (
+    <div className="seed-thresholds">
+      <button type="button" className="secondary-action pressable" disabled={state.kind === 'busy'} onClick={() => void run()}>
+        <Icon name="box" size={20} />
+        {state.kind === 'busy' ? 'Setting thresholds…' : 'Set thresholds for everything held here'}
+      </button>
+      {state.kind === 'done' ? (
+        <p className="report-note" role="status">
+          {state.seeded === 0
+            ? 'Every product held here already has a threshold — nothing was changed.'
+            : `${String(state.seeded)} threshold${state.seeded === 1 ? '' : 's'} set from the stock held here.`}
+          {state.review ? ' Each starts at a quarter of the opening stock — a starting guess to review, not a calculated level.' : ''}
+        </p>
+      ) : null}
+      {state.kind === 'failed' ? (
+        <p className="tender-hint" role="alert">
+          {state.message}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
 function LowStockAt({
   db,
   permissions,
@@ -463,6 +516,10 @@ function LowStockAt({
       {state.status === 'loading' ? <ServerPending what={WHAT} slow={state.slow} rows={4} /> : null}
       {state.status === 'failed' ? (
         <ServerUnavailable what={WHAT} failure={state.failure} onRetry={refresh} />
+      ) : null}
+
+      {state.status === 'ready' && canManage ? (
+        <SeedThresholds locationId={locationId} apiOptions={apiOptions} onSeeded={refresh} />
       ) : null}
 
       {state.status === 'ready' ? (

@@ -39,9 +39,11 @@ import {
 import { readPrinterSettings, writePrinterSettings, DEFAULT_PRINTER_SETTINGS, type PrinterSettings } from './settings';
 import {
   documentForCommittedSale,
+  documentForReturn,
   documentFromSyncedSale,
   readCommittedSale,
   type PricedCartForReceipt,
+  type ReturnSlipFacts,
 } from './sources';
 import { createTransports, defaultTransportEnvs, type TransportEnvs } from './transports/registry';
 import type {
@@ -202,6 +204,23 @@ export class PrintService {
       return { status: 'queued' };
     } catch {
       // A receipt problem must never become a sale problem.
+      return { status: 'error' };
+    }
+  }
+
+  /**
+   * Called by the sales screen AFTER a void or return has committed
+   * (data/mutations/saleReturn.ts). Queues the RETURN/VOID slip — negative
+   * lines under its heading — and prints it like a receipt. A slip problem is
+   * never a refund problem: the refund is already recorded.
+   */
+  async afterReturn(facts: ReturnSlipFacts, currency: CurrencySpec): Promise<AfterSaleResult> {
+    try {
+      const doc = await documentForReturn(this.db, facts, currency);
+      await enqueueReceipt(this.db, doc, new Date(this.now()).toISOString());
+      if (this.settingsNow.autoPrint) void this.print(facts.returnId);
+      return { status: 'queued' };
+    } catch {
       return { status: 'error' };
     }
   }

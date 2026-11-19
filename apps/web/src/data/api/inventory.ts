@@ -255,6 +255,35 @@ export function setReorderPoint(
   return apiMutate('inventory.setReorderPoint', input, mapSetReorderPoint, options);
 }
 
+export interface EnsuredReorderPoints {
+  /** Thresholds created by this run. Zero on a re-run, and zero before stock exists. */
+  readonly seeded: number;
+  /** True whenever anything was seeded: the level is a template guess a person must review. */
+  readonly needsFounderReview: boolean;
+}
+
+function mapEnsured(json: unknown): EnsuredReorderPoints {
+  const r = asRecord(json, 'inventory.ensureReorderPoints');
+  return {
+    seeded: asCount(r['seeded'], 'seeded'),
+    needsFounderReview: asBoolean(r['needsFounderReview'], 'needsFounderReview'),
+  };
+}
+
+/**
+ * THE BUTTON phase2-gate §5.1 D1 asked for: seed a threshold for every product
+ * this location demonstrably holds (from its own ledger — typically its
+ * opening stock) that has none yet. Additive and idempotent server-side: a
+ * threshold somebody has tuned is never overwritten, so pressing it twice is
+ * harmless. Online only, like every threshold write (see `setReorderPoint`).
+ */
+export function ensureReorderPoints(
+  locationId: string,
+  options: ApiCallOptions = {},
+): Promise<ApiResult<EnsuredReorderPoints>> {
+  return apiMutate('inventory.ensureReorderPoints', { locationId }, mapEnsured, options);
+}
+
 // ---------------------------------------------------------------------------
 // The two questions together — the honest picture
 // ---------------------------------------------------------------------------

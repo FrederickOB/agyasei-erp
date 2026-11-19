@@ -13,7 +13,7 @@
  */
 import { SCREEN_PAGE } from './codepage';
 import type { ReceiptDocument } from './document';
-import { rateBpText } from './document';
+import { documentHeading, rateBpText } from './document';
 import { COLUMNS_FOR_PAPER_MM, labelledAmount, layoutReceipt, plainAmount, type LayoutLine } from './layout';
 
 export type PrintLayout = '58' | '80' | 'a4';
@@ -74,6 +74,7 @@ div { white-space: pre; overflow:hidden }
 
 function a4Html(doc: ReceiptDocument, isCopy: boolean): string {
   const l = doc.labels;
+  const heading = documentHeading(doc);
   const money = (n: bigint): string => labelledAmount(n, doc.currency, SCREEN_PAGE);
   const plain = (n: bigint): string => plainAmount(n, doc.currency);
   const rows = doc.lines
@@ -117,7 +118,8 @@ th,td { padding: 6px 4px; border-bottom: 1px solid #bbb; text-align:left }
 </style></head><body>
 ${isCopy ? `<div class="copy">${escapeHtml(l.copy)}</div>` : ''}
 ${header}
-<p><strong>${escapeHtml(l.receipt)} ${escapeHtml(doc.receiptNo)}</strong><br>${escapeHtml(l.date)}: ${escapeHtml(doc.issuedAtText)}${doc.customerName === null ? '' : `<br>${escapeHtml(l.customer)}: ${escapeHtml(doc.customerName)}`}</p>
+${heading === null ? '' : `<h1 class="heading">${escapeHtml(heading)}</h1>`}
+<p><strong>${escapeHtml(l.receipt)} ${escapeHtml(doc.receiptNo)}</strong><br>${escapeHtml(l.date)}: ${escapeHtml(doc.issuedAtText)}${doc.originalReceiptNo === undefined || doc.originalReceiptNo === null ? '' : `<br>${escapeHtml(l.originalReceipt ?? 'Original receipt')}: ${escapeHtml(doc.originalReceiptNo)}`}${doc.customerName === null ? '' : `<br>${escapeHtml(l.customer)}: ${escapeHtml(doc.customerName)}`}</p>
 <table><thead><tr><th>Item</th><th class="n">Qty</th><th class="n">Unit</th><th class="n">Amount</th></tr></thead><tbody>${rows}
 ${net}${tax}<tr><td colspan="3" class="n"><strong>${escapeHtml(l.total)}</strong></td><td class="n"><strong>${money(doc.totalMinor)}</strong></td></tr>${tenders}${change}</tbody></table>
 ${pack}${doc.footerLines.map((f) => `<p>${escapeHtml(f)}</p>`).join('')}

@@ -65,6 +65,11 @@ export const WIRE_KINDS: Readonly<Record<string, DeviceOpKind>> = {
   // the close after the last of them (data/mutations/till.ts).
   cash_session_open: 'cash_session.open',
   cash_session_close: 'cash_session.close',
+  // VOIDS AND RETURNS (migration 0030). Trade, like the sale they reverse:
+  // the cash leaves the drawer whether or not the tower is up. The ordered
+  // queue puts a void behind its sale and a refund ahead of the till's close
+  // (data/mutations/saleReturn.ts).
+  sale_return: 'sale.return',
 };
 
 export function wireKind(kind: string): string {

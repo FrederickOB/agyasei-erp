@@ -464,6 +464,11 @@ export const LOCAL_TABLES: readonly LocalTableDef[] = [
     localOnly: false,
     columns: [
       t('tenant_id'),
+      // The idempotency key the sale was recorded under — the SAME value the
+      // ringing device holds as its outbox id. A void or return names its sale
+      // by this key, so a sale this device rang offline and one another till
+      // rang are named the same way (data/mutations/saleReturn.ts).
+      t('write_id'),
       t('location_id'),
       t('customer_id'),
       t('price_list_id'),
@@ -528,6 +533,96 @@ export const LOCAL_TABLES: readonly LocalTableDef[] = [
       i('claimed_minor'), // CAST AS TEXT on read
       t('reference'),
       t('tendered_at'),
+      t('location_id'),
+      t('hlc'),
+      t('created_at'),
+    ],
+  },
+  // Voids and returns at this location, as the SERVER recorded them
+  // (migration 0030). Every figure is a NON-NEGATIVE magnitude of what was
+  // reversed; the direction is `kind`. What has already come back of a sale
+  // is read from here (plus this device's own queued returns) before the
+  // counter offers to take more back.
+  {
+    name: 'sale_return',
+    localOnly: false,
+    columns: [
+      t('tenant_id'),
+      t('kind'), // 'VOID' | 'RETURN' — platform enum
+      t('original_sale_id'),
+      t('location_id'),
+      t('cash_session_id'),
+      t('business_date'),
+      t('occurred_at'),
+      t('customer_id'),
+      t('return_no'),
+      t('return_no_claimed'),
+      t('reason'),
+      t('currency_code'),
+      i('money_scale'), // CAST AS TEXT on read
+      i('subtotal_net_minor'), // CAST AS TEXT on read
+      i('discount_minor'), // CAST AS TEXT on read
+      i('tax_total_minor'), // CAST AS TEXT on read
+      i('total_minor'), // CAST AS TEXT on read
+      t('hlc'),
+      t('created_at'),
+    ],
+  },
+  {
+    name: 'sale_return_line',
+    localOnly: false,
+    columns: [
+      t('tenant_id'),
+      t('return_id'),
+      i('line_no'),
+      t('original_sale_line_id'),
+      t('product_id'),
+      t('location_id'),
+      i('qty_sell'), // CAST AS TEXT on read
+      i('qty_sell_scale'),
+      i('unit_price_e4'), // CAST AS TEXT on read
+      t('stocking_uom_id'),
+      i('qty_stock'), // CAST AS TEXT on read
+      i('qty_stock_scale'),
+      i('line_net_minor'), // CAST AS TEXT on read
+      i('line_discount_minor'), // CAST AS TEXT on read
+      i('tax_minor'), // CAST AS TEXT on read
+      t('disposition'), // 'RESTOCK' | 'DAMAGED' — platform enum
+      t('hlc'),
+      t('created_at'),
+    ],
+  },
+  {
+    name: 'sale_return_tax_line',
+    localOnly: false,
+    columns: [
+      t('tenant_id'),
+      t('return_id'),
+      t('return_line_id'),
+      t('original_tax_line_id'),
+      t('location_id'),
+      i('seq'),
+      t('tax_code'),
+      i('rate_bp'),
+      i('base_minor'), // CAST AS TEXT on read
+      i('tax_minor'), // CAST AS TEXT on read
+      t('tax_rate_id'),
+      t('hlc'),
+      t('created_at'),
+    ],
+  },
+  {
+    name: 'sale_return_refund',
+    localOnly: false,
+    columns: [
+      t('tenant_id'),
+      t('return_id'),
+      i('seq'),
+      t('method_id'),
+      i('amount_minor'), // CAST AS TEXT on read
+      i('claimed_minor'), // CAST AS TEXT on read
+      t('reference'),
+      t('refunded_at'),
       t('location_id'),
       t('hlc'),
       t('created_at'),
