@@ -303,6 +303,45 @@ describe('sales by location: the aggregation identity', () => {
   });
 });
 
+describe('sales by day: the aggregation identity, over time', () => {
+  it('Σ(days) equals the total EXACTLY, and every day in the range is a row', async () => {
+    const accounts = await principalAt('accounts', root);
+    const r = await accounts.reports.salesByDay({ from: FROM, to: TO });
+    expect(r.scope.network).toBe(true);
+    expect(r.series.length).toBe(31);
+    expect(r.series[0]!.date).toBe(FROM);
+    expect(r.series[30]!.date).toBe(TO);
+    expect(sumBig(r.series.map((d) => d.totalMinor))).toBe(BigInt(r.total.totalMinor));
+    expect(sumBig(r.series.map((d) => d.netRevenueMinor))).toBe(BigInt(r.total.netRevenueMinor));
+    expect(sumBig(r.series.map((d) => d.saleCount))).toBe(BigInt(r.total.saleCount));
+    // …and agrees with the by-location report over the same range.
+    const byLoc = await accounts.reports.salesByLocation({ from: FROM, to: TO });
+    expect(r.total.totalMinor).toBe(byLoc.total.totalMinor);
+  });
+
+  it('a day with no trade is a ZERO row — a dark day, not a missing one', async () => {
+    const accounts = await principalAt('accounts', root);
+    const r = await accounts.reports.salesByDay({ from: FROM, to: TO });
+    const traded = r.series.find((d) => d.date === '2026-08-05');
+    const quiet = r.series.find((d) => d.date === '2026-08-06');
+    expect(traded!.saleCount).toBe('4');
+    expect(traded!.totalMinor).toBe(String(4n * SALE_TOTAL));
+    expect(quiet).toBeDefined();
+    expect(quiet!.saleCount).toBe('0');
+    expect(quiet!.totalMinor).toBe('0');
+  });
+
+  it('narrows with the scope, and refuses a range over 400 days', async () => {
+    const accounts = await principalAt('accounts', root);
+    const r = await accounts.reports.salesByDay({ from: FROM, to: TO, locationIds: [out01, out03] });
+    expect(r.scope.network).toBe(false);
+    expect(r.total.totalMinor).toBe(String(3n * SALE_TOTAL));
+    await expect(
+      accounts.reports.salesByDay({ from: '2026-01-01', to: '2027-12-31' }),
+    ).rejects.toMatchObject({ code: 'BAD_REQUEST' });
+  });
+});
+
 describe('inter-location transfers are not revenue', () => {
   it('a transfer moves stock between locations and creates no network revenue', async () => {
     const accounts = await principalAt('accounts', root);
@@ -680,12 +719,20 @@ describe('two-tenant isolation on every new read path', () => {
     const b = await ownerB.reports.salesByLocation({ from: FROM, to: TO });
     expect(b.total.saleCount).toBe('1');
     expect(BigInt(b.total.totalMinor)).not.toBe(BigInt(a.total.totalMinor));
+
+    // The by-day series is an aggregate too, and aggregates leak quietly.
+    const aDays = await accountsA.reports.salesByDay({ from: FROM, to: TO });
+    expect(aDays.total.totalMinor).toBe(String(4n * SALE_TOTAL));
+    const bDays = await ownerB.reports.salesByDay({ from: FROM, to: TO });
+    expect(bDays.total.saleCount).toBe('1');
+    expect(sumBig(bDays.series.map((d) => d.totalMinor))).toBe(BigInt(b.total.totalMinor));
   });
 
   it('naming the other tenant’s location is refused on EVERY new read path', async () => {
     const accountsA = await principalAt('accounts', root);
     const probes: (() => Promise<unknown>)[] = [
       () => accountsA.reports.salesByLocation({ from: FROM, to: TO, locationIds: [bOutlet] }),
+      () => accountsA.reports.salesByDay({ from: FROM, to: TO, locationIds: [bOutlet] }),
       () => accountsA.reports.stockOnHand({ locationIds: [bOutlet] }),
       () => accountsA.reports.cashPosition({ from: FROM, to: TO, locationIds: [bOutlet] }),
       () => accountsA.reports.inventoryDays({ from: FROM, to: TO, locationIds: [bOutlet] }),

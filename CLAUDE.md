@@ -199,11 +199,14 @@ Each phase ends with a **working, demoable system**, not just committed code.
 ## 4. Stack
 
 - **Backend** — Node.js + TypeScript, Postgres, REST or tRPC.
-- **Client** — React, installable **PWA**. Targets **low-end Android tablets and phones**. Do not
-  assume iOS or desktop. Local SQLite via the sync layer.
+- **Client** — React, installable **PWA**. **Tablet-first**: the low-end Android tablet is the
+  primary device and the one every performance budget is set against. **Laptops and Android phones
+  are supported secondary devices** (founder, 18 November 2026 — `ADR-0003` amendment A1). Do not
+  assume iOS. Local SQLite via the sync layer.
 - **Hosting** — managed Postgres in an **EU region** (`eu-west`). No major cloud has a West Africa
   region; EU is the pragmatic latency choice for Ghana (~90–130ms). The architecture document must
-  state this trade-off explicitly. See `ADR-0003`.
+  state this trade-off explicitly. Provider: **Supabase (London) for Postgres, Fly.io (London) for
+  the API and sync service**, provisional on Q13 — `ADR-0003` amendment A2.
 - **Testing** — mandatory per §2.7.
 
 Deviating from any of the above requires an explicit, written justification in the architecture

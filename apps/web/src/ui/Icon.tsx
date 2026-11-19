@@ -41,7 +41,14 @@ export type IconName =
   | 'pin'
   | 'tag'
   | 'undo'
-  | 'edit';
+  | 'edit'
+  // The back office's rail (features/office). Same grid, same weight.
+  | 'grid'
+  | 'chart'
+  | 'box'
+  | 'truck'
+  | 'building'
+  | 'book';
 
 /** Paths only — every icon shares the same 24px box, caps, joins and weight. */
 const PATHS: Record<IconName, ReactNode> = {
@@ -130,6 +137,25 @@ const PATHS: Record<IconName, ReactNode> = {
       <path d="M7.5 5L4 9l3.5 4" />
     </>
   ),
+  grid: (
+    <>
+      <rect x="3" y="3" width="7" height="9" rx="1.5" />
+      <rect x="14" y="3" width="7" height="5" rx="1.5" />
+      <rect x="14" y="12" width="7" height="9" rx="1.5" />
+      <rect x="3" y="16" width="7" height="5" rx="1.5" />
+    </>
+  ),
+  chart: <path d="M4 19V5M4 19h16M8 15v-4M12 15V8M16 15v-6" />,
+  box: <path d="M3 7l9-4 9 4v10l-9 4-9-4zM3 7l9 4 9-4M12 11v10" />,
+  truck: (
+    <>
+      <path d="M3 7h11v9H3zM14 10h4l3 3v3h-7z" />
+      <circle cx="7" cy="18" r="1.6" />
+      <circle cx="17" cy="18" r="1.6" />
+    </>
+  ),
+  building: <path d="M4 21V9l8-5 8 5v12M9 21v-6h6v6" />,
+  book: <path d="M4 4h16v16H4zM4 9h16M9 9v11" />,
   edit: (
     <>
       <path d="M4 20h4l10.5-10.5a2.6 2.6 0 00-3.7-3.7L4.3 16.3z" />

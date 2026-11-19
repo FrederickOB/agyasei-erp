@@ -36,7 +36,7 @@ export default defineConfig({
               // §8.11: activation is deliberate. Never auto-claim a live till.
               skipWaiting: false,
               clientsClaim: false,
-              globPatterns: ['**/*.{js,css,html,svg,wasm}'],
+              globPatterns: ['**/*.{js,css,html,svg,wasm,woff2}'],
               // The SQLite wasm binary must be part of the atomic precache.
               maximumFileSizeToCacheInBytes: 16 * 1024 * 1024,
               // The version gate and the sync endpoint are never cached (§8.11).

@@ -59,6 +59,7 @@ import {
   cashPositionReportInput,
   salesReportInput,
   stockReportInput,
+  salesByDayReportInput,
 } from '@erp/contracts';
 import { divRound } from '@erp/money';
 import type { Queryable } from '../db.js';
@@ -244,6 +245,70 @@ async function loadSales(
   return { byLocation, total };
 }
 
+/**
+ * The same predicate again, grouped by BUSINESS DAY rather than by location.
+ * `business_date` is the trading day the sale was filed under at its
+ * location (never the server clock), so a day here is a day on that till.
+ */
+const SALES_BY_DAY_SQL = `
+  select s.business_date::text                                as business_date,
+         count(*)::bigint::text                               as sale_count,
+         coalesce(sum(s.subtotal_net_minor), 0)::bigint::text as subtotal_net_minor,
+         coalesce(sum(s.discount_minor), 0)::bigint::text     as discount_minor,
+         coalesce(sum(s.tax_total_minor), 0)::bigint::text    as tax_total_minor,
+         coalesce(sum(s.total_minor), 0)::bigint::text        as total_minor
+    from app.sale s
+   where s.location_id = any($1::uuid[])
+     and s.business_date between $2::date and $3::date
+   group by s.business_date
+   order by s.business_date
+`;
+
+interface SalesDayRow extends Omit<SalesRow, 'location_id'> {
+  business_date: string;
+}
+
+/** Every calendar day of an inclusive range, as `YYYY-MM-DD`. */
+function eachDay(from: string, to: string): string[] {
+  const out: string[] = [];
+  const end = Date.parse(`${to}T00:00:00Z`);
+  for (let t = Date.parse(`${from}T00:00:00Z`); t <= end; t += 86_400_000) {
+    out.push(new Date(t).toISOString().slice(0, 10));
+  }
+  return out;
+}
+
+/**
+ * Sales per business day over the range, with Σ(days) = total CHECKED against
+ * the independent total query, exactly as `loadSales` checks Σ(locations).
+ * A day with no trade is a ZERO row, not a missing one: the dashboard draws
+ * a dark Sunday as a dip to nothing, and a missing day would be drawn as a
+ * gap that reads as "data not received".
+ */
+async function loadSalesByDay(
+  tx: Queryable,
+  locationIds: readonly string[],
+  from: string,
+  to: string,
+): Promise<{ days: { date: string; figures: SalesFigures }[]; total: SalesFigures }> {
+  const ids = [...locationIds];
+  const rows = await tx.query<SalesDayRow>(SALES_BY_DAY_SQL, [ids, from, to]);
+  const byDate = new Map<string, SalesFigures>();
+  for (const r of rows.rows) byDate.set(r.business_date.slice(0, 10), salesFrom(r));
+
+  const totalRes = await tx.query<Omit<SalesRow, 'location_id'>>(SALES_TOTAL_SQL, [ids, from, to]);
+  const total = salesFrom(totalRes.rows[0]!);
+
+  const days = eachDay(from, to).map((date) => ({ date, figures: byDate.get(date) ?? ZERO_SALES }));
+  const partsSum = days.map((d) => d.figures).reduce(addSales, ZERO_SALES);
+  assertAggregateIdentity('salesByDay.totalMinor', partsSum.totalMinor, total.totalMinor);
+  assertAggregateIdentity('salesByDay.subtotalNetMinor', partsSum.subtotalNetMinor, total.subtotalNetMinor);
+  assertAggregateIdentity('salesByDay.discountMinor', partsSum.discountMinor, total.discountMinor);
+  assertAggregateIdentity('salesByDay.taxTotalMinor', partsSum.taxTotalMinor, total.taxTotalMinor);
+  assertAggregateIdentity('salesByDay.saleCount', partsSum.saleCount, total.saleCount);
+  return { days, total };
+}
+
 function locationHeader(l: ScopedLocation) {
   return { locationId: l.id, locationCode: l.code, locationName: l.name, kind: l.kind };
 }
@@ -411,6 +476,34 @@ export const reportsRouter = router({
         ...locationHeader(l),
         ...wireSales(byLocation.get(l.id) ?? ZERO_SALES),
       })),
+      total: wireSales(total),
+    };
+  }),
+
+  /**
+   * Sales by business day over the same scope — the dashboard's line. Same
+   * scope resolution, same range rule, same checked identity, and a zero row
+   * for every day the range covers.
+   */
+  salesByDay: reportProcedure.input(salesByDayReportInput).query(async ({ ctx, input }) => {
+    const scope = await resolveLocationScope(ctx, {
+      code: 'report.view.location',
+      widenCode: 'report.view.tenant',
+      requested: input.locationIds,
+      kinds: SELLING_KINDS,
+    });
+
+    const { days, total } = await ctx.deps.runner.withTenant(
+      ctx.identity.tenantId,
+      (tx) => loadSalesByDay(tx, scope.locationIds, input.from, input.to),
+    );
+
+    return {
+      from: input.from,
+      to: input.to,
+      days: inclusiveDays(input.from, input.to),
+      scope: { network: scope.network, locationCount: scope.locations.length },
+      series: days.map((d) => ({ date: d.date, ...wireSales(d.figures) })),
       total: wireSales(total),
     };
   }),
