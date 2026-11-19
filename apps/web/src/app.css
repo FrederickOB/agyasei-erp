@@ -4414,3 +4414,106 @@ button {
     grid-column: 1 / -1;
   }
 }
+
+/* ── Voids and returns (migration 0030). Tablet-first; one column at 360 px. ── */
+.return-flow {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  padding: 1rem;
+  max-width: 40rem;
+  margin: 0 auto;
+  width: 100%;
+  box-sizing: border-box;
+}
+.return-head {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+.return-head h2 {
+  flex: 1;
+  margin: 0;
+  font-size: 1.15rem;
+}
+.return-choices {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+.return-choices .secondary-action,
+.find-receipt .secondary-action,
+.sales-reverse {
+  min-height: 56px;
+}
+.return-lines {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+.return-line {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  padding: 0.75rem;
+  border: 1px solid var(--line, #d8d8d8);
+  border-radius: 10px;
+}
+.return-line-name {
+  font-weight: 600;
+}
+.return-line-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+.return-line-controls .qty-button {
+  min-width: 56px;
+  min-height: 56px;
+}
+.find-receipt {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  padding: 0.75rem 1rem 0;
+}
+.find-receipt .tender-input {
+  flex: 1 1 12rem;
+  min-width: 0;
+}
+.sales-row-refund .sales-total {
+  color: var(--attn-ink);
+}
+.primary-action.danger {
+  color: inherit;
+}
+
+/* ── Opening stock import (HQ, laptop-first) ── */
+.opening-stock {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  padding: 1rem;
+}
+.opening-stock table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+.opening-stock th,
+.opening-stock td {
+  text-align: left;
+  padding: 0.35rem 0.5rem;
+  border-bottom: 1px solid var(--line, #d8d8d8);
+}
+.opening-stock .row-bad td {
+  color: var(--attn-ink);
+}
+.opening-stock-scroll {
+  overflow-x: auto;
+  max-height: 60vh;
+}

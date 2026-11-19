@@ -80,6 +80,37 @@ export {
 } from './inventory.js';
 
 export {
+  MAX_RETURN_LINES,
+  RETURN_DISPOSITIONS,
+  SALE_RETURN_KINDS,
+  createSaleReturnInput,
+  saleReturnLineInput,
+  saleReturnRefundInput,
+  type CreateSaleReturnInput,
+  type CreateSaleReturnParsed,
+  type ReturnDisposition,
+  type SaleReturnKind,
+  type SaleReturnLineInput,
+} from './sale-return.js';
+
+export {
+  OPENING_ROW_ISSUES,
+  OPENING_STOCK_MAX_CHARS,
+  OPENING_STOCK_MAX_ROWS,
+  canonicalOpeningRows,
+  commitOpeningStockInput,
+  parseOpeningStockCsv,
+  parseScaledDecimal,
+  previewOpeningStockInput,
+  splitCsvLine,
+  type CommitOpeningStockInput,
+  type OpeningRowIssue,
+  type ParsedOpeningFile,
+  type ParsedOpeningRow,
+  type PreviewOpeningStockInput,
+} from './opening-stock.js';
+
+export {
   cashPositionReportInput,
   distributionCostReportInput,
   inventoryDaysReportInput,

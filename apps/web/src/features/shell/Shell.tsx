@@ -211,7 +211,7 @@ export function Shell({ db, permissions, status, notice, apiOptions }: ShellProp
             />
           </div>
           {active === 'sales' ? (
-            <SalesList db={db} onOpenPrinterSettings={() => setView('printer')} />
+            <SalesList db={db} permissions={permissions} onOpenPrinterSettings={() => setView('printer')} />
           ) : null}
           {active !== 'counter' && active !== 'sales'
             ? renderDestination(active, { db, permissions, apiOptions })

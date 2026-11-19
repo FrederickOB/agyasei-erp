@@ -76,6 +76,11 @@ export const POWERSYNC_PUBLICATION_TABLES: readonly string[] = [
   'app.sale',
   'app.sale_line',
   'app.sale_tax_line',
+  // Voids and returns (migration 0030) — location_ops, like the sale.
+  'app.sale_return',
+  'app.sale_return_line',
+  'app.sale_return_tax_line',
+  'app.sale_return_refund',
   // platform.tenant is no longer read: jurisdiction_pack keys on the device
   // grant's jurisdiction_code (0024).
   'platform.jurisdiction',

@@ -34,6 +34,7 @@ import { openAccountInput, recordEntryInput } from './credit.js';
 import { syncBlockInput } from './sequence.js';
 import { recordGoodsReceiptInput, updateDeliveryStatusInput } from './procurement.js';
 import { closeCashSessionInput, openCashSessionInput } from './cash-session.js';
+import { createSaleReturnInput } from './sale-return.js';
 import type { DeviceOpKind } from './upload.js';
 
 /**
@@ -68,6 +69,7 @@ export const deviceOpContracts = {
   'logistics.update_delivery_status': updateDeliveryStatusInput,
   'cash_session.open': openCashSessionInput,
   'cash_session.close': closeCashSessionInput,
+  'sale.return': createSaleReturnInput,
 } as const satisfies Record<DeviceOpKind, ZodType>;
 
 export type DeviceOpContracts = typeof deviceOpContracts;

@@ -384,6 +384,8 @@ describe('the router validates with the shared contract, not a private schema', 
       // after them, on the same ordered outbox.
       'cash_session.open': appRouter.cashSession.open,
       'cash_session.close': appRouter.cashSession.close,
+      // Voids and returns (0030): behind the sale they reverse.
+      'sale.return': appRouter.returns.record,
     };
     for (const [kind, procedure] of Object.entries(routed)) {
       expect(routerInputOf(procedure)).toBe(

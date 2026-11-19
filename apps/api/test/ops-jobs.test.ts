@@ -161,6 +161,50 @@ describe('ledger.posting_sweep, scheduled', () => {
     const b = await h.db.withTenant(tenantB, (tx) => trialBalanceLines(tx));
     expect(b).toEqual({ lines: [], debitMinor: '0', creditMinor: '0', balanced: true });
   });
+
+  it('posts a CLOSED TILL — the banking and the count variance (rules 11, 11b) — once', async () => {
+    const ownerA = h.callerFor(await h.identityFor(tenantA, { locs: [outletA.id] }));
+    const day = '2026-08-22';
+    const till = await h.openTill(tenantA, outletA.id, day);
+    const sold = await ownerA.sales.createSale(
+      await h.legacySale({ ...sale(outletA.id, productA, { qty: '2' }), businessDate: day }),
+    );
+    const expected = BigInt(sold.totalMinor); // a zero float, one cash sale
+    await ownerA.cashSession.close({
+      idempotencyKey: uuidv7(),
+      locationId: outletA.id,
+      cashSessionId: till,
+      closedAt: `${day}T18:00:00.000Z`,
+      autoClosed: false,
+      countedMinor: (expected - 500n).toString(10), // 5.00 short
+      bankedMinor: (expected - 500n).toString(10),
+      clientExpectedMinor: expected.toString(10),
+    });
+    const tillEntries = () =>
+      h.db.withTenant(tenantA, async (tx) =>
+        (
+          await tx.query<{ n: number; dr: string; cr: string }>(
+            `select count(distinct je.id)::int as n,
+                    coalesce(sum(jl.debit_minor), 0)::text as dr, coalesce(sum(jl.credit_minor), 0)::text as cr
+               from app.journal_entry je
+               join app.journal_line jl on jl.tenant_id = je.tenant_id and jl.journal_entry_id = je.id
+              where je.source_id = $1`,
+            [till],
+          )
+        ).rows[0]!,
+      );
+    expect((await tillEntries()).n).toBe(0); // nothing posts a till but the sweep
+
+    expect((await runJob(postingSweepJob(), deps)).status).toBe('succeeded');
+    const first = await tillEntries();
+    expect(first.n).toBeGreaterThanOrEqual(1);
+    expect(first.dr).toBe(first.cr); // balanced
+    expect(BigInt(first.dr)).toBeGreaterThan(0n);
+
+    expect((await runJob(postingSweepJob(), deps)).status).toBe('succeeded');
+    expect(await tillEntries()).toEqual(first); // posted once, never twice
+  });
+
 });
 
 describe('ops.lost_write_control (receipt-number continuity)', () => {

@@ -139,36 +139,47 @@ interface SalesRow {
  * total = subtotal − discount + tax. Summing exact integers preserves that,
  * so the aggregate identity holds for the same reason the row one does.
  *
- * VOIDS: `app.sale.voids_sale_id` exists and nothing writes it yet — there is
- * no void endpoint in Phase 1 (`sale.void` is catalogued and unimplemented).
- * When voiding lands, the compensating document's sign convention decides
- * whether this aggregate needs a predicate. Written down here, in the query
- * it would affect, so that it is a decision somebody makes rather than an
- * omission somebody discovers.
+ * VOIDS AND RETURNS (0030) are their own documents, `app.sale_return`, with
+ * POSITIVE magnitudes; nothing is ever written to the original sale. These
+ * figures are NET of them, in the period the void or return happened (its
+ * own business date — the till the refund left), which is how the books post
+ * them (rule 10 contra-revenue; a void reverses its sale's entry). The sale
+ * COUNT counts sales only: a return is not a negative sale.
  */
-const SALES_BY_LOCATION_SQL = `
-  select s.location_id,
-         count(*)::bigint::text                              as sale_count,
-         coalesce(sum(s.subtotal_net_minor), 0)::bigint::text as subtotal_net_minor,
-         coalesce(sum(s.discount_minor), 0)::bigint::text     as discount_minor,
-         coalesce(sum(s.tax_total_minor), 0)::bigint::text    as tax_total_minor,
-         coalesce(sum(s.total_minor), 0)::bigint::text        as total_minor
+const SALES_AND_RETURNS_SQL = `
+  select s.location_id, s.business_date, 1 as n,
+         s.subtotal_net_minor as subtotal, s.discount_minor as discount,
+         s.tax_total_minor as tax, s.total_minor as total
     from app.sale s
    where s.location_id = any($1::uuid[])
      and s.business_date between $2::date and $3::date
-   group by s.location_id
+  union all
+  select r.location_id, r.business_date, 0,
+         -r.subtotal_net_minor, -r.discount_minor, -r.tax_total_minor, -r.total_minor
+    from app.sale_return r
+   where r.location_id = any($1::uuid[])
+     and r.business_date between $2::date and $3::date
+`;
+
+const SALES_BY_LOCATION_SQL = `
+  select x.location_id,
+         coalesce(sum(x.n), 0)::bigint::text        as sale_count,
+         coalesce(sum(x.subtotal), 0)::bigint::text as subtotal_net_minor,
+         coalesce(sum(x.discount), 0)::bigint::text as discount_minor,
+         coalesce(sum(x.tax), 0)::bigint::text      as tax_total_minor,
+         coalesce(sum(x.total), 0)::bigint::text    as total_minor
+    from (${SALES_AND_RETURNS_SQL}) x
+   group by x.location_id
 `;
 
 /** The same predicate, aggregated WITHOUT the grouping. Rule 1's other half. */
 const SALES_TOTAL_SQL = `
-  select count(*)::bigint::text                               as sale_count,
-         coalesce(sum(s.subtotal_net_minor), 0)::bigint::text  as subtotal_net_minor,
-         coalesce(sum(s.discount_minor), 0)::bigint::text      as discount_minor,
-         coalesce(sum(s.tax_total_minor), 0)::bigint::text     as tax_total_minor,
-         coalesce(sum(s.total_minor), 0)::bigint::text         as total_minor
-    from app.sale s
-   where s.location_id = any($1::uuid[])
-     and s.business_date between $2::date and $3::date
+  select coalesce(sum(x.n), 0)::bigint::text        as sale_count,
+         coalesce(sum(x.subtotal), 0)::bigint::text as subtotal_net_minor,
+         coalesce(sum(x.discount), 0)::bigint::text as discount_minor,
+         coalesce(sum(x.tax), 0)::bigint::text      as tax_total_minor,
+         coalesce(sum(x.total), 0)::bigint::text    as total_minor
+    from (${SALES_AND_RETURNS_SQL}) x
 `;
 
 interface SalesFigures {
@@ -251,17 +262,15 @@ async function loadSales(
  * location (never the server clock), so a day here is a day on that till.
  */
 const SALES_BY_DAY_SQL = `
-  select s.business_date::text                                as business_date,
-         count(*)::bigint::text                               as sale_count,
-         coalesce(sum(s.subtotal_net_minor), 0)::bigint::text as subtotal_net_minor,
-         coalesce(sum(s.discount_minor), 0)::bigint::text     as discount_minor,
-         coalesce(sum(s.tax_total_minor), 0)::bigint::text    as tax_total_minor,
-         coalesce(sum(s.total_minor), 0)::bigint::text        as total_minor
-    from app.sale s
-   where s.location_id = any($1::uuid[])
-     and s.business_date between $2::date and $3::date
-   group by s.business_date
-   order by s.business_date
+  select x.business_date::text                      as business_date,
+         coalesce(sum(x.n), 0)::bigint::text        as sale_count,
+         coalesce(sum(x.subtotal), 0)::bigint::text as subtotal_net_minor,
+         coalesce(sum(x.discount), 0)::bigint::text as discount_minor,
+         coalesce(sum(x.tax), 0)::bigint::text      as tax_total_minor,
+         coalesce(sum(x.total), 0)::bigint::text    as total_minor
+    from (${SALES_AND_RETURNS_SQL}) x
+   group by x.business_date
+   order by x.business_date
 `;
 
 interface SalesDayRow extends Omit<SalesRow, 'location_id'> {
@@ -666,18 +675,30 @@ export const reportsRouter = router({
         amount_minor: string;
         sale_count: string;
       }>(
-        `select st.location_id, st.method_id, m.code, m.name, m.posting_role,
+        // NET of refunds (0030): a void's or return's refund leaves through a
+        // method and is subtracted from that method, in the period of the
+        // return. sale_count counts sales only.
+        `select x.location_id, x.method_id, m.code, m.name, m.posting_role,
                 m.is_cash, m.is_on_account,
-                coalesce(sum(st.amount_minor), 0)::bigint::text as amount_minor,
-                count(distinct st.sale_id)::bigint::text        as sale_count
-           from app.sale_tender st
-           join app.sale s on s.tenant_id = st.tenant_id and s.id = st.sale_id
-           join app.tender_method m on m.tenant_id = st.tenant_id and m.id = st.method_id
-          where st.location_id = any($1::uuid[])
-            and s.business_date between $2::date and $3::date
-          group by st.location_id, st.method_id, m.code, m.name, m.posting_role,
+                coalesce(sum(x.amount), 0)::bigint::text as amount_minor,
+                count(distinct x.sale_id)::bigint::text  as sale_count
+           from (
+             select st.tenant_id, st.location_id, st.method_id, st.amount_minor as amount, st.sale_id
+               from app.sale_tender st
+               join app.sale s on s.tenant_id = st.tenant_id and s.id = st.sale_id
+              where st.location_id = any($1::uuid[])
+                and s.business_date between $2::date and $3::date
+             union all
+             select rf.tenant_id, r.location_id, rf.method_id, -rf.amount_minor, null::uuid
+               from app.sale_return_refund rf
+               join app.sale_return r on r.tenant_id = rf.tenant_id and r.id = rf.return_id
+              where r.location_id = any($1::uuid[])
+                and r.business_date between $2::date and $3::date
+           ) x
+           join app.tender_method m on m.tenant_id = x.tenant_id and m.id = x.method_id
+          group by x.location_id, x.method_id, m.code, m.name, m.posting_role,
                    m.is_cash, m.is_on_account
-          order by st.location_id, m.code`,
+          order by x.location_id, m.code`,
         [ids, input.from, input.to],
       );
 
@@ -690,20 +711,30 @@ export const reportsRouter = router({
         immediate_count: string;
         credit_count: string;
       }>(
-        `select s.location_id,
-                coalesce(sum(s.total_minor), 0)::bigint::text as billed_minor,
-                count(*) filter (where exists (
-                  select 1 from app.sale_tender st join app.tender_method m
-                    on m.tenant_id = st.tenant_id and m.id = st.method_id
-                   where st.sale_id = s.id and not m.is_on_account))::bigint::text as immediate_count,
-                count(*) filter (where exists (
-                  select 1 from app.sale_tender st join app.tender_method m
-                    on m.tenant_id = st.tenant_id and m.id = st.method_id
-                   where st.sale_id = s.id and m.is_on_account))::bigint::text as credit_count
-           from app.sale s
-          where s.location_id = any($1::uuid[])
-            and s.business_date between $2::date and $3::date
-          group by s.location_id`,
+        // Billed NET of voids and returns, read off the document headers —
+        // still a different reading from the tender rows above.
+        `select x.location_id,
+                coalesce(sum(x.billed), 0)::bigint::text  as billed_minor,
+                coalesce(sum(x.imm), 0)::bigint::text     as immediate_count,
+                coalesce(sum(x.cred), 0)::bigint::text    as credit_count
+           from (
+             select s.location_id, s.total_minor as billed,
+                    (exists (select 1 from app.sale_tender st join app.tender_method m
+                               on m.tenant_id = st.tenant_id and m.id = st.method_id
+                              where st.sale_id = s.id and not m.is_on_account))::int as imm,
+                    (exists (select 1 from app.sale_tender st join app.tender_method m
+                               on m.tenant_id = st.tenant_id and m.id = st.method_id
+                              where st.sale_id = s.id and m.is_on_account))::int as cred
+               from app.sale s
+              where s.location_id = any($1::uuid[])
+                and s.business_date between $2::date and $3::date
+             union all
+             select r.location_id, -r.total_minor, 0, 0
+               from app.sale_return r
+              where r.location_id = any($1::uuid[])
+                and r.business_date between $2::date and $3::date
+           ) x
+          group by x.location_id`,
         [ids, input.from, input.to],
       );
 

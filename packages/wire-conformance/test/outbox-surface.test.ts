@@ -173,6 +173,13 @@ const COVERED_BY_A_REAL_CLIENT_TEST: ReadonlySet<string> = new Set<DeviceOpKind>
   // into, so the open must ride the same ordered queue ahead of those sales.
   'cash_session.open',
   'cash_session.close',
+  // return-client-to-api.test.ts — the PWA's own checkout → recordVoid (the
+  // sale NOT yet synced, named by its own key) queued under a REAL partition
+  // and drained in order; then recordReturn priced on the device from synced
+  // rows and matched to the server's figure to the minor unit; then a
+  // byte-identical replay that restocks and refunds nothing twice. A refund
+  // is TRADE: the cash leaves the drawer whether or not the tower is up.
+  'sale.return',
 ]);
 
 describe("the PWA's uploadable write surface", () => {
@@ -216,6 +223,7 @@ describe("the PWA's uploadable write surface", () => {
       'goods.record_receipt',
       'logistics.update_delivery_status',
       'sale.create',
+      'sale.return',
       'sequence.sync_block',
       'stock.record_movement',
     ]);

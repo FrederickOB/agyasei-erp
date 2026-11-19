@@ -51,6 +51,11 @@ export const DEVICE_OP_KINDS = [
   // that name it and the close after the last of them.
   'cash_session.open',
   'cash_session.close',
+  // ── Go-live: voids and returns (./sale-return.ts) ─────────────────────
+  // TRADE, like the sale it reverses: the cash leaves the drawer whether or
+  // not the tower is up. Riding the same ordered outbox puts a void behind
+  // the sale it voids, and the refund before the till's close.
+  'sale.return',
 ] as const;
 export type DeviceOpKind = (typeof DEVICE_OP_KINDS)[number];
 

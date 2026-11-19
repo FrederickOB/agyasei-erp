@@ -30,9 +30,13 @@ import { getRecordedSaleTenders } from '../data/queries/sales';
 import { readDeviceLocation } from '../data/queries/session';
 import { lineTotalMinor, type CartPricing, type CartPricingBasis } from '../data/pricing/cart-pricing';
 import type { CartLineRow } from '../data/queries/cart';
+import type { PricedReturn, ReturnableSale } from '../data/queries/returns';
+import { getQueueEntry } from './queue';
 import {
   buildReceiptDocument,
+  formatIssuedAt,
   receiptTenders,
+  reversingDocument,
   type RecordedReceiptTender,
   UNCONFIGURED_PACK_SLOT,
   type ReceiptDocument,
@@ -421,5 +425,129 @@ export async function documentFromSyncedSale(db: LocalDb, saleId: string): Promi
     pack: ctx.pack,
     footerLines: ctx.footerLines,
     labels: ctx.labels,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Source 3: a void or a return (migration 0030) — the slip that reverses a sale
+// ---------------------------------------------------------------------------
+
+export interface ReturnSlipFacts {
+  readonly returnId: string;
+  readonly returnNo: string;
+  readonly kind: 'VOID' | 'RETURN';
+  readonly createdAt: string;
+  /** The TILL's date the refund left. */
+  readonly businessDate: string;
+  /** What the sale looked like when the refund was priced — read BEFORE it was recorded. */
+  readonly sale: ReturnableSale;
+  /** A return's priced lines; null for a void (the whole sale). */
+  readonly priced: PricedReturn | null;
+  /** The immediate method a return's non-account part went back through. */
+  readonly method: { readonly name: string } | null;
+  readonly reference: string | null;
+}
+
+/**
+ * The return slip: NEGATIVE lines, tax and refund lines under a RETURN or VOID
+ * heading, naming the receipt it reverses. Built from the figures the counter
+ * just priced from the sale's own snapshot — the same rule the server runs —
+ * so the paper says what the books will. A void of a sale that has not synced
+ * reverses the sale's own queued receipt snapshot when this device still has
+ * it, and otherwise prints the total and the refund without lines rather than
+ * guessing at them.
+ */
+export async function documentForReturn(
+  db: LocalDb,
+  facts: ReturnSlipFacts,
+  currency: CurrencySpec,
+): Promise<ReceiptDocument> {
+  const ctx = await readReceiptContext(db);
+  const names = await taxNames(db);
+  const issuedAtText = formatIssuedAt(facts.createdAt, ctx.timeZone);
+
+  if (facts.kind === 'VOID' && !facts.sale.synced) {
+    const snapshot = (await getQueueEntry(db, facts.sale.key))?.doc ?? null;
+    if (snapshot !== null) {
+      return reversingDocument(snapshot, {
+        kind: 'VOID', returnId: facts.returnId, returnNo: facts.returnNo, issuedAtIso: facts.createdAt,
+        issuedAtText, businessDate: facts.businessDate,
+      });
+    }
+  }
+
+  interface Slice {
+    readonly name: string;
+    readonly qty: bigint;
+    readonly scale: number;
+    readonly uom: string;
+    readonly unitE4: bigint;
+    readonly net: bigint;
+    readonly tax: bigint;
+    readonly taxes: readonly { code: string; rateBp: bigint; baseMinor: bigint; taxMinor: bigint }[];
+  }
+  const slices: Slice[] =
+    facts.priced !== null
+      ? facts.priced.lines.map((l) => ({
+          name: l.line.name, qty: l.qty, scale: l.line.qtyScale, uom: l.line.uomLabel, unitE4: l.line.unitPriceE4,
+          net: l.netMinor - l.discountMinor, tax: l.taxMinor, taxes: l.taxes,
+        }))
+      : facts.sale.lines.map((l) => ({
+          name: l.name, qty: l.qtySold, scale: l.qtyScale, uom: l.uomLabel, unitE4: l.unitPriceE4,
+          net: l.netMinor - l.discountMinor, tax: l.taxes.reduce((a, t) => a + t.taxMinor, 0n), taxes: l.taxes,
+        }));
+  const inclusive = facts.sale.pricesIncludeTax;
+  const merged = new Map<string, ReceiptTaxLine>();
+  for (const s of slices) {
+    for (const t of s.taxes) {
+      const prev = merged.get(t.code);
+      merged.set(t.code, {
+        code: t.code,
+        name: names.get(t.code) ?? t.code,
+        rateBp: t.rateBp,
+        baseMinor: (prev?.baseMinor ?? 0n) - t.baseMinor,
+        taxMinor: (prev?.taxMinor ?? 0n) - t.taxMinor,
+      });
+    }
+  }
+  const total = facts.priced !== null ? facts.priced.totalMinor : facts.sale.totalMinor;
+  const accountName = facts.sale.tenders.find((t) => t.isOnAccount)?.name ?? 'Account';
+  const tenders: RecordedReceiptTender[] =
+    facts.priced === null
+      ? facts.sale.tenders.map((t) => ({ name: t.name, amountMinor: -t.amountMinor, reference: t.reference }))
+      : [
+          ...(facts.priced.onAccountMinor > 0n
+            ? [{ name: accountName, amountMinor: -facts.priced.onAccountMinor, reference: null }]
+            : []),
+          ...(facts.priced.immediateMinor > 0n
+            ? [{ name: facts.method?.name ?? 'Refund', amountMinor: -facts.priced.immediateMinor, reference: facts.reference }]
+            : []),
+        ];
+  return buildReceiptDocument({
+    saleId: facts.returnId,
+    receiptNo: facts.returnNo,
+    issuedAtIso: facts.createdAt,
+    timeZone: ctx.timeZone,
+    businessDate: facts.businessDate,
+    currency,
+    businessName: ctx.businessName,
+    headerLines: ctx.headerLines,
+    locationName: ctx.locationName,
+    customerName: await customerName(db, facts.sale.customerId),
+    pricesIncludeTax: inclusive,
+    lines: slices.map((s) => ({
+      name: s.name, qtyScaled: s.qty, qtyScale: s.scale, uomLabel: s.uom, unitPriceE4: s.unitE4,
+      amountMinor: -(inclusive ? s.net + s.tax : s.net),
+    })),
+    netMinor: merged.size === 0 ? null : -slices.reduce((a, s) => a + s.net, 0n),
+    taxLines: [...merged.values()],
+    totalMinor: -total,
+    tenders: receiptTenders(tenders, null).tenders,
+    changeMinor: 0n,
+    pack: ctx.pack,
+    footerLines: ctx.footerLines,
+    labels: ctx.labels,
+    kind: facts.kind,
+    originalReceiptNo: facts.sale.receiptNo,
   });
 }

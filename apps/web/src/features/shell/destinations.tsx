@@ -45,6 +45,9 @@ const Deliveries = lazy(async () => ({
 const PeopleAdmin = lazy(async () => ({ default: (await import('../admin/Admin')).PeopleAdmin }));
 const DevicesAdmin = lazy(async () => ({ default: (await import('../admin/Admin')).DevicesAdmin }));
 const RolesAdmin = lazy(async () => ({ default: (await import('../admin/Admin')).RolesAdmin }));
+const OpeningStock = lazy(async () => ({
+  default: (await import('../stock/OpeningStock')).OpeningStock,
+}));
 const PrinterSettings = lazy(async () => ({
   default: (await import('../printing/PrinterSettings')).PrinterSettings,
 }));
@@ -63,6 +66,7 @@ export type DestinationId =
   | 'people'
   | 'devices'
   | 'roles'
+  | 'opening'
   | 'printer';
 
 export interface DestinationDef {
@@ -106,6 +110,9 @@ export const DESTINATIONS: readonly DestinationDef[] = [
   { id: 'people', label: 'People', icon: 'grid', requires: CAPABILITY.adminUser, group: 'control', counterWork: false, officeOnly: true },
   { id: 'devices', label: 'Devices', icon: 'pin', requires: CAPABILITY.adminDeviceEnrol, group: 'control', counterWork: false, officeOnly: true },
   { id: 'roles', label: 'Roles', icon: 'tag', requires: CAPABILITY.adminRole, group: 'control', counterWork: false, officeOnly: true },
+  // HQ's one-time bulk load of opening STOCK before go-live (Q20). A laptop
+  // job against a live server; it posts nothing to the books.
+  { id: 'opening', label: 'Opening stock', icon: 'download', requires: CAPABILITY.stockOpeningImport, group: 'stock', counterWork: false, officeOnly: true },
   // The printer beside THIS device. Local, offered to everyone: choosing the
   // printer at the counter must not need a manager, it must work offline, and
   // a laptop at HQ needs it for A4 invoices just as a tablet does for receipts.
@@ -205,6 +212,12 @@ export function renderDestination(id: DestinationId, { db, permissions, apiOptio
       return (
         <Suspense fallback={<ServerPending what="Roles" rows={3} />}>
           <RolesAdmin {...api} />
+        </Suspense>
+      );
+    case 'opening':
+      return (
+        <Suspense fallback={<ServerPending what="Opening stock" rows={3} />}>
+          <OpeningStock {...api} />
         </Suspense>
       );
     case 'printer':
