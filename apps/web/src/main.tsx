@@ -18,6 +18,15 @@ async function bootstrap(): Promise<void> {
   setupServiceWorker();
   const db = await openLocalDb();
 
+  // BROWSER TESTS ONLY. `import.meta.env.MODE` is a build-time literal: in
+  // every build but `--mode e2e` this is `if (false)`, and the branch and its
+  // chunk are dropped. e2e/build-guard.spec.ts proves the production bundle
+  // carries no trace of it. See src/e2e/download-seam.ts for what it may write.
+  if (import.meta.env.MODE === 'e2e') {
+    const { applyE2eDownload } = await import('./e2e/download-seam');
+    await applyE2eDownload(db);
+  }
+
   // ── ORDER MATTERS, AND IT IS LOAD-BEARING ────────────────────────────────
   // 1. The dev seed runs first. It is a FLOOR under a device with nothing —
   //    placeholder catalogue, placeholder CurrencySpec, placeholder location —

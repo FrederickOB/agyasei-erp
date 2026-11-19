@@ -48,6 +48,37 @@ jobs:
       - name: release path against real Postgres 16
         run: infra/scripts/release-smoke.sh
 
+  # The PWA in a real browser (apps/web/playwright.config.ts): Chromium at the
+  # three form factors ADR-0003 A1 names. Builds its own two bundles — the
+  # e2e seam build and a production build the guard greps — so it does not
+  # depend on the workspace job's dist/. No secrets, no stack: the API is
+  # Playwright routes on a reserved .invalid origin; PowerSync is unreachable.
+  browser:
+    name: browser tests (tablet, laptop, phone)
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4 # version from package.json "packageManager"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: install Chromium (Android Chrome is Chromium; iOS is not a target)
+        run: pnpm --filter @erp/web exec playwright install --with-deps chromium
+      - name: build the e2e and guard bundles, serve with vite preview, run
+        run: pnpm --filter @erp/web e2e
+      - name: keep the report and traces when something fails
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: |
+            apps/web/playwright-report
+            apps/web/test-results
+          retention-days: 14
+
   images:
     name: docker images
     runs-on: ubuntu-latest

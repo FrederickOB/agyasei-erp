@@ -43,6 +43,24 @@ pnpm typecheck
   the synced half of a device an earlier build already froze (the outbox and
   device configuration are kept).
 
+## Browser tests
+
+```sh
+pnpm --filter @erp/web e2e        # build dist-e2e + dist-guard, vite preview :4173, Playwright
+pnpm --filter @erp/web e2e:live   # the live-stack drill (needs pnpm stack:up + pnpm dev:api)
+```
+
+Real Chromium at the three form factors of ADR-0003 A1 — tablet (portrait and
+landscape), laptop, 360 px phone — with a real service worker, real wasm
+SQLite and real layout. `playwright.config.ts` and `e2e/support/device.ts`
+say how a device is made ready without the stack: the production code on the
+dev-bearer path, the API as Playwright routes on a reserved `.invalid`
+origin, PowerSync genuinely unreachable, and what it would have downloaded
+applied by an e2e-only seam (`src/e2e/download-seam.ts`) that writes synced
+tables only. `e2e/build-guard.spec.ts` proves the seam is absent from a
+production build. `E2E_WORKERS=1` on a busy machine; `E2E_SKIP_BUILD=1` to
+reuse the last build while iterating.
+
 ## What is here
 
 | Area | Where | Notes |
