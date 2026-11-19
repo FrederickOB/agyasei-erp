@@ -143,6 +143,12 @@ const OUTLET_MANAGER: TemplateRole = {
     { code: 'sale.record.credit', bound: { max_order_value_minor: '500000' } }, // GH₵5,000
     { code: 'sale.discount.apply', bound: { max_bps: 300 } }, // 3%
     { code: 'sale.void' },
+    // Takes goods back and refunds them, bounded by the SERVER's repriced
+    // refund — the same ceiling as a credit sale here, because both put the
+    // tenant's money in a customer's hand. Counter staff do not hold it: a
+    // return is the till's most common theft pattern, and a tenant that wants
+    // its counter to refund adds this row for that role.
+    { code: 'sale.return', bound: { max_refund_minor: '500000' } }, // GH₵5,000
     { code: 'sale.view' },
     { code: 'sale.receipt.reprint' },
     { code: 'stock.view' },
