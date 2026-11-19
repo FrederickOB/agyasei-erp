@@ -45,6 +45,9 @@ const Deliveries = lazy(async () => ({
 const PeopleAdmin = lazy(async () => ({ default: (await import('../admin/Admin')).PeopleAdmin }));
 const DevicesAdmin = lazy(async () => ({ default: (await import('../admin/Admin')).DevicesAdmin }));
 const RolesAdmin = lazy(async () => ({ default: (await import('../admin/Admin')).RolesAdmin }));
+const PrinterSettings = lazy(async () => ({
+  default: (await import('../printing/PrinterSettings')).PrinterSettings,
+}));
 
 export type DestinationId =
   | 'reports'
@@ -59,15 +62,16 @@ export type DestinationId =
   | 'books'
   | 'people'
   | 'devices'
-  | 'roles';
+  | 'roles'
+  | 'printer';
 
 export interface DestinationDef {
   readonly id: DestinationId;
   /** Product chrome. Never tenant vocabulary. */
   readonly label: string;
   readonly icon: IconName;
-  /** The PLATFORM capability that makes this worth offering. */
-  readonly requires: string;
+  /** The PLATFORM capability that makes this worth offering. Null = always. */
+  readonly requires: string | null;
   /** Which group of the office rail it sits in. Product chrome. */
   readonly group: 'trade' | 'stock' | 'control';
   /** True for the two outbox writers that belong at the counter, radio off. */
@@ -102,6 +106,10 @@ export const DESTINATIONS: readonly DestinationDef[] = [
   { id: 'people', label: 'People', icon: 'grid', requires: CAPABILITY.adminUser, group: 'control', counterWork: false, officeOnly: true },
   { id: 'devices', label: 'Devices', icon: 'pin', requires: CAPABILITY.adminDeviceEnrol, group: 'control', counterWork: false, officeOnly: true },
   { id: 'roles', label: 'Roles', icon: 'tag', requires: CAPABILITY.adminRole, group: 'control', counterWork: false, officeOnly: true },
+  // The printer beside THIS device. Local, offered to everyone: choosing the
+  // printer at the counter must not need a manager, it must work offline, and
+  // a laptop at HQ needs it for A4 invoices just as a tablet does for receipts.
+  { id: 'printer', label: 'Printer', icon: 'printer', requires: null, group: 'control', counterWork: false },
 ];
 
 export interface DestinationProps {
@@ -197,6 +205,12 @@ export function renderDestination(id: DestinationId, { db, permissions, apiOptio
       return (
         <Suspense fallback={<ServerPending what="Roles" rows={3} />}>
           <RolesAdmin {...api} />
+        </Suspense>
+      );
+    case 'printer':
+      return (
+        <Suspense fallback={<ServerPending what="Printer settings" rows={3} />}>
+          <PrinterSettings db={db} />
         </Suspense>
       );
   }

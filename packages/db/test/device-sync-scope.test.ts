@@ -288,7 +288,7 @@ describe('every revocation path empties the device — each with its positive co
 });
 
 describe('the effective-dating hole, and the plain function that closes it', () => {
-  it('a FUTURE-dated lapse is invisible to triggers and caught by refresh_sync_scope_all() run as app_user', async () => {
+  it('a FUTURE-dated lapse is invisible to triggers and caught by the per-tenant refresh the scheduler runs', async () => {
     const clerk = await db.withTenant(TENANT_A, (tx) => makeUser(tx, TENANT_A, `lapse-${uuidv7()}`));
     const mine = async () => (await grantRows(TENANT_A, device.id)).filter((g) => g.user_id === clerk);
     const device = await db.withTenant(TENANT_A, async (tx) => {
@@ -305,12 +305,26 @@ describe('the effective-dating hole, and the plain function that closes it', () 
     await new Promise((r) => setTimeout(r, 1700));
     // Time passed; no DML; the projection is stale. This is the hole.
     expect((await mine()).length).toBe(1);
-    // The sweep, as app_user with NO tenant GUC: it sets its own per tenant.
+    // The all-tenant sweep, as app_user with NO tenant GUC, sees NO tenants:
+    // platform.tenant is RLS-forced (0027) and an application session must not
+    // enumerate tenants. It refreshes nothing — and says so (0 tenants).
     const n = await db.asAppUserWithoutTenant(async (tx) =>
       (await tx.query<{ n: number }>(`select app.refresh_sync_scope_all() as n`)).rows[0]!.n,
     );
-    expect(n).toBeGreaterThanOrEqual(2);
+    expect(n).toBe(0);
+    expect((await mine()).length).toBe(1);
+    // What the scheduler actually runs (packages/ops sync.scope_refresh): the
+    // per-tenant functions, inside the tenant's own context, as app_user.
+    await db.withTenant(TENANT_A, async (tx) => {
+      await tx.query(`select app.refresh_credit_sync_scope($1::uuid)`, [TENANT_A]);
+      await tx.query(`select app.refresh_device_sync_scope($1::uuid)`, [TENANT_A]);
+    });
     expect(await mine()).toEqual([]);
+    // The owner/operator can still sweep every tenant at once.
+    const all = await db.asAdmin(async (tx) =>
+      (await tx.query<{ n: number }>(`select app.refresh_sync_scope_all() as n`)).rows[0]!.n,
+    );
+    expect(all).toBeGreaterThanOrEqual(2);
   });
 });
 
@@ -496,6 +510,11 @@ describe('platform.permission.offline_mode', () => {
     expect(modes['sale.record']).toBe('always');
     expect(modes['stock.view']).toBe('always');
     expect(modes['sale.receipt.reprint']).toBe('always');
+    // Every sale is rung into an open till and tills close at midnight: a till
+    // that could not open (or cash up) in restricted mode would stop cash
+    // sales on the second day offline — the thing restricted mode keeps.
+    expect(modes['cash.session.open']).toBe('always');
+    expect(modes['cash.session.close']).toBe('always');
     expect(modes['sale.record.credit']).toBe('until_lease_expiry');
     expect(modes['stock.adjust']).toBe('until_lease_expiry');
     expect(modes['sale.override_price']).toBe('never');

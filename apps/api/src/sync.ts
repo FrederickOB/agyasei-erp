@@ -83,6 +83,10 @@ const DEVICE_OPS: Record<DeviceOpKind, DeviceOpHandler> = {
   // after a flaky sync appends no second stock movement.
   'goods.record_receipt': (c, i) => c.receiving.recordReceipt(i as never),
   'logistics.update_delivery_status': (c, i) => c.logistics.updateStatus(i as never),
+  // The till (04 §4.8a). Opened before the sales that name it, closed after
+  // the last of them — the ordered outbox is what makes both true offline.
+  'cash_session.open': (c, i) => c.cashSession.open(i as never),
+  'cash_session.close': (c, i) => c.cashSession.close(i as never),
 };
 
 /** Tenant identity never comes from a client payload (CLAUDE.md §2.1) —
@@ -160,6 +164,12 @@ export interface SyncRouteOptions {
   powersyncUrl?: string;
   /** Client-token lifetime in seconds. Short-lived: ≤ 5 min is PowerSync's norm. */
   tokenTtlSeconds?: number;
+  /**
+   * Body cap for POST /sync/upload, which legitimately carries up to
+   * MAX_UPLOAD_BATCH ops and so needs more than the server-wide default.
+   * Unset: the server-wide limit applies.
+   */
+  uploadBodyLimit?: number;
 }
 
 const DEFAULT_POWERSYNC_URL = 'http://localhost:8080';
@@ -171,7 +181,8 @@ export async function registerSyncRoutes(
   app: FastifyInstance,
   opts: ContextOptions & { sync?: SyncRouteOptions | undefined },
 ): Promise<void> {
-  app.post('/sync/upload', async (req, reply) => {
+  const uploadBodyLimit = opts.sync?.uploadBodyLimit;
+  app.post('/sync/upload', uploadBodyLimit !== undefined ? { bodyLimit: uploadBodyLimit } : {}, async (req, reply) => {
     // Authenticated ONCE by the onRequest hook (server.ts): a revoked device
     // was already answered 423 there and never reaches this handler.
     const auth = requestAuth(req);

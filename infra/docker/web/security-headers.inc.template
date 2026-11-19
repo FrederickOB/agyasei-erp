@@ -1,0 +1,16 @@
+# Included in EVERY location: nginx drops server-level add_header directives
+# in any location that declares its own, so the security headers live here.
+add_header X-Content-Type-Options "nosniff" always;
+add_header Referrer-Policy "no-referrer" always;
+add_header X-Frame-Options "DENY" always;
+add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+# No Cross-Origin-Opener/Embedder-Policy: nothing here needs cross-origin
+# isolation (see default.conf.template), and COOP would sever a popup-based
+# OIDC sign-in from its opener.
+# Receipt printing reaches printers through Web Bluetooth / USB / Serial
+# (ADR-0003 A3), from this origin only. Nothing else is granted.
+add_header Permissions-Policy "bluetooth=(self), usb=(self), serial=(self), camera=(), microphone=(), geolocation=(), payment=()" always;
+# REPORT-ONLY until the field trial shows zero violations on the real devices;
+# then rename the header to Content-Security-Policy (production runbook §4).
+# 'wasm-unsafe-eval' is SQLite-in-wasm; blob: workers are the sync worker.
+add_header Content-Security-Policy-Report-Only "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src ${CSP_CONNECT_SRC}; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; font-src 'self'; manifest-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'" always;

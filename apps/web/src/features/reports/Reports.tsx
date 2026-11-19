@@ -277,6 +277,54 @@ function CashPanel({ from, to, apiOptions }: RangeProps): ReactNode {
               </tfoot>
             </table>
           </div>
+          {/* By the tenant's OWN methods — the names are its rows, rendered,
+              never compared. Mobile money shows as itself rather than folded
+              into "the counter". */}
+          {state.data.total.tenders.length > 0 ? (
+            <div className="report-table-scroll">
+              <table className="report-table" aria-label="By payment method">
+                <thead>
+                  <tr>
+                    <th scope="col">Payment method</th>
+                    <th scope="col" className="numeric">Sales</th>
+                    <th scope="col" className="numeric">Amount</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {state.data.total.tenders.map((t) => (
+                    <tr key={t.methodId}>
+                      <th scope="row">
+                        {t.name}
+                        {t.isOnAccount ? <span className="report-loc-code"> on account</span> : null}
+                      </th>
+                      <td className="numeric tabular">{t.saleCount.toString()}</td>
+                      <td className="numeric"><Money amount={t.amountMinor} /></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : null}
+          {/* The cash-up view (08 §8.2a): how many tills were counted, and
+              whether the counts reconciled to the minor unit. */}
+          <ul className="report-caveats" aria-label="Tills">
+            {state.data.locations.map((l) => (
+              <li key={`till-${l.locationId}`}>
+                {l.locationName}: {l.tills.closed.toString()} of {l.tills.opened.toString()} tills closed,{' '}
+                {l.tills.counted.toString()} counted
+                {l.tills.offCount === 0n ? (
+                  ', every count to the minor unit'
+                ) : (
+                  <>
+                    , {l.tills.offCount.toString()} off by a net{' '}
+                    <Money amount={l.tills.varianceMinor < 0n ? -l.tills.varianceMinor : l.tills.varianceMinor} />{' '}
+                    {l.tills.varianceMinor < 0n ? 'short' : 'over'}
+                  </>
+                )}
+                {l.tills.openedOffline > 0n ? ` · ${l.tills.openedOffline.toString()} opened offline` : ''}
+              </li>
+            ))}
+          </ul>
           <p className="report-note">
             Payments received against accounts, across the whole organisation:{' '}
             <Money amount={state.data.unattributed.creditReceiptsMinor} />. {state.data.unattributed.reason}

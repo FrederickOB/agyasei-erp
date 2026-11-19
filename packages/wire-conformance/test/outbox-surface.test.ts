@@ -165,6 +165,14 @@ const COVERED_BY_A_REAL_CLIENT_TEST: ReadonlySet<string> = new Set<DeviceOpKind>
   // sets a credit LIMIT and 06 §6.6.3(7) rules that severity-1 credit
   // resolutions require connectivity.
   'credit.record_entry',
+  // till-client-to-api.test.ts — the PWA's own openTill → checkout (split
+  // tender) → closeTill, queued under a REAL partition and drained in order on
+  // reconnect against the API's own cashSession and sales routers, then
+  // replayed byte-identically. The till is TRADE: an outlet opens at seven
+  // whether or not the tower is up, and every sale names the till it was rung
+  // into, so the open must ride the same ordered queue ahead of those sales.
+  'cash_session.open',
+  'cash_session.close',
 ]);
 
 describe("the PWA's uploadable write surface", () => {
@@ -202,6 +210,8 @@ describe("the PWA's uploadable write surface", () => {
     // partitioned device may hold a stale copy of
     // (packages/contracts/src/procurement.ts, data/api/procurement.ts).
     expect([...emitted].sort()).toEqual([
+      'cash_session.close',
+      'cash_session.open',
       'credit.record_entry',
       'goods.record_receipt',
       'logistics.update_delivery_status',

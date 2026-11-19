@@ -113,6 +113,10 @@ export const WRITE_ID_EXEMPT: readonly string[] = [
   // 0013's credit projections are, from rows that carry their own spine.
   'device_sync_grant',
   'device_sync_location_scope',
+  // Migration 0029. Requirement 9.5-A's digest is computed by a scheduled
+  // server job from rows that already carry their own spine; no device can
+  // author one and no sync rule names the table.
+  'table_digest',
 ];
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any

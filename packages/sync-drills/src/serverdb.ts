@@ -160,6 +160,22 @@ export class ServerDb {
 
   /** A STOCKED, sellable product whose default sell unit is its stocking
    *  unit at qty_scale 0 (the same pick rule the API tests use). */
+  /**
+   * The tenant's drawer-cash tender method (migration 0020), found by its
+   * PLATFORM property — never by a code or a name, which are tenant words.
+   */
+  async cashMethod(tenantId: string): Promise<string> {
+    return this.withTenant(tenantId, async (tx) => {
+      const res = await tx.query<{ id: string }>(
+        `select id from app.tender_method
+          where is_cash and is_active and deleted_at is null order by sort_order, id limit 1`,
+      );
+      const id = res.rows[0]?.id;
+      if (!id) throw new Error(`tenant ${tenantId} has no cash tender method — re-run pnpm stack:bootstrap`);
+      return id;
+    });
+  }
+
   async pickProduct(tenantId: string): Promise<{ id: string; skuCode: string; uomId: string }> {
     return this.withTenant(tenantId, async (tx) => {
       const res = await tx.query<{ id: string; sku_code: string; uom_id: string }>(

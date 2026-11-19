@@ -283,6 +283,27 @@ export async function seedDevDataIfEmpty(
     }
   }
 
+  // How the rehearsal counter takes payment: placeholder methods shaped like
+  // a tenant's rows — one drawer-cash method, one that needs a reference, one
+  // on account. In sync mode the tenant's own rows arrive instead; nothing
+  // reads these names.
+  const methods = await db.getAll('SELECT 1 AS hit FROM tender_method LIMIT 1');
+  if (methods.length === 0) {
+    for (const [name, role, isCash, onAccount, needsRef, order] of [
+      ['Cash', 'TILL_CASH', 1, 0, 0, 10],
+      ['Mobile wallet', 'MOMO_WALLET', 0, 0, 1, 20],
+      ['On account', 'AR_TRADE', 0, 1, 0, 50],
+    ] as const) {
+      await db.execute(
+        `INSERT INTO tender_method (id, tenant_id, code, name, posting_role, is_cash, is_on_account,
+                                    requires_reference, is_active, sort_order, hlc, updated_at)
+         VALUES (?, NULL, ?, ?, ?, ?, ?, ?, 1, ?, NULL, NULL)`,
+        [uuidv7(), name.toUpperCase().replace(/\s+/g, '-'), name, role, isCash, onAccount, needsRef, order],
+      );
+    }
+    wrote = true;
+  }
+
   const products = await db.getAll('SELECT 1 AS hit FROM product LIMIT 1');
   if (products.length === 0) {
     // The SAME SHAPE the sync stream delivers — product ⋈ product_uom ⋈

@@ -153,12 +153,14 @@ describe('with a ledger built by the real engine, the router reports it', () => 
     const opts = { tenantId, postedBy: uuidv7(), postingRuleVersion: 1 };
     for (const doc of [
       saleEntry({
-        saleId: uuidv7(), locationId: techiman, businessDate: '2026-08-15', tender: 'CASH',
+        saleId: uuidv7(), locationId: techiman, businessDate: '2026-08-15',
+        tenders: [{ role: 'TILL_CASH', amountMinor: 18_000n }],
         revenueMinor: 15_000n, discountMinor: 0n,
         taxes: [{ taxCode: 'GH.VAT.STD', taxMinor: 3_000n }], costMinor: 9_000n,
       }),
       saleEntry({
-        saleId: uuidv7(), locationId: techiman, businessDate: '2026-08-15', tender: 'CREDIT',
+        saleId: uuidv7(), locationId: techiman, businessDate: '2026-08-15',
+        tenders: [{ role: 'AR_TRADE', amountMinor: 600_000n }],
         customerId: CUSTOMER, revenueMinor: 500_000n, discountMinor: 0n,
         taxes: [{ taxCode: 'GH.VAT.STD', taxMinor: 100_000n }], costMinor: 300_000n,
       }),
@@ -226,7 +228,8 @@ describe('with a ledger built by the real engine, the router reports it', () => 
   it('a posting exception reaches the surface with string timestamps', async () => {
     const opts = { tenantId, postedBy: uuidv7(), postingRuleVersion: 1 };
     const orphan = saleEntry({
-      saleId: uuidv7(), locationId: techiman, businessDate: '2027-12-01', tender: 'CASH',
+      saleId: uuidv7(), locationId: techiman, businessDate: '2027-12-01',
+      tenders: [{ role: 'TILL_CASH', amountMinor: 1_000n }],
       revenueMinor: 1_000n, discountMinor: 0n, taxes: [], costMinor: 0n,
     });
     const r = await postDocument(h.db, orphan, opts);

@@ -1,0 +1,73 @@
+# On demand: the dev docker stack (Postgres + PowerSync), then the §9.5
+# backup + restore drill against it, then a selection of the live wire drills.
+#
+# Manual only (Actions → drills → Run workflow). It is slow, it needs the
+# whole stack, and a drill that fails here is information for a human, not a
+# merge gate. The restore drill is the one to run before the pilot's Stage 0
+# sign-off ("restore drill passed within the last 30 days") — on PRODUCTION
+# backups, from the runbook; this is the rehearsal of the tooling.
+name: drills
+
+on:
+  workflow_dispatch:
+    inputs:
+      wire_drills:
+        description: 'Space-separated wire-conformance drill scripts to run (empty for none)'
+        required: false
+        default: 'drill:live drill:rbac'
+
+permissions:
+  contents: read
+
+jobs:
+  drills:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      DATABASE_URL: postgresql://erp:erp_dev@localhost:5433/erp
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - name: postgres 16 client tools (pg_dump must match the server major)
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q postgresql-common
+          sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
+          sudo apt-get install -y -q postgresql-client-16
+      - name: dev stack up
+        run: pnpm stack:up
+      - name: backup (logical dump + per-tenant manifest)
+        env:
+          PG_BIN_DIR: /usr/lib/postgresql/16/bin
+          BACKUP_DATABASE_URL: postgresql://erp:erp_dev@localhost:5433/erp
+          DATABASE_SSL_MODE: disable
+        run: node apps/api/dist/bin/ops.js backup --out "$RUNNER_TEMP/backups"
+      - name: restore drill into a fresh scratch database
+        env:
+          PG_BIN_DIR: /usr/lib/postgresql/16/bin
+          SCRATCH_ADMIN_URL: postgresql://erp:erp_dev@localhost:5433/postgres
+          DATABASE_SSL_MODE: disable
+        run: node apps/api/dist/bin/ops.js drill --manifest "$(ls "$RUNNER_TEMP"/backups/*.manifest.json)"
+      - name: API for the wire drills
+        if: ${{ inputs.wire_drills != '' }}
+        run: |
+          pnpm dev:api > "$RUNNER_TEMP/api.log" 2>&1 &
+          for i in $(seq 1 60); do curl -fsS http://127.0.0.1:3001/healthz && break; sleep 1; done
+      - name: wire drills
+        if: ${{ inputs.wire_drills != '' }}
+        env:
+          WIRE_DRILLS: ${{ inputs.wire_drills }} # via env, never interpolated into the script
+        run: |
+          for d in $WIRE_DRILLS; do
+            case "$d" in drill:[a-z-]*) ;; *) echo "refusing drill name: $d" >&2; exit 1 ;; esac
+            echo "::group::$d"; pnpm --filter @erp/wire-conformance "$d"; echo "::endgroup::"
+          done
+      - name: stack down
+        if: always()
+        run: pnpm stack:down

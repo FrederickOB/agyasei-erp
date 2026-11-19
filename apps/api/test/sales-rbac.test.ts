@@ -34,7 +34,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import { PERMISSION_CODES, uuidv7 } from '@erp/db';
 import { signDevToken, type VerifiedIdentity } from '../src/auth.js';
-import { SALE_PERMISSION, salePermission } from '../src/routers/sales.js';
+import { SETTLEMENT_PERMISSION, salePermission } from '../src/routers/sales.js';
 import { buildServer } from '../src/server.js';
 import {
   createCallerFactory,
@@ -214,7 +214,7 @@ beforeAll(async () => {
   // fixture straddles both bounds. Cash sales, by the owner, through the real
   // router: the same arithmetic the credit path will be measured against.
   for (const qty of [QTY_TINY, QTY_UNDER_MANAGER, QTY_OVER_MANAGER, QTY_OVER_REGIONAL]) {
-    const sale = await setup.sales.createSale(cashSale({ qty, tag: 'PROBE' }));
+    const sale = await setup.sales.createSale(await h.legacySale(cashSale({ qty, tag: 'PROBE' })));
     serverTotal.set(qty, BigInt(sale.totalMinor));
   }
   expect(serverTotal.get(QTY_TINY)!).toBeGreaterThan(0n);
@@ -267,15 +267,15 @@ describe('every template role against a CASH sale [sale.record]', () => {
   for (const ref of ALL_ROLES) {
     const may = allowed.has(ref);
     it(`${ref} ${may ? 'MAY' : 'may NOT'} record a cash sale`, async () => {
-      const attempt = p(ref).caller.sales.createSale(cashSale({ tag: `M-${ref.slice(0, 4)}` }));
-      if (may) await expect(attempt).resolves.toMatchObject({ tender: 'CASH' });
+      const attempt = p(ref).caller.sales.createSale(await h.legacySale(cashSale({ tag: `M-${ref.slice(0, 4)}` })));
+      if (may) await expect(attempt).resolves.toMatchObject({ tenders: [{ settlement: 'IMMEDIATE' }] });
       else await expect(attempt).rejects.toMatchObject({ code: 'FORBIDDEN' });
     });
   }
 
   it('the refusal names the CASH capability — an administrator must know which row to grant', async () => {
     await expect(
-      p('accounts').caller.sales.createSale(cashSale({ tag: 'M-NAME' })),
+      p('accounts').caller.sales.createSale(await h.legacySale(cashSale({ tag: 'M-NAME' }))),
     ).rejects.toThrow(/sale\.record\b/);
   });
 });
@@ -308,11 +308,11 @@ describe('every template role against a CREDIT sale [sale.record.credit]', () =>
     for (const ref of ALL_ROLES) {
       const may = tier.allowed.includes(ref);
       it(`${ref} ${may ? 'MAY' : 'may NOT'} sell on credit — ${tier.name}`, async () => {
-        const attempt = p(ref).caller.sales.createSale(
+        const attempt = p(ref).caller.sales.createSale(await h.legacySale(
           creditSale({ qty: tier.qty, tag: `T-${ref.slice(0, 4)}` }),
-        );
+        ));
         if (may) {
-          await expect(attempt).resolves.toMatchObject({ tender: 'CREDIT' });
+          await expect(attempt).resolves.toMatchObject({ tenders: [{ settlement: 'ON_ACCOUNT' }] });
         } else {
           await expect(attempt).rejects.toMatchObject({ code: 'FORBIDDEN' });
         }
@@ -328,15 +328,15 @@ describe('every template role against a CREDIT sale [sale.record.credit]', () =>
 describe('THE BOUND: "credit sales up to a set limit" (02 §2.4; the brief)', () => {
   it('counter staff are refused a credit sale of ANY amount — their bound is "0"', async () => {
     await expect(
-      p('counter_staff').caller.sales.createSale(creditSale({ qty: QTY_TINY, tag: 'B-ZERO' })),
+      p('counter_staff').caller.sales.createSale(await h.legacySale(creditSale({ qty: QTY_TINY, tag: 'B-ZERO' }))),
     ).rejects.toThrow(/PERMISSION_BOUND_EXCEEDED/);
   });
 
   it('…and the SAME payload from an outlet manager is recorded — the positive control', async () => {
-    const sale = await p('outlet_manager').caller.sales.createSale(
+    const sale = await p('outlet_manager').caller.sales.createSale(await h.legacySale(
       creditSale({ qty: QTY_TINY, tag: 'B-OK' }),
-    );
-    expect(sale.tender).toBe('CREDIT');
+    ));
+    expect(sale.tenders).toMatchObject([{ settlement: 'ON_ACCOUNT', amountMinor: sale.totalMinor, claimedMinor: null }]);
     expect(BigInt(sale.totalMinor)).toBe(serverTotal.get(QTY_TINY));
     // A credit sale is a credit charge: the exposure the bound is about.
     expect(sale.credit).toMatchObject({ chargeMinor: sale.totalMinor });
@@ -345,25 +345,25 @@ describe('THE BOUND: "credit sales up to a set limit" (02 §2.4; the brief)', ()
   it('the refusal names the credit capability and the bound, not the cash one', async () => {
     // An administrator reading this message must be sent to the right row.
     // `sale.record` is not what counter staff lack here — they hold it.
-    const attempt = p('counter_staff').caller.sales.createSale(
+    const attempt = p('counter_staff').caller.sales.createSale(await h.legacySale(
       creditSale({ qty: QTY_TINY, tag: 'B-MSG' }),
-    );
+    ));
     await expect(attempt).rejects.toThrow(/sale\.record\.credit/);
     await expect(attempt).rejects.toThrow(new RegExp(`bounded at 0 `));
   });
 
   it('an outlet manager is ALLOWED below GH₵5,000 and REFUSED above it', async () => {
-    const under = await p('outlet_manager').caller.sales.createSale(
+    const under = await p('outlet_manager').caller.sales.createSale(await h.legacySale(
       creditSale({ qty: QTY_UNDER_MANAGER, tag: 'B-UND' }),
-    );
+    ));
     expect(BigInt(under.totalMinor)).toBeLessThanOrEqual(MANAGER_BOUND);
 
     // Same principal, same location, same customer, same route. Only the
     // amount differs — which is the whole claim this file makes.
     await expect(
-      p('outlet_manager').caller.sales.createSale(
+      p('outlet_manager').caller.sales.createSale(await h.legacySale(
         creditSale({ qty: QTY_OVER_MANAGER, tag: 'B-OVR' }),
-      ),
+      )),
     ).rejects.toThrow(/PERMISSION_BOUND_EXCEEDED/);
   });
 
@@ -376,9 +376,9 @@ describe('THE BOUND: "credit sales up to a set limit" (02 §2.4; the brief)', ()
     const overTotal = serverTotal.get(QTY_OVER_MANAGER)!;
     expect(overTotal).toBeGreaterThan(MANAGER_BOUND);
 
-    const attempt = p('outlet_manager').caller.sales.createSale(
+    const attempt = p('outlet_manager').caller.sales.createSale(await h.legacySale(
       creditSale({ qty: QTY_OVER_MANAGER, clientTotalMinor: '1', tag: 'B-LIE' }),
-    );
+    ));
     await expect(attempt).rejects.toThrow(/PERMISSION_BOUND_EXCEEDED/);
     // And the refusal quotes the SERVER's figure, so the message cannot be
     // mistaken for a comment on what the till believed.
@@ -389,16 +389,16 @@ describe('THE BOUND: "credit sales up to a set limit" (02 §2.4; the brief)', ()
     // The same rule read the other way. A test that only proved "a low claim
     // cannot buy an allow" would still pass if the code simply took the
     // MAXIMUM of the two figures.
-    const sale = await p('outlet_manager').caller.sales.createSale(
+    const sale = await p('outlet_manager').caller.sales.createSale(await h.legacySale(
       creditSale({ qty: QTY_UNDER_MANAGER, clientTotalMinor: '99999999', tag: 'B-WILD' }),
-    );
+    ));
     expect(BigInt(sale.totalMinor)).toBe(serverTotal.get(QTY_UNDER_MANAGER));
     expect(sale.priceCheck).toMatchObject({ clientTotalMinor: '99999999', matches: false });
   });
 
   it('a refused credit sale leaves NOTHING behind — no sale, no charge, no marker', async () => {
     const input = creditSale({ qty: QTY_OVER_MANAGER, tag: 'B-ROLL' });
-    await expect(p('outlet_manager').caller.sales.createSale(input)).rejects.toMatchObject({
+    await expect(p('outlet_manager').caller.sales.createSale(await h.legacySale(input))).rejects.toMatchObject({
       code: 'FORBIDDEN',
     });
 
@@ -427,8 +427,8 @@ describe('THE BOUND: "credit sales up to a set limit" (02 §2.4; the brief)', ()
     // moment someone with the authority sends it. A refusal is not a
     // dead-letter.
     await expect(
-      p('regional_manager').caller.sales.createSale(input),
-    ).resolves.toMatchObject({ tender: 'CREDIT' });
+      p('regional_manager').caller.sales.createSale(await h.legacySale(input)),
+    ).resolves.toMatchObject({ tenders: [{ settlement: 'ON_ACCOUNT' }] });
   });
 
   it('a bound is a capability AT A PLACE: the manager’s authority stops at outlet B', async () => {
@@ -436,17 +436,17 @@ describe('THE BOUND: "credit sales up to a set limit" (02 §2.4; the brief)', ()
     // at outlet A. The token names outlet B perfectly well.
     expect(p('outlet_manager').identity.locationIds).toContain(outletB);
     await expect(
-      p('outlet_manager').caller.sales.createSale(
+      p('outlet_manager').caller.sales.createSale(await h.legacySale(
         creditSale({ qty: QTY_TINY, at: outletB, tag: 'B-PLACE' }),
-      ),
+      )),
     ).rejects.toThrow(/PERMISSION_OUT_OF_SCOPE/);
 
     // The regional manager, granted ONCE at the region node, reaches both.
     await expect(
-      p('regional_manager').caller.sales.createSale(
+      p('regional_manager').caller.sales.createSale(await h.legacySale(
         creditSale({ qty: QTY_TINY, at: outletB, tag: 'B-REG' }),
-      ),
-    ).resolves.toMatchObject({ tender: 'CREDIT' });
+      )),
+    ).resolves.toMatchObject({ tenders: [{ settlement: 'ON_ACCOUNT' }] });
   });
 
   it('a tenant raising its own bound takes effect on the next request', async () => {
@@ -454,22 +454,22 @@ describe('THE BOUND: "credit sales up to a set limit" (02 §2.4; the brief)', ()
     // jsonb value in their own tenant. The counter clerk who could sell no
     // credit at all can now sell a little — with no new role, no re-issued
     // token, and no restart.
-    const before = p('counter_staff').caller.sales.createSale(
+    const before = p('counter_staff').caller.sales.createSale(await h.legacySale(
       creditSale({ qty: QTY_TINY, tag: 'B-RAISE1' }),
-    );
+    ));
     await expect(before).rejects.toThrow(/PERMISSION_BOUND_EXCEEDED/);
 
     await setBound('counter_staff', MANAGER_BOUND.toString(10));
 
     await expect(
-      p('counter_staff').caller.sales.createSale(creditSale({ qty: QTY_TINY, tag: 'B-RAISE2' })),
-    ).resolves.toMatchObject({ tender: 'CREDIT' });
+      p('counter_staff').caller.sales.createSale(await h.legacySale(creditSale({ qty: QTY_TINY, tag: 'B-RAISE2' }))),
+    ).resolves.toMatchObject({ tenders: [{ settlement: 'ON_ACCOUNT' }] });
 
     // Raised, not removed: the bound still bounds.
     await expect(
-      p('counter_staff').caller.sales.createSale(
+      p('counter_staff').caller.sales.createSale(await h.legacySale(
         creditSale({ qty: QTY_OVER_MANAGER, tag: 'B-RAISE3' }),
-      ),
+      )),
     ).rejects.toThrow(/PERMISSION_BOUND_EXCEEDED/);
 
     // Put it back where the template had it, and prove the LOWERING lands on
@@ -479,7 +479,7 @@ describe('THE BOUND: "credit sales up to a set limit" (02 §2.4; the brief)', ()
     // rather than a figure some earlier test left behind.
     await setBound('counter_staff', '0');
     await expect(
-      p('counter_staff').caller.sales.createSale(creditSale({ qty: QTY_TINY, tag: 'B-RAISE4' })),
+      p('counter_staff').caller.sales.createSale(await h.legacySale(creditSale({ qty: QTY_TINY, tag: 'B-RAISE4' }))),
     ).rejects.toThrow(/PERMISSION_BOUND_EXCEEDED/);
   });
 });
@@ -488,30 +488,44 @@ describe('THE BOUND: "credit sales up to a set limit" (02 §2.4; the brief)', ()
 // Fail closed on the tender
 // ---------------------------------------------------------------------------
 
-describe('an unrecognised tender REFUSES — it never falls through to a default', () => {
+describe('an unrecognised settlement REFUSES — it never falls through to a default', () => {
   it('the map is total over the contract’s union, and every code is catalogued', () => {
-    // If a third tender is ever added to `createSaleInput`, TypeScript fails
-    // the build at SALE_PERMISSION rather than letting the new tender inherit
-    // the cash capability. This asserts the other half: the codes it names are
-    // real ones, not strings that can never match a grant.
+    // If a third kind of settlement is ever added to `TENDER_SETTLEMENTS`,
+    // TypeScript fails the build at SETTLEMENT_PERMISSION rather than letting
+    // it inherit the cash capability. This asserts the other half: the codes
+    // it names are real ones, not strings that can never match a grant.
     const codes = new Set<string>(PERMISSION_CODES);
-    for (const [tender, code] of Object.entries(SALE_PERMISSION)) {
-      expect(codes.has(code), `${tender} maps to an uncatalogued code`).toBe(true);
+    for (const [settlement, code] of Object.entries(SETTLEMENT_PERMISSION)) {
+      expect(codes.has(code), `${settlement} maps to an uncatalogued code`).toBe(true);
     }
-    expect(SALE_PERMISSION.CASH).not.toBe(SALE_PERMISSION.CREDIT);
+    expect(SETTLEMENT_PERMISSION.IMMEDIATE).toBe('sale.record');
+    expect(SETTLEMENT_PERMISSION.ON_ACCOUNT).toBe('sale.record.credit');
+  });
+
+  it('the derivation follows the money: any line received now needs sale.record; all on account needs only credit', () => {
+    const t = (...settlements: string[]) => ({ tenders: settlements.map((settlement) => ({ settlement })) });
+    expect(salePermission(t('IMMEDIATE'))).toBe('sale.record');
+    expect(salePermission(t('ON_ACCOUNT'))).toBe('sale.record.credit');
+    // Mixed: the middleware checks the base capability; the plan checks the
+    // on-account line's capability AND its bound (tested further down).
+    expect(salePermission(t('IMMEDIATE', 'ON_ACCOUNT'))).toBe('sale.record');
   });
 
   it('the derivation returns undefined for anything else — never the weaker code', () => {
-    for (const bad of ['GIFT_CARD', 'MOBILE_MONEY', 'cash', 'CREDIT ', '', 'CASH,CREDIT']) {
-      expect(salePermission({ tender: bad })).toBeUndefined();
+    for (const bad of ['GIFT_CARD', 'MOBILE_MONEY', 'immediate', 'ON_ACCOUNT ', '', 'CASH', 'CREDIT']) {
+      expect(salePermission({ tenders: [{ settlement: bad }] })).toBeUndefined();
+      // One bad line poisons the whole request, even beside a good one.
+      expect(salePermission({ tenders: [{ settlement: 'IMMEDIATE' }, { settlement: bad }] })).toBeUndefined();
     }
     expect(salePermission({})).toBeUndefined();
-    expect(salePermission({ tender: 42 })).toBeUndefined();
-    expect(salePermission({ tender: null })).toBeUndefined();
+    expect(salePermission({ tenders: [] })).toBeUndefined();
+    expect(salePermission({ tenders: 'IMMEDIATE' })).toBeUndefined();
+    expect(salePermission({ tenders: [null] })).toBeUndefined();
+    expect(salePermission({ tender: 'CASH' })).toBeUndefined(); // the old shape grants nothing
   });
 
   it('and the middleware turns that undefined into a REFUSAL, for the owner too', async () => {
-    // The first line of defence is zod: `tender` is a closed enum, so an
+    // The first line of defence is zod: `settlement` is a closed enum, so an
     // unknown one is a BAD_REQUEST before this middleware ever runs (asserted
     // below). That makes the fail-closed branch unreachable through the real
     // router — which is exactly why it is worth proving here, on the SAME
@@ -520,7 +534,12 @@ describe('an unrecognised tender REFUSES — it never falls through to a default
     // behaviour of.
     const probeRouter = router({
       probe: tenantProcedure
-        .input(z.object({ tender: z.string(), locationId: z.string().uuid() }).strict())
+        .input(
+          z.object({
+            tenders: z.array(z.object({ settlement: z.string() }).strict()),
+            locationId: z.string().uuid(),
+          }).strict(),
+        )
         .use(requiresPermission({ code: salePermission, at: 'input' }))
         .mutation(async () => 'allowed' as const),
     });
@@ -531,16 +550,19 @@ describe('an unrecognised tender REFUSES — it never falls through to a default
 
     // The owner holds the WHOLE catalogue and is still refused: there is no
     // capability to check, so there is nothing that could authorise it.
-    await expect(caller.probe({ tender: 'GIFT_CARD', locationId: outletA })).rejects.toThrow(
-      /UNKNOWN_PERMISSION_CODE/,
-    );
-    await expect(caller.probe({ tender: 'CASH', locationId: outletA })).resolves.toBe('allowed');
+    await expect(
+      caller.probe({ tenders: [{ settlement: 'GIFT_CARD' }], locationId: outletA }),
+    ).rejects.toThrow(/UNKNOWN_PERMISSION_CODE/);
+    await expect(
+      caller.probe({ tenders: [{ settlement: 'IMMEDIATE' }], locationId: outletA }),
+    ).resolves.toBe('allowed');
   });
 
-  it('through the real router an unknown tender is a BAD_REQUEST, and nothing lands', async () => {
-    const input = { ...cashSale({ tag: 'FT' }), tender: 'GIFT_CARD' };
+  it('through the real router an unknown settlement is a BAD_REQUEST, and nothing lands', async () => {
+    const input = await h.legacySale(cashSale({ tag: 'FT' }));
+    const forged = { ...input, tenders: [{ ...input.tenders[0]!, settlement: 'GIFT_CARD' }] };
     await expect(
-      p('head_of_operations').caller.sales.createSale(input as never),
+      p('head_of_operations').caller.sales.createSale(forged as never),
     ).rejects.toMatchObject({ code: 'BAD_REQUEST' });
 
     const landed = await h.db.withTenant(tenantId, async (tx) => {
@@ -554,6 +576,81 @@ describe('an unrecognised tender REFUSES — it never falls through to a default
   });
 });
 
+describe('THE TWO ANSWERS MUST AGREE: a line’s declared settlement against its method’s posting role', () => {
+  // Without this check a device could send the on-account method as an
+  // IMMEDIATE line, pass the middleware on `sale.record`, and open credit
+  // exposure no bound ever measured. The plan refuses it.
+  it('an on-account METHOD declared IMMEDIATE is refused — counter staff cannot dodge their "0" bound', async () => {
+    const tm = await h.tenderMethods(tenantId);
+    const input = await h.legacySale({ ...cashSale({ tag: 'DODGE' }), customerId: creditCustomerId });
+    const dodge = { ...input, tenders: [{ methodId: tm.onAccount, settlement: 'IMMEDIATE' as const }] };
+    await expect(p('counter_staff').caller.sales.createSale(dodge)).rejects.toMatchObject({
+      code: 'BAD_REQUEST',
+      message: expect.stringMatching(/declares IMMEDIATE but its method settles ON_ACCOUNT/),
+    });
+    // Positive control: the same principal, the cash method, declared truthfully.
+    const honest = { ...input, idempotencyKey: uuidv7(), receiptNo: receiptNo('HONEST'),
+      tenders: [{ methodId: tm.cash, settlement: 'IMMEDIATE' as const }] };
+    await expect(p('counter_staff').caller.sales.createSale(honest)).resolves.toMatchObject({
+      tenders: [{ settlement: 'IMMEDIATE' }],
+    });
+  });
+
+  it('a cash METHOD declared ON_ACCOUNT is refused too — the check is symmetric', async () => {
+    const tm = await h.tenderMethods(tenantId);
+    const input = await h.legacySale({ ...creditSale({ tag: 'SYM' }) });
+    const wrong = { ...input, tenders: [{ methodId: tm.cash, settlement: 'ON_ACCOUNT' as const }] };
+    await expect(p('outlet_manager').caller.sales.createSale(wrong)).rejects.toMatchObject({
+      code: 'BAD_REQUEST',
+    });
+  });
+
+  it('an unknown method id is refused — fail closed, never a default method', async () => {
+    const input = await h.legacySale(cashSale({ tag: 'NOMETHOD' }));
+    const ghost = { ...input, tenders: [{ methodId: uuidv7(), settlement: 'IMMEDIATE' as const }] };
+    await expect(p('head_of_operations').caller.sales.createSale(ghost)).rejects.toMatchObject({
+      code: 'BAD_REQUEST',
+      message: expect.stringMatching(/unknown tender method/),
+    });
+  });
+
+  it('a split sale with an on-account part needs BOTH capabilities: accounts holds neither', async () => {
+    const tm = await h.tenderMethods(tenantId);
+    const input = await h.legacySale({ ...cashSale({ tag: 'SPLIT-ACC' }), customerId: creditCustomerId });
+    const split = { ...input, tenders: [
+      { methodId: tm.cash, settlement: 'IMMEDIATE' as const, amountMinor: '100' },
+      { methodId: tm.onAccount, settlement: 'ON_ACCOUNT' as const },
+    ] };
+    await expect(p('accounts').caller.sales.createSale(split)).rejects.toMatchObject({ code: 'FORBIDDEN' });
+  });
+
+  it('the bound on a SPLIT sale is measured against the on-account PART, as the server figures it', async () => {
+    // Outlet manager, bound GH₵5,000. A sale OVER the bound in total, with
+    // only a part on account below it, is recorded — the exposure is the part.
+    const tm = await h.tenderMethods(tenantId);
+    const over = serverTotal.get(QTY_OVER_MANAGER)!;
+    const cashPart = over - 100_000n; // leaves GH₵1,000 on account
+    const input = await h.legacySale({ ...cashSale({ qty: QTY_OVER_MANAGER, tag: 'SPLIT-OK' }), customerId: creditCustomerId });
+    const split = { ...input, tenders: [
+      { methodId: tm.cash, settlement: 'IMMEDIATE' as const, amountMinor: cashPart.toString(10) },
+      { methodId: tm.onAccount, settlement: 'ON_ACCOUNT' as const },
+    ] };
+    const sale = await p('outlet_manager').caller.sales.createSale(split);
+    expect(sale.credit?.chargeMinor).toBe('100000');
+    expect(sale.tenders.map((t) => t.amountMinor)).toEqual([cashPart.toString(10), '100000']);
+
+    // …and the same total with MOST of it on account is refused, by the bound.
+    const input2 = await h.legacySale({ ...cashSale({ qty: QTY_OVER_MANAGER, tag: 'SPLIT-NO' }), customerId: creditCustomerId });
+    const heavy = { ...input2, tenders: [
+      { methodId: tm.cash, settlement: 'IMMEDIATE' as const, amountMinor: '100' },
+      { methodId: tm.onAccount, settlement: 'ON_ACCOUNT' as const },
+    ] };
+    await expect(p('outlet_manager').caller.sales.createSale(heavy)).rejects.toThrow(
+      new RegExp(`PERMISSION_BOUND_EXCEEDED.*this act is ${(over - 100n).toString(10)}`),
+    );
+  });
+});
+
 // ---------------------------------------------------------------------------
 // The read paths
 // ---------------------------------------------------------------------------
@@ -563,11 +660,11 @@ describe('sales.get and sales.recomputeCheck require sale.view, AT THE SALE’S 
   let saleAtB: string;
 
   beforeAll(async () => {
-    const a = await p('outlet_manager').caller.sales.createSale(cashSale({ tag: 'V-A' }));
+    const a = await p('outlet_manager').caller.sales.createSale(await h.legacySale(cashSale({ tag: 'V-A' })));
     saleAtA = a.saleId;
-    const b = await p('head_of_operations').caller.sales.createSale(
+    const b = await p('head_of_operations').caller.sales.createSale(await h.legacySale(
       cashSale({ at: outletB, tag: 'V-B' }),
-    );
+    ));
     saleAtB = b.saleId;
   });
 
@@ -593,7 +690,7 @@ describe('sales.get and sales.recomputeCheck require sale.view, AT THE SALE’S 
       });
     }
     await expect(
-      p('accounts').caller.sales.createSale(cashSale({ tag: 'V-NO' })),
+      p('accounts').caller.sales.createSale(await h.legacySale(cashSale({ tag: 'V-NO' }))),
     ).rejects.toMatchObject({ code: 'FORBIDDEN' });
   });
 
@@ -640,8 +737,8 @@ describe('sales.get and sales.recomputeCheck require sale.view, AT THE SALE’S 
 
     // Surgical: losing the read did not lose the right to sell.
     await expect(
-      caller.sales.createSale(cashSale({ tag: 'V-STILL' })),
-    ).resolves.toMatchObject({ tender: 'CASH' });
+      caller.sales.createSale(await h.legacySale(cashSale({ tag: 'V-STILL' }))),
+    ).resolves.toMatchObject({ tenders: [{ settlement: 'IMMEDIATE' }] });
   });
 });
 
@@ -689,7 +786,7 @@ describe('the bound, through POST /sync/upload — the surface a till meets', ()
   });
 
   async function uploadSale(ref: string, qty: string, tag: string) {
-    const sale = creditSale({ qty, tag });
+    const sale = await h.legacySale(creditSale({ qty, tag }));
     const res = await app.inject({
       method: 'POST',
       url: '/sync/upload',
@@ -703,8 +800,8 @@ describe('the bound, through POST /sync/upload — the surface a till meets', ()
               locationId: sale.locationId,
               priceListCode: sale.priceListCode,
               receiptNo: sale.receiptNo,
-              businessDate: sale.businessDate,
-              tender: sale.tender,
+              cashSessionId: sale.cashSessionId,
+              tenders: sale.tenders,
               customerId: sale.customerId,
               lines: sale.lines,
             },
@@ -758,7 +855,7 @@ describe('the bound, through POST /sync/upload — the surface a till meets', ()
   });
 
   it('a CASH sale of the same size from the same principal is applied — it is the tender that is bounded', async () => {
-    const sale = cashSale({ qty: QTY_OVER_MANAGER, tag: 'U-CASH' });
+    const sale = await h.legacySale(cashSale({ qty: QTY_OVER_MANAGER, tag: 'U-CASH' }));
     const res = await app.inject({
       method: 'POST',
       url: '/sync/upload',
@@ -772,8 +869,8 @@ describe('the bound, through POST /sync/upload — the surface a till meets', ()
               locationId: sale.locationId,
               priceListCode: sale.priceListCode,
               receiptNo: sale.receiptNo,
-              businessDate: sale.businessDate,
-              tender: sale.tender,
+              cashSessionId: sale.cashSessionId,
+              tenders: sale.tenders,
               lines: sale.lines,
             },
           },
@@ -832,7 +929,7 @@ describe('THE DISCOUNT BOUND: "no price overrides" (the brief; 02 §2.4)', () =>
     });
     expect(inclusive).toBe(false);
 
-    const probe = await owner.sales.createSale(cashSale({ qty: QTY_TINY, tag: 'D-PROBE' }));
+    const probe = await owner.sales.createSale(await h.legacySale(cashSale({ qty: QTY_TINY, tag: 'D-PROBE' })));
     extendedTiny = BigInt(probe.subtotalNetMinor);
     expect(extendedTiny).toBeGreaterThan(0n);
 
@@ -841,11 +938,11 @@ describe('THE DISCOUNT BOUND: "no price overrides" (the brief; 02 §2.4)', () =>
     expect(atCap).toBeGreaterThan(0n);
   }, 60_000);
 
-  function discounted(ref: string, discountMinor: bigint, tag: string, qty = QTY_TINY) {
-    return p(ref).caller.sales.createSale({
+  async function discounted(ref: string, discountMinor: bigint, tag: string, qty = QTY_TINY) {
+    return p(ref).caller.sales.createSale(await h.legacySale({
       ...cashSale({ qty, tag }),
       lines: [{ productId, qty, lineDiscountMinor: discountMinor.toString(10) }],
-    });
+    }));
   }
 
   it('the template withholds the capability from counter staff and bounds the manager at 300', async () => {
@@ -873,9 +970,9 @@ describe('THE DISCOUNT BOUND: "no price overrides" (the brief; 02 §2.4)', () =>
   });
 
   it('…and the SAME payload undiscounted is recorded — the positive control', async () => {
-    const sale = await p('counter_staff').caller.sales.createSale(
+    const sale = await p('counter_staff').caller.sales.createSale(await h.legacySale(
       cashSale({ qty: QTY_TINY, tag: 'D-CS-OK' }),
-    );
+    ));
     expect(BigInt(sale.totalMinor)).toBeGreaterThan(0n);
     expect(BigInt(sale.discountMinor)).toBe(0n);
   });
@@ -884,10 +981,10 @@ describe('THE DISCOUNT BOUND: "no price overrides" (the brief; 02 §2.4)', () =>
     // The regression that would take the counter down: requiring the grant on
     // every sale rather than on every discount. Explicitly with the field
     // present and zero, which is exactly what apps/web sends.
-    const sale = await p('counter_staff').caller.sales.createSale({
+    const sale = await p('counter_staff').caller.sales.createSale(await h.legacySale({
       ...cashSale({ qty: QTY_TINY, tag: 'D-CS-Z' }),
       lines: [{ productId, qty: QTY_TINY, lineDiscountMinor: '0' }],
-    });
+    }));
     expect(BigInt(sale.discountMinor)).toBe(0n);
   });
 
@@ -931,10 +1028,10 @@ describe('THE DISCOUNT BOUND: "no price overrides" (the brief; 02 §2.4)', () =>
 
     // Enough of a discount to bring the taxed total below the bound.
     const cut = gross - MANAGER_BOUND + 1_000n;
-    const attempt = p('outlet_manager').caller.sales.createSale({
+    const attempt = p('outlet_manager').caller.sales.createSale(await h.legacySale({
       ...creditSale({ qty: QTY_OVER_MANAGER, tag: 'D-BYPASS' }),
       lines: [{ productId, qty: QTY_OVER_MANAGER, lineDiscountMinor: cut.toString(10) }],
-    });
+    }));
     await expect(attempt).rejects.toThrow(/sale\.discount\.apply/);
 
     const landed = await h.db.withTenant(tenantId, async (tx) => {
@@ -958,7 +1055,7 @@ describe('THE DISCOUNT BOUND: "no price overrides" (the brief; 02 §2.4)', () =>
 
     const probe = await h
       .callerFor(await h.identityFor(tenantId, { locs: [root, outletA, outletB] }))
-      .sales.createSale(cashSale({ qty: QTY_OVER_MANAGER, tag: 'D-FRAC-P' }));
+      .sales.createSale(await h.legacySale(cashSale({ qty: QTY_OVER_MANAGER, tag: 'D-FRAC-P' })));
     const extended = BigInt(probe.subtotalNetMinor);
 
     const exactly300 = (extended * 300n) / 10_000n;
@@ -982,13 +1079,13 @@ describe('THE DISCOUNT BOUND: "no price overrides" (the brief; 02 §2.4)', () =>
     // Document-wide this is well under 3%; on its own line it is 100%. A
     // per-document check would wave it through and give the line away.
     const many = Array.from({ length: 9 }, () => ({ productId, qty: QTY_TINY }));
-    const attempt = p('outlet_manager').caller.sales.createSale({
+    const attempt = p('outlet_manager').caller.sales.createSale(await h.legacySale({
       ...cashSale({ qty: QTY_TINY, tag: 'D-PERLINE' }),
       lines: [
         ...many,
         { productId, qty: QTY_TINY, lineDiscountMinor: extendedTiny.toString(10) },
       ],
-    });
+    }));
     await expect(attempt).rejects.toThrow(/sale\.discount\.apply.*max_bps=300/s);
   });
 

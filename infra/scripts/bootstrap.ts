@@ -46,6 +46,7 @@ import {
   provisionPrincipal,
   seedGhanaJurisdiction,
 } from '@erp/db/seed';
+import { POWERSYNC_PUBLICATION_TABLES } from '@erp/ops/converge';
 import { applyDevPrices } from './dev-prices.js';
 import { seedDevLedger } from '@erp/db';
 import { applyDevPurchaseUnits } from './dev-purchase-units.js';
@@ -69,42 +70,10 @@ const TENANT_B = {
   legalName: 'Kumasi Builders Supply Ltd',
 };
 
-/** Tables the sync rules read — data queries AND parameter queries. The
- *  publication carries exactly these; extend it when sync_rules.yaml grows. */
-const PUBLICATION_TABLES = [
-  'app.location',
-  'app.location_type',
-  'app.unit_of_measure',
-  'app.product_category',
-  'app.product',
-  'app.product_uom',
-  'app.price_list',
-  'app.price_list_item',
-  'app.movement_reason',
-  'app.customer',
-  // THE GATE (migration 0024). Every bucket's PARAMETER query reads one of
-  // these two device-keyed projections; if they do not replicate, every
-  // bucket fails closed to zero rows. (0013's credit_sync_* projections are
-  // their inputs now, not parameter sources, so they no longer replicate.)
-  'app.device_sync_grant',
-  'app.device_sync_location_scope',
-  // Credit (migration 0013) — the data queries.
-  'app.customer_account',
-  'app.credit_limit_version',
-  'app.credit_entry',
-  'app.credit_position_snapshot',
-  'app.credit_position_bucket',
-  'app.credit_allowance',
-  'app.stock_movement',
-  'app.sale',
-  'app.sale_line',
-  'app.sale_tax_line',
-  // platform.tenant is no longer read: jurisdiction_pack keys on the device
-  // grant's jurisdiction_code (0024).
-  'platform.jurisdiction',
-  'platform.tax_code',
-  'platform.tax_rate',
-];
+/** Tables the sync rules read — data queries AND parameter queries. ONE list,
+ *  shared with production's release step (packages/ops/src/converge.ts);
+ *  extend it THERE when sync_rules.yaml grows — a test fails if you don't. */
+const PUBLICATION_TABLES = POWERSYNC_PUBLICATION_TABLES;
 
 async function main(): Promise<void> {
   const client = new pg.Client({ connectionString: DATABASE_URL });

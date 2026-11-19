@@ -274,7 +274,7 @@ describe('dual selling units: the comparison is in the STOCKING unit', () => {
 
     // Sell ONE TONNE. The sale is priced per tonne; what leaves the yard is
     // 13500/d² bars, converted once by the snapshotted rational factor.
-    await owner.sales.createSale({
+    await owner.sales.createSale(await h.legacySale({
       idempotencyKey: uuidv7(),
       locationId: out01,
       priceListCode: 'WHOLESALE',
@@ -282,7 +282,7 @@ describe('dual selling units: the comparison is in the STOCKING unit', () => {
       businessDate: '2026-08-05',
       tender: 'CASH',
       lines: [{ productId: rebarId, qty: '1000', uomCode: 'TON' }], // 1.000 t at scale 3
-    });
+    }));
 
     const expectedBars = 150n - barsPerTonne;
     const onHand = await owner.inventory.onHand({ locationId: out01, productId: rebarId });

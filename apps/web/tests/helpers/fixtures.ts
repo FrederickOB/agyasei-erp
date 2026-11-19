@@ -1,5 +1,7 @@
 /** Shared test fixtures. */
 import type { ProductWithPrice } from '../../src/data/queries/products';
+import { loadTenderMethods, type TenderMethod } from '../../src/data/queries/tender-methods';
+import { businessDateFor } from '../../src/lib/business-date';
 import { createClaimedHlcClock, type ClaimedHlcClock } from '../../src/lib/hlc';
 import { uuidv7 } from '../../src/lib/uuidv7';
 import type { LocalDb } from '../../src/data/db';
@@ -27,6 +29,8 @@ export interface ProvisionedDevice {
   readonly locationCode: string;
   readonly priceListId: string;
   readonly priceListCode: string;
+  /** The open till, unless provisioned with `till: false`. */
+  readonly tillId: string | null;
 }
 
 export interface ProvisionOptions {
@@ -37,6 +41,122 @@ export interface ProvisionOptions {
   /** IANA zone the trading day is derived in. */
   readonly timeZone?: string;
   readonly receiptFormat?: ReceiptNumberFormat;
+  /**
+   * Open this device's till for the given trading day, as if it had been
+   * opened earlier and already synced (no outbox row) — the state every sale
+   * test starts from, since there is no path to a sale without a till
+   * (08 §8.2a). Default: today in the location's zone, by the real clock.
+   * `false` provisions a device with NO till, for the tests about opening one.
+   */
+  readonly till?: string | false;
+}
+
+/** The tender methods a provisioned device holds, by platform role. */
+export interface TestTenderMethods {
+  readonly cash: TenderMethod;
+  readonly wallet: TenderMethod;
+  readonly account: TenderMethod;
+}
+
+/**
+ * The tenant's tender methods as the reference bucket delivers them. The
+ * NAMES are deliberately not any template's: nothing in the client may key
+ * off a method's words, so a test that passes with these passes with any.
+ */
+export async function seedTenderMethods(db: LocalDb): Promise<TestTenderMethods> {
+  const existing = await loadTenderMethods(db);
+  if (existing.length > 0) {
+    return {
+      cash: existing.find((m) => m.isCash)!,
+      wallet: existing.find((m) => !m.isCash && !m.isOnAccount)!,
+      account: existing.find((m) => m.isOnAccount)!,
+    };
+  }
+  for (const [name, role, isCash, onAccount, needsRef, order] of [
+    ['Notes and coins', 'TILL_CASH', 1, 0, 0, 10],
+    ['Phone wallet', 'MOMO_WALLET', 0, 0, 1, 20],
+    ['Tab', 'AR_TRADE', 0, 1, 0, 30],
+  ] as const) {
+    await db.execute(
+      `INSERT INTO tender_method (id, tenant_id, code, name, posting_role, is_cash, is_on_account,
+                                  requires_reference, is_active, sort_order, hlc, updated_at)
+       VALUES (?, NULL, ?, ?, ?, ?, ?, ?, 1, ?, NULL, NULL)`,
+      [uuidv7(), `T-${String(order)}`, name, role, isCash, onAccount, needsRef, order],
+    );
+  }
+  return seedTenderMethods(db);
+}
+
+/**
+ * Replace the device's tender methods with rows exactly as the reference
+ * bucket would deliver a REAL tenant's — the conformance suites seed the
+ * server's own ids here, because a sale naming a method the server has never
+ * heard of is (correctly) refused.
+ */
+export async function replaceTenderMethods(
+  db: LocalDb,
+  methods: readonly {
+    readonly id: string;
+    readonly name: string;
+    readonly postingRole: string;
+    readonly isCash: boolean;
+    readonly isOnAccount: boolean;
+    readonly requiresReference: boolean;
+    readonly sortOrder: number;
+  }[],
+): Promise<void> {
+  await db.execute('DELETE FROM tender_method');
+  for (const m of methods) {
+    await db.execute(
+      `INSERT INTO tender_method (id, tenant_id, code, name, posting_role, is_cash, is_on_account,
+                                  requires_reference, is_active, sort_order, hlc, updated_at)
+       VALUES (?, NULL, ?, ?, ?, ?, ?, ?, 1, ?, NULL, NULL)`,
+      [m.id, m.name, m.name, m.postingRole, m.isCash ? 1 : 0, m.isOnAccount ? 1 : 0,
+       m.requiresReference ? 1 : 0, m.sortOrder],
+    );
+  }
+}
+
+/**
+ * For tests that provision a device some other way (the dev seed, the session
+ * reconcilers): make sure the device's CURRENT location has an open till for
+ * `businessDate`, and that it holds a cash method — directly in local state,
+ * no outbox row. Idempotent.
+ */
+export async function ensureOpenTill(db: LocalDb, businessDate: string): Promise<string> {
+  const loc = await db.getAll('SELECT value FROM local_config WHERE key = ? LIMIT 1', [
+    CONFIG_KEY_LOCATION_ID,
+  ]);
+  const locationId = loc[0]?.['value'];
+  if (typeof locationId !== 'string') throw new Error('ensureOpenTill: the device has no location');
+  const methods = await loadTenderMethods(db);
+  if (!methods.some((m) => m.isCash)) await seedTenderMethods(db);
+  const open = await db.getAll(
+    `SELECT id FROM till_session WHERE location_id = ? AND status = 'OPEN' LIMIT 1`,
+    [locationId],
+  );
+  if (open[0] !== undefined) return String(open[0]['id']);
+  return openTestTill(db, { locationId, businessDate });
+}
+
+/**
+ * Open a till directly in local state, as if opened earlier and acked — no
+ * outbox row, so a test counting queued writes counts only its own.
+ */
+export async function openTestTill(
+  db: LocalDb,
+  input: { readonly businessDate: string; readonly locationId: string; readonly floatMinor?: bigint; readonly id?: string },
+): Promise<string> {
+  const id = input.id ?? uuidv7();
+  await db.execute(
+    `INSERT INTO till_session
+       (id, location_id, business_date, drawer, opening_float_minor, opened_at, opened_offline,
+        status, closed_at, auto_closed, counted_minor, banked_minor, expected_minor)
+     VALUES (?, ?, ?, 'DEVICE', CAST(? AS INTEGER), ?, 0, 'OPEN', NULL, 0, NULL, NULL, NULL)`,
+    [id, input.locationId, input.businessDate, (input.floatMinor ?? 0n).toString(),
+     `${input.businessDate}T07:00:00.000Z`],
+  );
+  return id;
 }
 
 export async function provisionDevice(
@@ -75,7 +195,24 @@ export async function provisionDevice(
       value,
     ]);
   }
-  return { locationId, locationCode, priceListId, priceListCode };
+  await seedTenderMethods(db);
+  let tillId: string | null = null;
+  if (options.till !== false) {
+    // Reuse a till already open at a SHARED location (the two-device tests).
+    const open = await db.getAll(
+      `SELECT id FROM till_session WHERE location_id = ? AND status = 'OPEN' LIMIT 1`,
+      [locationId],
+    );
+    tillId =
+      open[0] !== undefined
+        ? String(open[0]['id'])
+        : await openTestTill(db, {
+            locationId,
+            businessDate:
+              options.till ?? businessDateFor(new Date().toISOString(), options.timeZone ?? 'UTC'),
+          });
+  }
+  return { locationId, locationCode, priceListId, priceListCode, tillId };
 }
 
 export interface SeedProductInput {

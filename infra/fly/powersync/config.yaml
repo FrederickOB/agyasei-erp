@@ -1,0 +1,61 @@
+# yaml-language-server: $schema=https://unpkg.com/@powersync/service-schema@latest/json-schema/powersync-config.json
+#
+# PowerSync service configuration — PRODUCTION (Fly app `erp-powersync`,
+# image infra/docker/powersync.Dockerfile). The dev stack's config is
+# infra/powersync/config.yaml; the SYNC RULES are the same file in both
+# (infra/powersync/sync_rules.yaml), baked into the image.
+#
+# Every credential is a `!env` reference to a Fly secret. Nothing secret is
+# in this file (docs/production-runbook.md §Secrets).
+
+_type: self-hosted
+
+telemetry:
+  disable_telemetry_sharing: true
+
+# Source: the Supabase DIRECT connection (logical replication does not pass
+# through the pooler), as powersync_repl. TLS verified against Supabase's CA.
+replication:
+  connections:
+    - type: postgresql
+      uri: !env PS_DATA_SOURCE_URI
+      sslmode: verify-full
+      cacert: !env PS_PG_CA_CERT
+
+# Bucket storage: its own database (powersync_storage) in the same Supabase
+# project — see the runbook for the trade-off and the trigger to move it.
+storage:
+  type: postgresql
+  uri: !env PS_STORAGE_URI
+  sslmode: verify-full
+  cacert: !env PS_PG_CA_CERT
+
+port: 8080
+
+sync_config:
+  path: /config/sync_rules.yaml
+
+# Device authentication. INTERIM: one HS256 key, PS_JWT_K = base64url of the
+# API's POWERSYNC_JWT_SECRET (a different secret from the API's own session
+# key). The identity work package replaces this with the API's published
+# signing keys (jwks_uri) — see the runbook's placeholder list.
+# Sync tokens are ES256, minted by the API for an enrolled device's session
+# (audience erp-sync, carrying the `did` and `sub` every parameter query keys
+# on) and verified here against the API's PUBLIC key set. No shared secret:
+# the HS256 dev path does not exist in production (identity/config.ts).
+# PS_JWKS_URI is the API's public https URL — https://<api app>.fly.dev/
+# .well-known/jwks.json — not a Fly-private address: block_local_jwks stays at
+# its default (true), so the sync service refuses keys from a private range.
+client_auth:
+  jwks_uri: !env PS_JWKS_URI
+  audience: ['erp-sync']
+
+# The diagnostics/admin API: a long random token, never the dev one.
+api:
+  tokens:
+    - !env PS_ADMIN_API_TOKEN
+
+system:
+  logging:
+    level: info
+    format: json

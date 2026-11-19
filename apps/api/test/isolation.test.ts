@@ -67,9 +67,20 @@ describe('tenant isolation through the API', () => {
   });
 
   it('detail: a foreign id and a nonexistent id are INDISTINGUISHABLE', async () => {
-    const bProduct = (await h.callerFor(await h.identityFor(tenantB)).catalogue.list({ limit: 1 }))
-      .products[0]!;
+    const callerB = h.callerFor(await h.identityFor(tenantB));
+    const bProduct = (await callerB.catalogue.list({ limit: 1 })).products[0]!;
     const callerA = h.callerFor(await h.identityFor(tenantA));
+
+    // POSITIVE CONTROLS FIRST. The Phase 2 gate (§4.4.2) found this test
+    // vacuous: `catalogue.detail` was called nowhere else, so a stub that
+    // always threw NOT_FOUND passed it. The route must be shown to ANSWER —
+    // for B, with B's own id, and for A, with A's — before its refusal of the
+    // other tenant's id means anything.
+    const ownB = await callerB.catalogue.detail({ productId: bProduct.productId });
+    expect(ownB.productId).toBe(bProduct.productId);
+    const aProduct = (await callerA.catalogue.list({ limit: 1 })).products[0]!;
+    const ownA = await callerA.catalogue.detail({ productId: aProduct.productId });
+    expect(ownA.skuCode).toBe(aProduct.skuCode);
 
     const errors: TRPCError[] = [];
     for (const probeId of [bProduct.productId, uuidv7()]) {

@@ -93,6 +93,20 @@ bucket_definitions:
       - SELECT * FROM "app"."price_list"       WHERE tenant_id = bucket.tenant_id AND deleted_at IS NULL
       - SELECT * FROM "app"."price_list_item"  WHERE tenant_id = bucket.tenant_id AND deleted_at IS NULL
       - SELECT * FROM "app"."movement_reason"  WHERE tenant_id = bucket.tenant_id AND deleted_at IS NULL
+      # How a customer may pay (04 §4.8). The tenant's own rows — code and name
+      # are its words; the counter reads only the role-derived flags. Explicit
+      # columns: a column added to tender_method later must be a decision to
+      # ship it, not an accident.
+      - SELECT id, tenant_id, code, name, posting_role, is_cash, is_on_account,
+               requires_reference, is_active, sort_order, hlc, updated_at
+          FROM "app"."tender_method"
+         WHERE tenant_id = bucket.tenant_id AND deleted_at IS NULL
+      # The accounting calendar's STATE — dates and a status, nothing of the
+      # books — so an offline till can refuse to open into a closed or locked
+      # period (08 §8.2a, §8.12). The GL itself never syncs (05 §5.2.6).
+      - SELECT id, tenant_id, fy_code, seq, starts_on, ends_on, status, updated_at
+          FROM "app"."accounting_period"
+         WHERE tenant_id = bucket.tenant_id
 
   # ---- Jurisdiction pack (tax rows the counter needs) ----------------------
   # platform.* rows are platform-wide reference data keyed by jurisdiction,
@@ -160,6 +174,24 @@ bucket_definitions:
            AND location_id = bucket.location_id
            AND archived_at IS NULL
       - SELECT * FROM "app"."sale"
+         WHERE tenant_id = bucket.tenant_id
+           AND location_id = bucket.location_id
+      # The tills at this location (04 §4.8a) — this device's and the others',
+      # with the server's own expected cash and variance once closed.
+      - SELECT id, tenant_id, location_id, device_id, business_date,
+               server_date_at_open, opened_by, opened_at, opened_offline,
+               opening_float_minor, status, closed_by, closed_at, auto_closed,
+               counted_minor, banked_minor, expected_cash_minor, variance_minor,
+               client_expected_minor, contested_session_id, hlc, updated_at
+          FROM "app"."cash_session"
+         WHERE tenant_id = bucket.tenant_id
+           AND location_id = bucket.location_id
+      # How each sale here was paid. location_id is denormalised onto the row
+      # precisely so it can ride this bucket (04 §4.8; asserted equal to the
+      # sale's at commit, migration 0022).
+      - SELECT id, tenant_id, sale_id, seq, method_id, amount_minor,
+               claimed_minor, reference, tendered_at, location_id, hlc, created_at
+          FROM "app"."sale_tender"
          WHERE tenant_id = bucket.tenant_id
            AND location_id = bucket.location_id
 

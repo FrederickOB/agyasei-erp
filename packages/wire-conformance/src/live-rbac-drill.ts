@@ -74,6 +74,7 @@ import { SignJWT } from 'jose';
 import pg from 'pg';
 
 import { provisionPrincipal } from '@erp/db/seed';
+import { LiveTills, liveTenderIds, tenderLines, type LiveTenderIds } from './live-tills.js';
 
 const API_URL = process.env['API_URL'] ?? 'http://127.0.0.1:3001';
 const DATABASE_URL =
@@ -327,6 +328,10 @@ function openAccount(suffix: string, creditLimitMinor: string): Record<string, u
  * the server reprices from its own list and the total it computes is the only
  * figure the bound is ever measured against.
  */
+/** Set before the first sale: the day's shared till per outlet, and the tenant's methods. */
+const saleTills = new Map<string, string>();
+let saleTenders: LiveTenderIds | null = null;
+
 function saleOp(
   locationId: string,
   productId: string,
@@ -334,12 +339,18 @@ function saleOp(
   tender: 'CASH' | 'CREDIT',
   extra: Record<string, unknown> = {},
 ): Record<string, unknown> {
+  const { idempotencyKey } = envelope();
+  const till = saleTills.get(locationId);
+  if (till === undefined || saleTenders === null) throw new Error('open the till before ringing a sale');
   return {
-    ...envelope(),
+    idempotencyKey,
     locationId,
+    // Since 0020 the sale's business date is its TILL's, and the contract
+    // refuses a device-asserted one.
+    cashSessionId: till,
     priceListCode: 'WHOLESALE',
     receiptNo: `RBAC-${randomUUID().slice(0, 12)}`,
-    tender,
+    tenders: tenderLines(tender, saleTenders),
     lines: [{ productId, qty: qty.toString(10) }],
     ...extra,
   };
@@ -587,6 +598,16 @@ async function main(): Promise<void> {
     )
   ).rows[0];
   if (!priced) throw new Error('tenant A has no WHOLESALE-priced stocked product');
+
+  saleTenders = await liveTenderIds(
+    async (sql, params) => (await client.query(sql, params)).rows as never[],
+    tenantId,
+  );
+  const tills = new LiveTills(async (input) => {
+    const o = await callMutation(saleMgr, 'cashSession.open', input);
+    return { ok: o.status === 200, detail: `HTTP ${o.status} ${o.message}` };
+  });
+  saleTills.set(out01, await tills.till(out01, new Date().toISOString().slice(0, 10)));
 
   const probe = await callMutation(saleMgr, 'sales.createSale', saleOp(out01, priced.id, 1n, 'CASH'));
   if (probe.status !== 200) {

@@ -1,0 +1,28 @@
+{
+  "name": "@erp/ops",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Production operations: the strict migration runner, the scheduled-job runner and its jobs, the §9.4 signals, the §9.5 backup manifest and restore drill, and the §9.1 provisioning checks. Every cross-tenant pass runs per tenant under forced RLS; outputs carry tenant ids and counts, never tenant data.",
+  "exports": {
+    ".": "./src/index.ts",
+    "./converge": "./src/converge.ts"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@erp/db": "workspace:*",
+    "@erp/sequence": "workspace:*",
+    "pg": "^8.13.1",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "^0.2.17",
+    "@types/node": "^22.10.2",
+    "@types/pg": "^8.11.10",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}

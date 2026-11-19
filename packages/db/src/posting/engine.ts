@@ -312,6 +312,46 @@ export async function postDocument(
   }
 }
 
+/**
+ * Record a document that could not even be turned into an entry — the RULE
+ * refused it (a nil document, tenders that do not sum to the total) — as the
+ * same posting_exception a mapping failure opens. A sweep that threw instead
+ * would stop draining on the first bad document and leave every later one
+ * unposted and unreported; a sweep that skipped it silently would let the
+ * period close over it. Neither: it becomes visible work.
+ */
+export async function recordRuleFailure(
+  runner: PostingRunner,
+  opts: PostOptions,
+  doc: {
+    readonly sourceKind: string;
+    readonly sourceId: string;
+    readonly locationId: string;
+    readonly documentDate: string;
+  },
+  err: UnbalancedRuleError,
+): Promise<PostResult> {
+  const exceptionId = await runner.withTenant(opts.tenantId, async (tx) => {
+    const res = await tx.query<{ id: string }>(
+      `insert into app.posting_exception
+         (tenant_id, id, source_kind, source_id, location_id, document_date,
+          posting_role, error_code, error_detail, severity)
+       values ($1, $2, $3, $4, $5, $6, null, $7, $8, 1)
+       on conflict (tenant_id, source_kind, source_id) where resolved_at is null
+       do update set error_code = excluded.error_code,
+                     error_detail = excluded.error_detail,
+                     updated_at = transaction_timestamp()
+       returning id`,
+      [
+        opts.tenantId, uuidv7(), doc.sourceKind, doc.sourceId, doc.locationId,
+        doc.documentDate, POSTING_ERROR.ruleUnbalanced, err.message,
+      ],
+    );
+    return res.rows[0]!.id;
+  });
+  return { status: 'exception', exceptionId, errorCode: POSTING_ERROR.ruleUnbalanced, detail: err.message };
+}
+
 function asFailure(err: unknown): PostingFailure | null {
   if (err instanceof PostingFailure) return err;
   if (err instanceof MissingMappingError) {

@@ -5,6 +5,15 @@ replication, and a self-hosted [PowerSync](https://docs.powersync.com/) service
 (open edition) whose **sync rules are the tenant isolation boundary**
 (`docs/architecture/sections/03-offline-sync.md` §3.2).
 
+> **Production** lives beside it and is documented in `docs/production-runbook.md`:
+> `docker/` (api, powersync, web images), `fly/` (the three Fly apps, the production
+> PowerSync config, `secrets.example`), `supabase/roles.sql`, and
+> `scripts/release-smoke.sh` (the release path against a real Postgres 16, run by CI).
+> The sync rules are ONE file for both: `powersync/sync_rules.yaml`, baked into the
+> production image. The publication's table list has ONE home too:
+> `packages/ops/src/converge.ts` — extend it there when the rules grow (a test fails
+> if you don't).
+
 ## What runs where
 
 | Thing | Where | Notes |

@@ -37,15 +37,36 @@ export {
 } from './wire.js';
 
 export {
+  MAX_TENDER_LINES,
+  TENDER_SETTLEMENTS,
   comparePriceCheck,
   createSaleInput,
   saleLineInput,
+  saleTenderInput,
   type CreateSaleInput,
   type CreateSaleParsed,
   type PriceCheck,
   type SaleLineInput,
   type SaleLineParsed,
+  type SaleTenderInput,
+  type SaleTenderParsed,
+  type TenderSettlement,
 } from './sale.js';
+
+export {
+  CASH_DRAWERS,
+  CASH_SESSION_DATE_TOLERANCE_DAYS,
+  cashSessionOpenCheckInput,
+  closeCashSessionInput,
+  openCashSessionInput,
+  type CashDrawer,
+  type CashSessionOpenCheck,
+  type CashSessionOpenCheckInput,
+  type CloseCashSessionInput,
+  type CloseCashSessionParsed,
+  type OpenCashSessionInput,
+  type OpenCashSessionParsed,
+} from './cash-session.js';
 
 export {
   DIRECT_MOVEMENT_KINDS,

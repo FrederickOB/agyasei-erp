@@ -1,0 +1,78 @@
+# The PWA's static server. Cache rules are the offline story, not tuning:
+#
+#   sw.js, registerSW.js, index.html, the manifest   no-cache  — always revalidated,
+#       or a device keeps an old service worker and never learns a release exists;
+#   /assets/*, workbox-<hash>.js                      immutable — content-hashed names,
+#       so a cached file can never be the wrong version;
+#   /release.json                                     no-store  — the §8.11 version gate;
+#       it decides whether a waiting build may activate, and a cached answer is a
+#       stale decision.
+#
+# No COOP/COEP: the PowerSync web SDK's default SQLite VFS (IndexedDB-backed,
+# driven from a worker) does not need SharedArrayBuffer, so cross-origin
+# isolation is not required — and COEP would break cross-origin fetches that
+# send no CORP header. Revisit only if the VFS changes to one that needs it.
+
+server {
+    listen 8080;
+    server_name _;
+    root /usr/share/nginx/html;
+    server_tokens off;
+    charset utf-8;
+
+    gzip on;
+    gzip_comp_level 6;
+    gzip_min_length 1024;
+    gzip_types text/css application/javascript application/json application/wasm image/svg+xml application/manifest+json;
+
+    location = /healthz {
+        access_log off;
+        default_type text/plain;
+        return 200 "ok\n";
+    }
+
+    location = /release.json {
+        default_type application/json;
+        add_header Cache-Control "no-store" always;
+        include /etc/nginx/conf.d/security-headers.inc;
+        return 200 '{"build_id":"${RELEASE_BUILD_ID}","min_client_schema":${RELEASE_MIN_CLIENT_SCHEMA},"max_client_schema":${RELEASE_MAX_CLIENT_SCHEMA},"cohort":"fleet"}';
+    }
+
+    location = /sw.js {
+        add_header Cache-Control "no-cache" always;
+        include /etc/nginx/conf.d/security-headers.inc;
+    }
+
+    location = /registerSW.js {
+        add_header Cache-Control "no-cache" always;
+        include /etc/nginx/conf.d/security-headers.inc;
+    }
+
+    location = /manifest.webmanifest {
+        default_type application/manifest+json;
+        add_header Cache-Control "no-cache" always;
+        include /etc/nginx/conf.d/security-headers.inc;
+    }
+
+    # `immutable` WITHOUT `always`: nginx then adds it to successful responses
+    # only. With `always`, a chunk requested mid-deploy and not found would be
+    # cached as a 404 for a year.
+    location ~ ^/workbox-[A-Za-z0-9_-]+\.js$ {
+        add_header Cache-Control "public, max-age=31536000, immutable";
+        include /etc/nginx/conf.d/security-headers.inc;
+    }
+
+    # Hashed build output. A missing asset is a 404, NEVER index.html: an HTML
+    # page served as a stale chunk is a MIME error that breaks the till.
+    location /assets/ {
+        add_header Cache-Control "public, max-age=31536000, immutable";
+        include /etc/nginx/conf.d/security-headers.inc;
+        try_files $uri =404;
+    }
+
+    location / {
+        add_header Cache-Control "no-cache" always;
+        include /etc/nginx/conf.d/security-headers.inc;
+        try_files $uri /index.html;
+    }
+}

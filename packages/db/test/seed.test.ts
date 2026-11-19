@@ -134,6 +134,41 @@ describe('catalogue template', () => {
     expect(await count('select count(*)::text as n from app.price_list_item')).toBe(0);
   });
 
+  it('seeds five tender methods as editable rows — read by ROLE, the codes are the template’s words', async () => {
+    const res = await db.withTenant(T1, (tx) =>
+      tx.query<{ code: string; posting_role: string; is_cash: boolean; is_on_account: boolean;
+                 requires_reference: boolean; is_active: boolean }>(
+        `select code, posting_role, is_cash, is_on_account, requires_reference, is_active
+           from app.tender_method order by sort_order`,
+      ),
+    );
+    expect(res.rows).toEqual([
+      { code: 'CASH', posting_role: 'TILL_CASH', is_cash: true, is_on_account: false, requires_reference: false, is_active: true },
+      { code: 'MOMO', posting_role: 'MOMO_WALLET', is_cash: false, is_on_account: false, requires_reference: true, is_active: true },
+      { code: 'BANK_TRANSFER', posting_role: 'BANK', is_cash: false, is_on_account: false, requires_reference: true, is_active: true },
+      { code: 'CHEQUE', posting_role: 'BANK', is_cash: false, is_on_account: false, requires_reference: true, is_active: true },
+      { code: 'ON_ACCOUNT', posting_role: 'AR_TRADE', is_cash: false, is_on_account: true, requires_reference: false, is_active: true },
+    ]);
+  });
+
+  it('grants the till to every role that sells, and to nobody who does not', async () => {
+    const res = await db.withTenant(T1, (tx) =>
+      tx.query<{ ref: string; code: string }>(
+        `select r.origin_ref as ref, rp.permission_code as code
+           from app.role_permission rp join app.role r on r.id = rp.role_id
+          where rp.permission_code like 'cash.session.%' and rp.deleted_at is null
+          order by 1, 2`,
+      ),
+    );
+    const byRole = new Map<string, string[]>();
+    for (const r of res.rows) byRole.set(r.ref, [...(byRole.get(r.ref) ?? []), r.code]);
+    for (const ref of ['role:counter_staff', 'role:outlet_manager', 'role:regional_manager']) {
+      expect(byRole.get(ref)).toEqual(['cash.session.close', 'cash.session.open']);
+    }
+    // Accounts records nothing at the counter — segregation of duties.
+    expect(byRole.has('role:accounts')).toBe(false);
+  });
+
   it('applies IDEMPOTENTLY: a second run inserts nothing and updates nothing', async () => {
     const before = await db.withTenant(T1, (tx) =>
       tx.query<{ t: string; n: string }>(`

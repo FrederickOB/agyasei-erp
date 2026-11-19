@@ -109,6 +109,12 @@ export const PERMISSION_CODES = [
 
   'logistics.delivery.view',
   'logistics.dispatch.manage',
+
+  // Go-live — the till (migration 0020). Two codes because "anyone at the
+  // counter opens it, a supervisor counts it" is a boundary that falls in
+  // real org charts; tenant #1's template grants both to every selling role.
+  'cash.session.open',
+  'cash.session.close',
 ] as const;
 
 export type PermissionCode = (typeof PERMISSION_CODES)[number];
@@ -213,7 +219,8 @@ const EFFECTIVE_PERMISSION_SQL = `
   select permission_code, location_id, scope_location_id, scope_depth,
          grant_id, role_id, bound, via_owner_role
     from app.effective_permission
-   where user_id = $1
+   where tenant_id = app.current_tenant()
+     and user_id = $1
 `;
 
 /**

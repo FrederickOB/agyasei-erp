@@ -10,7 +10,8 @@
       "@erp/money": ["../../packages/money/src/index.ts"],
       "@erp/db": ["../../packages/db/src/index.ts"],
       "@erp/db/testing": ["../../packages/db/src/testing/harness.ts"],
-      "@erp/db/seed": ["../../packages/db/src/seed/index.ts"]
+      "@erp/db/seed": ["../../packages/db/src/seed/index.ts"],
+      "@erp/ops": ["../../packages/ops/src/index.ts"]
     }
   },
   "include": ["src/**/*.ts", "test/**/*.ts", "vitest.config.ts"]

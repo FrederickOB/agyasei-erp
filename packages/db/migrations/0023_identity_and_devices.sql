@@ -81,10 +81,16 @@ comment on column platform.permission.offline_mode is
 
 -- `always`: the outlet keeps taking money and answering "do we have it?" —
 -- cash sales at the resolved list price, stock and price lookups, reprints.
+-- Opening and cashing up the TILL (0020) belong here too: every sale is rung
+-- into an open till and a till closes at local midnight (08 §8.2a), so a
+-- till that could not be opened in restricted mode would stop the cash sales
+-- restricted mode exists to keep — and a cash-up that could not be recorded
+-- is the daily control lost exactly when the outlet is most alone.
 update platform.permission
    set offline_mode = 'always'
  where code in ('sale.record', 'sale.view', 'sale.receipt.reprint',
-                'stock.view', 'catalogue.view', 'customer.view');
+                'stock.view', 'catalogue.view', 'customer.view',
+                'cash.session.open', 'cash.session.close');
 
 -- `until_lease_expiry`: every write that rides the offline outbox and takes a
 -- RISK — credit, adjustments, transfers, receipts, deliveries. They stop at

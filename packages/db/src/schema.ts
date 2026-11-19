@@ -285,6 +285,8 @@ export const stockMovement = tenantTable(
     businessDate: date('business_date').notNull(),
     reversesId: uuid('reverses_id'),
     archivedAt: timestamp('archived_at', { withTimezone: true }),
+    /** The till a SALE movement was rung in (migration 0021). NULL otherwise. */
+    cashSessionId: uuid('cash_session_id'),
   },
   (t) => [
     index('stock_movement_replay_ix').on(t.tenantId, t.locationId, t.productId, t.hlc),
@@ -406,10 +408,14 @@ export const sale = tenantTable(
     discountMinor: bigint('discount_minor', { mode: 'bigint' }).notNull(),
     taxTotalMinor: bigint('tax_total_minor', { mode: 'bigint' }).notNull(),
     totalMinor: bigint('total_minor', { mode: 'bigint' }).notNull(),
+    /** The till this sale was rung in; business_date is the session's
+     *  (migration 0021). NULL only on sales written before tills existed. */
+    cashSessionId: uuid('cash_session_id'),
   },
   (t) => [
     uniqueIndex('sale_receipt_uq').on(t.tenantId, t.locationId, t.receiptNo),
     index('sale_day_ix').on(t.tenantId, t.locationId, t.businessDate),
+    index('sale_cash_session_ix').on(t.tenantId, t.cashSessionId),
   ],
 );
 
@@ -454,6 +460,95 @@ export const saleTaxLine = tenantTable(
     taxRateId: uuid('tax_rate_id').notNull(),
   },
   (t) => [uniqueIndex('sale_tax_line_uq').on(t.tenantId, t.saleLineId, t.seq)],
+);
+
+/**
+ * Tender methods — TENANT-DEFINED ways to settle a sale (migration 0020).
+ * `code` and `name` are the tenant's words and nothing on the platform reads
+ * them. `postingRole` is platform vocabulary; `isCash` and `isOnAccount` are
+ * GENERATED from it in the database and are the only properties code branches
+ * on (CLAUDE.md §2.9).
+ */
+export const tenderMethod = tenantTable(
+  'tender_method',
+  {
+    code: text('code').notNull(),
+    name: text('name').notNull(),
+    postingRole: text('posting_role').notNull(),
+    /** GENERATED: posting_role = 'TILL_CASH'. Read-only. */
+    isCash: boolean('is_cash').notNull(),
+    /** GENERATED: posting_role = 'AR_TRADE'. Read-only. */
+    isOnAccount: boolean('is_on_account').notNull(),
+    requiresReference: boolean('requires_reference').notNull(),
+    isActive: boolean('is_active').notNull(),
+    sortOrder: smallint('sort_order').notNull(),
+    originTemplateId: text('origin_template_id'),
+    originRef: text('origin_ref'),
+  },
+  (t) => [uniqueIndex('tender_method_code_uq').on(t.tenantId, t.code)],
+);
+
+/**
+ * One row per way a sale was paid (migration 0021). `amountMinor` is the
+ * SERVER's figure — Σ over a sale = its total, enforced at commit (0022).
+ * `claimedMinor` is what the device tendered, kept only when the server
+ * reconciled the split onto its own repriced total.
+ */
+export const saleTender = tenantTable(
+  'sale_tender',
+  {
+    saleId: uuid('sale_id').notNull(),
+    seq: smallint('seq').notNull(),
+    methodId: uuid('method_id').notNull(),
+    amountMinor: bigint('amount_minor', { mode: 'bigint' }).notNull(),
+    claimedMinor: bigint('claimed_minor', { mode: 'bigint' }),
+    reference: text('reference'),
+    tenderedAt: timestamp('tendered_at', { withTimezone: true }).notNull(),
+    locationId: uuid('location_id').notNull(),
+  },
+  (t) => [
+    uniqueIndex('sale_tender_uq').on(t.tenantId, t.saleId, t.seq),
+    index('sale_tender_location_ix').on(t.tenantId, t.locationId, t.methodId),
+  ],
+);
+
+/**
+ * A till opened for one trading day (migration 0020; 04 §4.8a). Opened once,
+ * closed once, then frozen by trigger. Every money figure is bigint minor
+ * units; `varianceMinor = countedMinor − expectedCashMinor` is a CHECK.
+ */
+export const cashSession = tenantTable(
+  'cash_session',
+  {
+    locationId: uuid('location_id').notNull(),
+    /** From the verified token. NULL = a shared drawer. */
+    deviceId: uuid('device_id'),
+    /** GENERATED: coalesce(device_id, nil uuid). Read-only. */
+    tillKey: uuid('till_key').notNull(),
+    businessDate: date('business_date').notNull(),
+    serverDateAtOpen: date('server_date_at_open').notNull(),
+    openedBy: uuid('opened_by').notNull(),
+    /** Device clock. UNTRUSTED — display only. */
+    openedAt: timestamp('opened_at', { withTimezone: true }).notNull(),
+    openedOffline: boolean('opened_offline').notNull(),
+    openingFloatMinor: bigint('opening_float_minor', { mode: 'bigint' }).notNull(),
+    status: text('status').notNull(),
+    closedBy: uuid('closed_by'),
+    closedAt: timestamp('closed_at', { withTimezone: true }),
+    autoClosed: boolean('auto_closed').notNull(),
+    countedMinor: bigint('counted_minor', { mode: 'bigint' }),
+    bankedMinor: bigint('banked_minor', { mode: 'bigint' }),
+    expectedCashMinor: bigint('expected_cash_minor', { mode: 'bigint' }),
+    varianceMinor: bigint('variance_minor', { mode: 'bigint' }),
+    clientExpectedMinor: bigint('client_expected_minor', { mode: 'bigint' }),
+    closeWriteId: uuid('close_write_id'),
+    /** Class #17: the session that claimed this till first. */
+    contestedSessionId: uuid('contested_session_id'),
+  },
+  (t) => [
+    index('cash_session_location_day_ix').on(t.tenantId, t.locationId, t.businessDate),
+    index('cash_session_status_ix').on(t.tenantId, t.locationId, t.status),
+  ],
 );
 
 /**
@@ -1554,3 +1649,56 @@ export const deviceSyncLocationScope = appSchema.table('device_sync_location_sco
   refreshedAt: timestamp('refreshed_at', { withTimezone: true }).notNull(),
 });
 registerAppTable('device_sync_location_scope', deviceSyncLocationScope);
+
+// ---------------------------------------------------------------------------
+// OPERATIONS (migration 0029, docs/production-runbook.md)
+// ---------------------------------------------------------------------------
+
+/**
+ * Requirement 9.5-A's continuous digest: per tenant, per table, a row count
+ * and two order-independent digests, written by the scheduled digest job AS
+ * app_user inside the tenant's own RLS context. Server-derived and never
+ * synced, so it carries no write spine (WRITE_ID_EXEMPT).
+ */
+export const tableDigest = appSchema.table('table_digest', {
+  tenantId: uuid('tenant_id').notNull(),
+  id: uuid('id').notNull(),
+  asOf: timestamp('as_of', { withTimezone: true }).notNull(),
+  tableName: text('table_name').notNull(),
+  rowCount: bigint('row_count', { mode: 'bigint' }).notNull(),
+  pkDigest: text('pk_digest').notNull(),
+  rowDigest: text('row_digest').notNull(),
+  jobRunId: uuid('job_run_id'),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull(),
+});
+registerAppTable('table_digest', tableDigest);
+
+/** One row per scheduled-job attempt. Counts and tenant ids only. */
+export const jobRun = platformSchema.table('job_run', {
+  id: uuid('id').primaryKey(),
+  jobName: text('job_name').notNull(),
+  status: text('status').notNull(),
+  startedAt: timestamp('started_at', { withTimezone: true }).notNull(),
+  finishedAt: timestamp('finished_at', { withTimezone: true }),
+  durationMs: integer('duration_ms'),
+  runner: text('runner').notNull(),
+  build: text('build'),
+  summary: jsonb('summary').notNull(),
+  error: text('error'),
+});
+
+/** Alert lifecycle per key — page once, repeat on schedule, announce resolution. */
+export const opsAlert = platformSchema.table('ops_alert', {
+  key: text('key').primaryKey(),
+  sourceJob: text('source_job').notNull(),
+  kind: text('kind').notNull(),
+  severity: text('severity').notNull(),
+  subjectTenantId: uuid('subject_tenant_id'),
+  summary: text('summary').notNull(),
+  firstSeenAt: timestamp('first_seen_at', { withTimezone: true }).notNull(),
+  lastSeenAt: timestamp('last_seen_at', { withTimezone: true }).notNull(),
+  lastSentAt: timestamp('last_sent_at', { withTimezone: true }),
+  sendCount: integer('send_count').notNull(),
+  resolvedAt: timestamp('resolved_at', { withTimezone: true }),
+});
