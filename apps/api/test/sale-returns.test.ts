@@ -323,6 +323,48 @@ describe('a RETURN — some lines, later, at the ORIGINAL’s prices and rates',
   });
 });
 
+describe('HQ reports are NET of voids and returns, in the period they happen', () => {
+  it('sales, sales-by-day and cash position subtract the return; the sale count does not; every identity holds', async () => {
+    const saleDay = '2026-09-20';
+    const returnDay = '2026-09-21';
+    const range = { from: saleDay, to: returnDay, locationIds: [outlet] };
+    const before = await a.reports.salesByLocation(range);
+    const cashBefore = await a.reports.cashPosition(range);
+
+    await till(saleDay);
+    const sale = await ring(saleDay, [cash()], '2');
+    const later = await till(returnDay);
+    const ret = await a.returns.record(returnInput(sale.saleId, later, [{ originalLineNo: 1, qty: '1', disposition: 'RESTOCK' }],
+      { onAccountClaimMinor: '0', immediateClaimMinor: '0' }));
+    const refund = BigInt(ret.totalMinor);
+    expect(refund).toBeGreaterThan(0n); // non-vacuous: a real refund left the drawer
+
+    const after = await a.reports.salesByLocation(range);
+    const delta = (x: { totalMinor: string }, y: { totalMinor: string }) => BigInt(x.totalMinor) - BigInt(y.totalMinor);
+    // The sale adds its total; the return takes its refund back off.
+    expect(delta(after.total, before.total)).toBe(BigInt(sale.totalMinor) - refund);
+    // A return is not a negative sale: the count rises by the ONE sale.
+    expect(BigInt(after.total.saleCount) - BigInt(before.total.saleCount)).toBe(1n);
+
+    // By day: the return lands on ITS day (the till the refund left), not
+    // the sale's; Σ(days) still equals the range total (the router checks it).
+    const byDay = await a.reports.salesByDay(range);
+    const dayTotal = (d: string) => BigInt(byDay.series.find((x) => x.date === d)!.totalMinor);
+    expect(byDay.series.reduce((t, x) => t + BigInt(x.totalMinor), 0n)).toBe(BigInt(after.total.totalMinor));
+    expect(dayTotal(returnDay)).toBeLessThan(dayTotal(saleDay));
+
+    // Cash position: the refund comes off the method it left through, and
+    // tenders still settle the (net) billed figure exactly.
+    const cashAfter = await a.reports.cashPosition(range);
+    const cashFor = (r: typeof cashAfter) =>
+      BigInt(r.total.tenders.find((t: { methodId: string }) => t.methodId === tm.cash)?.amountMinor ?? '0');
+    expect(cashFor(cashAfter) - cashFor(cashBefore)).toBe(BigInt(sale.totalMinor) - refund);
+    expect(BigInt(cashAfter.total.billedTotalMinor) - BigInt(cashBefore.total.billedTotalMinor)).toBe(
+      BigInt(sale.totalMinor) - refund,
+    );
+  });
+});
+
 describe('capabilities: sale.void and sale.return, at the location, bound on the SERVER’s figure', () => {
   it('counter staff can do neither; an outlet manager can, up to the template bound', async () => {
     const day = '2026-09-17';

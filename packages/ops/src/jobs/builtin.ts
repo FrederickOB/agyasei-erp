@@ -9,7 +9,7 @@
  *   ops.lost_write_control       daily    receipt-number continuity (§9.4's nearest equivalent)
  *   ops.sync_health              15 min   the §9.4 pilot signals → alerts
  */
-import { deterministicUuid, sweepSaleReturns, sweepSettledSales, uuidv7 } from '@erp/db';
+import { deterministicUuid, sweepClosedCashSessions, sweepSaleReturns, sweepSettledSales, uuidv7 } from '@erp/db';
 import type { AlertSignal } from '../alerts.js';
 import { digestTables, MONEY_PATH_TABLES } from '../digest.js';
 import { receiptContinuity } from '../monitoring/receipt-continuity.js';
@@ -36,7 +36,7 @@ function failures(failed: Map<string, { code: string | null; message: string }>)
 export function postingSweepJob(): JobDefinition {
   return defineJob({
     name: 'ledger.posting_sweep',
-    description: 'Post settled sales, voids and returns that have no journal entry (05 §5.6.1). Tenants without a ledger calendar are skipped.',
+    description: 'Post settled sales, voids and returns, and closed tills (banking and count variance), that have no journal entry (05 §5.6.1). Tenants without a ledger calendar are skipped.',
     intervalSeconds: 3600,
     async run(ctx) {
       let skipped = 0;
@@ -74,6 +74,23 @@ export function postingSweepJob(): JobDefinition {
         // Voids and returns (0030) after the sales they reverse, same bounds.
         for (let pass = 0; pass < SWEEP_MAX_PASSES && !ctx.signal.aborted; pass += 1) {
           const r = await sweepSaleReturns(ctx.runner, {
+            tenantId,
+            postedBy: POSTING_SWEEP_ACTOR,
+            postingRuleVersion: POSTING_RULE_VERSION,
+            limit: SWEEP_BATCH,
+          });
+          t.passes += 1;
+          t.examined += r.examined;
+          t.posted += r.posted;
+          t.duplicates += r.duplicates;
+          t.exceptions += r.exceptions;
+          if (r.examined < SWEEP_BATCH || r.posted === 0) break;
+        }
+        // Closed tills (rules 11, 11b — 0020): the drawer banked and the count
+        // variance. Without this pass no till close ever reaches the books in
+        // production, and cash-over/short is invisible to the accountant.
+        for (let pass = 0; pass < SWEEP_MAX_PASSES && !ctx.signal.aborted; pass += 1) {
+          const r = await sweepClosedCashSessions(ctx.runner, {
             tenantId,
             postedBy: POSTING_SWEEP_ACTOR,
             postingRuleVersion: POSTING_RULE_VERSION,
