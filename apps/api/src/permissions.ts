@@ -287,7 +287,9 @@ function makeState(
 }
 
 const ROOT_LOCATION_SQL = `
-  select id from app.location where parent_id is null and deleted_at is null order by id
+  select id from app.location
+   where tenant_id = app.current_tenant() and parent_id is null and deleted_at is null
+   order by id
 `;
 
 /**
