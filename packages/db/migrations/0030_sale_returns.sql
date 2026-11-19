@@ -90,6 +90,10 @@ on conflict (code) do nothing;
 -- ----------------------------------------------------------------------------
 alter table app.sale add constraint sale_voids_via_return_document
   check (voids_sale_id is null);
+-- A till that voids a sale it rang offline names it by the only id it has:
+-- the idempotency key, which is the sale's write_id.
+create index sale_write_ix on app.sale (tenant_id, write_id);
+
 comment on column app.sale.voids_sale_id is
   'CLOSED by 0030: always NULL. A void is an app.sale_return document (kind VOID); void status is derived from it.';
 
@@ -185,8 +189,12 @@ create table app.sale_return_line (
   constraint srl_deleted_never check (deleted_at is null),
   constraint srl_line_no check (line_no >= 1),
   constraint srl_qty check (qty_sell > 0 and qty_stock >= 0),
+  -- Each figure is a cumulative pro-rata slice of a non-negative original
+  -- figure, so each is non-negative by construction. (No per-line
+  -- "discount ≤ net": two independently rounded slices of a line discounted
+  -- to within a pesewa of nothing can cross by one, and a constraint that a
+  -- correct computation can trip would stall a till's queue.)
   constraint srl_magnitudes check (line_net_minor >= 0 and line_discount_minor >= 0 and tax_minor >= 0),
-  constraint srl_discount_within check (line_discount_minor <= line_net_minor),
   constraint srl_disposition check (disposition in ('RESTOCK', 'DAMAGED')),
   primary key (tenant_id, id),
   foreign key (tenant_id, write_id) references app.write_log (tenant_id, id)

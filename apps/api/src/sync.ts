@@ -87,6 +87,8 @@ const DEVICE_OPS: Record<DeviceOpKind, DeviceOpHandler> = {
   // the last of them — the ordered outbox is what makes both true offline.
   'cash_session.open': (c, i) => c.cashSession.open(i as never),
   'cash_session.close': (c, i) => c.cashSession.close(i as never),
+  // Voids and returns (0030): behind the sale they reverse, before the close.
+  'sale.return': (c, i) => c.returns.record(i as never),
 };
 
 /** Tenant identity never comes from a client payload (CLAUDE.md §2.1) —

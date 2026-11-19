@@ -102,6 +102,7 @@ import { deterministicUuid, isSettlementRole } from '@erp/db';
 import { lineNetMinor, mulBps, mulDiv, type RoundingMode } from '@erp/money';
 import { emergencyNumber } from '@erp/sequence';
 import type { Queryable } from '../db.js';
+import { documentNumberHolder } from '../document-numbers.js';
 import { runIdempotent, type JsonValue } from '../pipeline.js';
 import {
   reconcileTenders,
@@ -725,23 +726,18 @@ export const salesRouter = router({
           // paper actually says; and a severity-1 review names both documents.
           // The op acks `applied`, so the outbox drains and the till keeps
           // trading — the discrepancy is visible work, not a stalled queue.
-          const clash = await tx.query<{ id: string; receipt_no: string }>(
-            `select id, receipt_no from app.sale
-              where location_id = $1 and receipt_no = $2`,
-            [input.locationId, input.receiptNo],
-          );
-          const collidesWith = clash.rows[0] ?? null;
+          // A return slip draws from the same device series (0030), so the
+          // number may be held by either document type.
+          const held = await documentNumberHolder(tx, input.locationId, input.receiptNo);
+          const collidesWith = held === null ? null : { id: held.id, receipt_no: held.number };
           let storedReceiptNo = input.receiptNo;
           if (collidesWith !== null) {
             const emergency = emergencyNumber(input.receiptNo, ctx.identity.deviceId, saleId);
-            const taken = await tx.query<{ id: string }>(
-              `select id from app.sale where location_id = $1 and receipt_no = $2`,
-              [input.locationId, emergency],
-            );
+            const taken = await documentNumberHolder(tx, input.locationId, emergency);
             // Vanishingly unlikely, but a second collision here would raise the
             // same raw unique violation and stall the queue all over again. The
             // fallback is unique BY CONSTRUCTION: one sale row per sale id.
-            storedReceiptNo = taken.rows.length === 0 ? emergency : `${input.receiptNo}-${saleId}`;
+            storedReceiptNo = taken === null ? emergency : `${input.receiptNo}-${saleId}`;
           }
           const claimedReceiptNo = collidesWith === null ? null : input.receiptNo;
 

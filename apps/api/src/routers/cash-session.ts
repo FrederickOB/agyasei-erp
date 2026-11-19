@@ -352,17 +352,28 @@ export const cashSessionRouter = router({
           }
 
           // EXPECTED CASH, computed HERE from what the server recorded — the
-          // float plus every drawer-cash tender rung into this session. The
-          // device's figure is a claim kept beside it, never the source.
-          const cash = await tx.query<{ cash_minor: string }>(
-            `select coalesce(sum(st.amount_minor), 0)::bigint::text as cash_minor
-               from app.sale s
-               join app.sale_tender st on st.tenant_id = s.tenant_id and st.sale_id = s.id
-               join app.tender_method m on m.tenant_id = st.tenant_id and m.id = st.method_id
-              where s.cash_session_id = $1 and m.is_cash`,
+          // float plus every drawer-cash tender rung into this session, LESS
+          // every drawer-cash refund paid out of it (voids and returns,
+          // migration 0030). The device's figure is a claim kept beside it,
+          // never the source.
+          const cash = await tx.query<{ cash_minor: string; refunded_minor: string }>(
+            `select
+               (select coalesce(sum(st.amount_minor), 0)::bigint
+                  from app.sale s
+                  join app.sale_tender st on st.tenant_id = s.tenant_id and st.sale_id = s.id
+                  join app.tender_method m on m.tenant_id = st.tenant_id and m.id = st.method_id
+                 where s.cash_session_id = $1 and m.is_cash)::text as cash_minor,
+               (select coalesce(sum(rf.amount_minor), 0)::bigint
+                  from app.sale_return r
+                  join app.sale_return_refund rf on rf.tenant_id = r.tenant_id and rf.return_id = r.id
+                  join app.tender_method m on m.tenant_id = rf.tenant_id and m.id = rf.method_id
+                 where r.cash_session_id = $1 and m.is_cash)::text as refunded_minor`,
             [session.id],
           );
-          const expected = BigInt(session.opening_float_minor) + BigInt(cash.rows[0]!.cash_minor);
+          const expected =
+            BigInt(session.opening_float_minor) +
+            BigInt(cash.rows[0]!.cash_minor) -
+            BigInt(cash.rows[0]!.refunded_minor);
           const counted = input.countedMinor ?? null;
           const variance = counted === null ? null : counted - expected;
           const banked = input.bankedMinor ?? null;

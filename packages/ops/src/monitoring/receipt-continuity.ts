@@ -123,10 +123,17 @@ export async function receiptContinuity(tx: Queryable, opts: { lookbackDays?: nu
     for (let i = 0; i < all.length; i += CHUNK) {
       const chunk = all.slice(i, i + CHUNK);
       const res = await tx.query<{ n: string }>(
+        // A return slip draws from the same device series (0030): its number
+        // is accounted for exactly as a sale's is.
         `select receipt_no as n from app.sale where location_id = $1 and receipt_no = any($2::text[])
          union
          select receipt_no_claimed as n from app.sale
-          where location_id = $1 and receipt_no_claimed = any($2::text[])`,
+          where location_id = $1 and receipt_no_claimed = any($2::text[])
+         union
+         select return_no as n from app.sale_return where location_id = $1 and return_no = any($2::text[])
+         union
+         select return_no_claimed as n from app.sale_return
+          where location_id = $1 and return_no_claimed = any($2::text[])`,
         [locationId, chunk],
       );
       for (const r of res.rows) found.add(r.n);

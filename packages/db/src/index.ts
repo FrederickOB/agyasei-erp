@@ -53,6 +53,7 @@ export {
   paymentEntry,
   payrollEntry,
   saleEntry,
+  saleReturnEntry,
   SETTLEMENT_ROLES,
   stockAdjustmentEntry,
   transferEntry,
@@ -64,6 +65,7 @@ export {
   type ProposedEntry,
   type ProposedLine,
   type SaleDocument,
+  type SaleReturnDocument,
   type SaleTaxComponent,
   type SaleTenderPart,
   type SettlementRole,
@@ -121,7 +123,9 @@ export {
 export { seedDevLedger, type DevLedgerResult } from './seed/dev-ledger.js';
 export {
   sweepClosedCashSessions,
+  sweepSaleReturns,
   sweepSettledSales,
+  type ReturnSweepResult,
   type SessionSweepResult,
   type SweepOptions,
   type SweepResult,
