@@ -49,6 +49,19 @@ import { permissionProcedure, router, type PermissionState } from '../trpc.js';
 import { wire } from '../wire.js';
 
 const CODE = 'stock.opening.import';
+
+/** What a commit answers — stored verbatim in write_log and replayed on retry. */
+export interface OpeningCommitResponse {
+  [key: string]: JsonValue;
+  importId: string;
+  alreadyImported: boolean;
+  asOfDate: string;
+  contentSha256: string;
+  rowCount: number;
+  movementCount: number;
+  locationCount: number | null;
+  productCount: number | null;
+}
 const REASON = { code: 'OPENING_BALANCE', name: 'Opening stock at go-live' } as const;
 const E4 = 10_000n;
 const INSERT_CHUNK = 1_000;
@@ -213,7 +226,7 @@ export const openingStockRouter = router({
       if (parsed.fileError !== null) throw new TRPCError({ code: 'BAD_REQUEST', message: parsed.fileError });
       const tenantId = ctx.identity.tenantId;
       const key = input.idempotencyKey;
-      const result = await runIdempotent(
+      const result = await runIdempotent<OpeningCommitResponse>(
         { runner: ctx.deps.runner, clock: ctx.deps.clock },
         ctx.identity,
         { op: 'stock.opening_import', idempotencyKey: key, claimedHlc: input.claimedHlc, clientWallAt: input.clientWallAt },
@@ -222,14 +235,16 @@ export const openingStockRouter = router({
           const file = await checkFile(tx, ctx.permissions, parsed.rows);
           if (file.previous !== null) {
             // The same stock, already loaded. Nothing again — and say which import holds it.
-            const response = {
+            const response: OpeningCommitResponse = {
               importId: file.previous.importId,
               alreadyImported: true,
               asOfDate: file.previous.asOfDate,
               contentSha256: file.contentSha256,
               rowCount: file.previous.rowCount,
               movementCount: 0,
-            } satisfies JsonValue & Record<string, unknown>;
+              locationCount: null,
+              productCount: null,
+            };
             return { response, apply: async () => undefined };
           }
           const bad = file.rows.filter((r) => r.issues.length > 0);
@@ -242,7 +257,7 @@ export const openingStockRouter = router({
             });
           }
           const summary = summarise(file.rows);
-          const response = {
+          const response: OpeningCommitResponse = {
             importId: key,
             alreadyImported: false,
             asOfDate: input.asOfDate,
@@ -251,7 +266,7 @@ export const openingStockRouter = router({
             movementCount: summary.rowCount,
             locationCount: summary.locationCount,
             productCount: summary.productCount,
-          } satisfies JsonValue & Record<string, unknown>;
+          };
           return {
             response,
             apply: async (atx) => {

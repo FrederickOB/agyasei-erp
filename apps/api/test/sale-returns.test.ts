@@ -371,7 +371,7 @@ describe('offline replay and class #5', () => {
         { idempotency_key: rKey, kind: 'sale.return', claimed_hlc: h.deps.clock.next(), payload: rPayload },
       ];
       const send = async (body: unknown) =>
-        (await app.inject({ method: 'POST', url: '/sync/upload', headers: { authorization: `Bearer ${bearer}` }, payload: body })).json() as {
+        (await app.inject({ method: 'POST', url: '/sync/upload', headers: { authorization: `Bearer ${bearer}` }, payload: body as Record<string, unknown> })).json() as {
           acks: { key: string; status: string; reason?: string }[];
         };
       const stockBefore = await onHand();
@@ -458,9 +458,9 @@ describe('the tenant boundary', () => {
     await b.returns.record({ ...voidInput(bSale.saleId, bTill), locationId: outletB });
     expect(ownerB.tenantId).toBe(tenantB);
 
-    const crossTenant = a.returns.record(voidInput(bSale.saleId, session)).catch((e: Error) => e.message);
+    const crossTenant = a.returns.record(voidInput(bSale.saleId, session)).then(() => 'resolved', (e: Error) => e.message);
     const missingId = uuidv7();
-    const nonexistent = a.returns.record(voidInput(missingId, session)).catch((e: Error) => e.message);
+    const nonexistent = a.returns.record(voidInput(missingId, session)).then(() => 'resolved', (e: Error) => e.message);
     expect((await crossTenant).replace(bSale.saleId, 'X')).toBe((await nonexistent).replace(missingId, 'X'));
     expect(await crossTenant).toMatch(/RETRY_LATER/);
 

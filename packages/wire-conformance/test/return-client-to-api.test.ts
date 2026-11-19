@@ -80,6 +80,9 @@ async function q<T>(sql: string, params: unknown[] = []): Promise<T[]> {
 }
 
 /** Copy one server sale's rows into the device, as the sync buckets would deliver them. */
+/** One column as a SQLite bind value — a missing key is NULL, never undefined. */
+const v = (row: Record<string, unknown>, k: string): string | number | null => (row[k] ?? null) as string | number | null;
+
 async function syncDown(db: LocalDb, key: string): Promise<void> {
   const [s] = await q<Record<string, string | null>>(
     `select id, write_id, location_id, receipt_no, business_date::text, cash_session_id, price_list_id, customer_id,
@@ -90,37 +93,37 @@ async function syncDown(db: LocalDb, key: string): Promise<void> {
     `INSERT INTO sale (id, write_id, location_id, receipt_no, business_date, cash_session_id, price_list_id, customer_id,
                        currency_code, money_scale, subtotal_net_minor, discount_minor, tax_total_minor, total_minor)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CAST(? AS INTEGER), CAST(? AS INTEGER), CAST(? AS INTEGER), CAST(? AS INTEGER), CAST(? AS INTEGER))`,
-    [s!['id'], s!['write_id'], s!['location_id'], s!['receipt_no'], s!['business_date'], s!['cash_session_id'], s!['price_list_id'],
-     s!['customer_id'], s!['currency_code'], s!['money_scale'], s!['subtotal_net_minor'], s!['discount_minor'],
-     s!['tax_total_minor'], s!['total_minor']],
+    [v(s!, 'id'), v(s!, 'write_id'), v(s!, 'location_id'), v(s!, 'receipt_no'), v(s!, 'business_date'), v(s!, 'cash_session_id'), v(s!, 'price_list_id'),
+     v(s!, 'customer_id'), v(s!, 'currency_code'), v(s!, 'money_scale'), v(s!, 'subtotal_net_minor'), v(s!, 'discount_minor'),
+     v(s!, 'tax_total_minor'), v(s!, 'total_minor')],
   );
   for (const l of await q<Record<string, string | number>>(
     `select id, sale_id, line_no, product_id, selling_uom_id, qty_sell::text, qty_sell_scale, unit_price_e4::text,
             stocking_uom_id, qty_stock::text, qty_stock_scale, line_discount_minor::text, line_net_minor::text, tax_minor::text
-       from app.sale_line where sale_id = $1`, [s!['id']])) {
+       from app.sale_line where sale_id = $1`, [v(s!, 'id')])) {
     await db.execute(
       `INSERT INTO sale_line (id, sale_id, line_no, product_id, selling_uom_id, qty_sell, qty_sell_scale, unit_price_e4,
                               stocking_uom_id, qty_stock, qty_stock_scale, line_discount_minor, line_net_minor, tax_minor)
        VALUES (?, ?, ?, ?, ?, CAST(? AS INTEGER), ?, CAST(? AS INTEGER), ?, CAST(? AS INTEGER), ?, CAST(? AS INTEGER), CAST(? AS INTEGER), CAST(? AS INTEGER))`,
-      [l['id'], l['sale_id'], l['line_no'], l['product_id'], l['selling_uom_id'], l['qty_sell'], l['qty_sell_scale'],
-       l['unit_price_e4'], l['stocking_uom_id'], l['qty_stock'], l['qty_stock_scale'], l['line_discount_minor'],
-       l['line_net_minor'], l['tax_minor']],
+      [v(l, 'id'), v(l, 'sale_id'), v(l, 'line_no'), v(l, 'product_id'), v(l, 'selling_uom_id'), v(l, 'qty_sell'), v(l, 'qty_sell_scale'),
+       v(l, 'unit_price_e4'), v(l, 'stocking_uom_id'), v(l, 'qty_stock'), v(l, 'qty_stock_scale'), v(l, 'line_discount_minor'),
+       v(l, 'line_net_minor'), v(l, 'tax_minor')],
     );
   }
   for (const t of await q<Record<string, string | number>>(
     `select id, sale_id, sale_line_id, seq, tax_code, rate_bp, base_minor::text, tax_minor::text, tax_rate_id
-       from app.sale_tax_line where sale_id = $1`, [s!['id']])) {
+       from app.sale_tax_line where sale_id = $1`, [v(s!, 'id')])) {
     await db.execute(
       `INSERT INTO sale_tax_line (id, sale_id, sale_line_id, seq, tax_code, rate_bp, base_minor, tax_minor, tax_rate_id)
        VALUES (?, ?, ?, ?, ?, ?, CAST(? AS INTEGER), CAST(? AS INTEGER), ?)`,
-      [t['id'], t['sale_id'], t['sale_line_id'], t['seq'], t['tax_code'], t['rate_bp'], t['base_minor'], t['tax_minor'], t['tax_rate_id']],
+      [v(t, 'id'), v(t, 'sale_id'), v(t, 'sale_line_id'), v(t, 'seq'), v(t, 'tax_code'), v(t, 'rate_bp'), v(t, 'base_minor'), v(t, 'tax_minor'), v(t, 'tax_rate_id')],
     );
   }
   for (const t of await q<Record<string, string | number>>(
-    `select id, sale_id, seq, method_id, amount_minor::text, location_id from app.sale_tender where sale_id = $1`, [s!['id']])) {
+    `select id, sale_id, seq, method_id, amount_minor::text, location_id from app.sale_tender where sale_id = $1`, [v(s!, 'id')])) {
     await db.execute(
       `INSERT INTO sale_tender (id, sale_id, seq, method_id, amount_minor, location_id) VALUES (?, ?, ?, ?, CAST(? AS INTEGER), ?)`,
-      [t['id'], t['sale_id'], t['seq'], t['method_id'], t['amount_minor'], t['location_id']],
+      [v(t, 'id'), v(t, 'sale_id'), v(t, 'seq'), v(t, 'method_id'), v(t, 'amount_minor'), v(t, 'location_id')],
     );
   }
 }
