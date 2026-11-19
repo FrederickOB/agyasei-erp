@@ -301,6 +301,10 @@ export class ServerDb {
     tenantId: string,
     locationId: string,
     userId?: string,
+    /** The enrolled device. Since migration 0024 the counter's credit slice is
+     *  user scope ∩ DEVICE scope (02 §2.5), so a prediction without the device
+     *  predicts the pre-0024 rule — the one D8 was red against. */
+    deviceId?: string,
   ): Promise<Record<string, number>> {
     const refTables = [
       'location', 'location_type', 'unit_of_measure', 'product_category',
@@ -401,11 +405,13 @@ export class ServerDb {
     }
 
     // The counter's slice is keyed (tenant, location) and gated on
-    // sale.record.credit AT THAT LOCATION, intersected with location scope.
+    // sale.record.credit AT THAT LOCATION, intersected with location scope —
+    // and, since 0024, with where THIS DEVICE is enrolled: read the same
+    // device projection the `location_credit_allowance` parameter query reads.
     const locScope =
-      userId === undefined
+      userId === undefined || deviceId === undefined
         ? []
-        : await this.locationScopeFor(tenantId, userId);
+        : await this.deviceCreditScopeFor(tenantId, deviceId, userId);
     if (locScope.length === 0) {
       out['credit_allowance'] = 0;
     } else {
@@ -418,8 +424,22 @@ export class ServerDb {
     return out;
   }
 
-  /** The (tenant, user) rows of the location-scope gate the
-   *  `location_credit_allowance` parameter query reads. */
+  /** The locations whose credit allowance THIS device may hold for THIS
+   *  user — exactly the rows `location_credit_allowance`'s parameter query
+   *  selects (infra/powersync/sync_rules.yaml, migration 0024). */
+  async deviceCreditScopeFor(tenantId: string, deviceId: string, userId: string): Promise<string[]> {
+    return this.withTenant(tenantId, async (tx) => {
+      const r = await tx.query<{ location_id: string }>(
+        `select location_id from app.device_sync_location_scope
+          where device_id = $1 and user_id = $2 and credit_allowance = 'allowance'`,
+        [deviceId, userId],
+      );
+      return r.rows.map((x) => x.location_id);
+    });
+  }
+
+  /** The (tenant, user) rows of 0013's user-level location-scope projection
+   *  (an INPUT to the device projection since 0024, not the gate itself). */
   async locationScopeFor(tenantId: string, userId: string): Promise<string[]> {
     return this.withTenant(tenantId, async (tx) => {
       const r = await tx.query<{ location_id: string }>(
@@ -502,6 +522,9 @@ export class ServerDb {
   async refreshCreditScope(tenantId: string): Promise<void> {
     await this.withTenant(tenantId, async (tx) => {
       await tx.query(`select app.refresh_credit_sync_scope($1)`, [tenantId]);
+      // …and the device projection every bucket's parameter query reads
+      // (0024), in the order the production reconciler runs them.
+      await tx.query(`select app.refresh_device_sync_scope($1)`, [tenantId]);
     });
   }
 

@@ -112,8 +112,8 @@ export async function runD5(cx: DrillContext): Promise<DrillResult> {
   // Predictions are per (tenant, location, USER): the credit buckets are gated
   // on the gate tables keyed by user_id, so a prediction that ignored the user
   // would be predicting a different device's slice.
-  const predictA = await cx.server.predictDeviceRows(tenantA, cx.locA1, cx.a1.userId);
-  const predictB = await cx.server.predictDeviceRows(tenantB, cx.locB, cx.b1.userId);
+  const predictA = await cx.server.predictDeviceRows(tenantA, cx.locA1, cx.a1.userId, cx.a1.deviceId);
+  const predictB = await cx.server.predictDeviceRows(tenantB, cx.locB, cx.b1.userId, cx.b1.deviceId);
 
   // Non-vacuity: both tenants must actually HAVE operational data.
   for (const [label, p] of [

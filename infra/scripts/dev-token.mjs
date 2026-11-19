@@ -115,9 +115,11 @@ if (principals[0] && rows[0]) {
       const writeId = deviceId; // one unit of work per dev device, ever
       await client.query(
         `insert into app.write_log (tenant_id, id, origin, hlc, device_id, op, schema_version, request_hash)
-         values ($1, $2, 'SERVER', $3, $2, 'dev.enrol_device', 1, decode(md5($2::text), 'hex'))
+         values ($1, $2, 'SERVER', $3, $2, 'dev.enrol_device', 1, decode(md5($4), 'hex'))
          on conflict do nothing`,
-        [tenant.id, writeId, `${String(Date.now()).padStart(13, '0')}-00000-${'0'.repeat(28)}dee7`],
+        // $4 is the hash input as TEXT: reusing the uuid $2 as text makes real
+        // Postgres refuse "inconsistent types deduced for parameter $2".
+        [tenant.id, writeId, `${String(Date.now()).padStart(13, '0')}-00000-${'0'.repeat(28)}dee7`, `dev-device:${writeId}`],
       );
       await client.query(
         `insert into app.device (tenant_id, id, write_id, hlc, label, form_factor, public_jwk, jkt, status, enrolled_by)

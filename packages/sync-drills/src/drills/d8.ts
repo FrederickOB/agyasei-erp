@@ -194,7 +194,7 @@ export async function runD8(cx: DrillContext): Promise<DrillResult> {
   for (const d of devices) {
     predict.set(
       d.name,
-      await cx.server.predictDeviceRows(d.tenantId, d.locationId, d.userId),
+      await cx.server.predictDeviceRows(d.tenantId, d.locationId, d.userId, d.deviceId),
     );
   }
 
@@ -376,7 +376,7 @@ async function runD8Transitions(
   // ── R5.3 second half: GRANT credit.view and the rows appear, same run ──
   await cx.server.grantRole(tenantA, dev.tillA1.userId, 'accounts');
   await cx.server.refreshCreditScope(tenantA);
-  const wantAfterGrant = await cx.server.predictDeviceRows(tenantA, cx.locA1, dev.tillA1.userId);
+  const wantAfterGrant = await cx.server.predictDeviceRows(tenantA, cx.locA1, dev.tillA1.userId, dev.tillA1.deviceId);
   await bringUp(dev.tillA1);
   let appeared = true;
   try {
