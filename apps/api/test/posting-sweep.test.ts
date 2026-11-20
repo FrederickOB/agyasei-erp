@@ -150,26 +150,31 @@ describe('settled sales reach the books, and the books tie to the sales', () => 
     expect(contra).toBe(BigInt(priced.discountMinor)); // debit — the contra carries the discount
   });
 
-  it('a sale marked as a VOID document is never swept', async () => {
-    // No void route exists yet (sale.void guards nothing reachable — a known
-    // Phase 1 residue), so this drives the worklist clause directly: plant a
-    // row with voids_sale_id set and assert the sweep refuses to examine it.
-    // When the void route arrives, its own suite replaces this.
-    await h.db.withTenant(tenantId, async (tx) => {
-      const target = await tx.query<{ id: string }>(`select id from app.sale limit 1`);
-      await tx.query(
-        `insert into app.sale (tenant_id, id, write_id, hlc, location_id, price_list_id,
-                               receipt_no, business_date, occurred_at, currency_code, money_scale,
-                               subtotal_net_minor, discount_minor, tax_total_minor, total_minor,
-                               voids_sale_id, cash_session_id)
-         select tenant_id, $1::uuid, write_id, hlc, location_id, price_list_id,
-                'SW-VOID-1', business_date, occurred_at, currency_code, money_scale,
-                subtotal_net_minor, discount_minor, tax_total_minor, total_minor, $2::uuid,
-                cash_session_id
-           from app.sale where id = $2::uuid`,
-        [uuidv7(), target.rows[0]!.id],
-      );
-    });
+  it('a sale can no longer carry voids_sale_id — a void is an app.sale_return (0030)', async () => {
+    // The void route has arrived and is its own document; its posting is
+    // proved in sale-returns.test.ts. What is left to pin here is that the
+    // OLD shape is closed, so no second way to void can reach this sweep.
+    const plant = (voids: boolean) =>
+      h.db.withTenant(tenantId, async (tx) => {
+        const target = await tx.query<{ id: string }>(`select id from app.sale limit 1`);
+        await tx.query(
+          `insert into app.sale (tenant_id, id, write_id, hlc, location_id, price_list_id,
+                                 receipt_no, business_date, occurred_at, currency_code, money_scale,
+                                 subtotal_net_minor, discount_minor, tax_total_minor, total_minor,
+                                 voids_sale_id, cash_session_id)
+           select tenant_id, $1::uuid, write_id, hlc, location_id, price_list_id,
+                  'SW-VOID-1', business_date, occurred_at, currency_code, money_scale,
+                  subtotal_net_minor, discount_minor, tax_total_minor, total_minor,
+                  case when $3 then $2::uuid else null end, cash_session_id
+             from app.sale where id = $2::uuid`,
+          [uuidv7(), target.rows[0]!.id, voids],
+        );
+        throw new Error('ROLLBACK-ON-PURPOSE');
+      });
+    await expect(plant(true)).rejects.toThrow(/sale_voids_via_return_document/);
+    // Positive control: the identical insert without the column reaches the
+    // deliberate rollback, so the refusal above was the constraint's.
+    await expect(plant(false)).rejects.toThrow(/ROLLBACK-ON-PURPOSE/);
     const swept = await SWEEP();
     expect(swept.examined).toBe(0);
   });

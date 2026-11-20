@@ -81,6 +81,26 @@ export async function getRecordedSale(db: LocalDb, saleId: string): Promise<Reco
   return row === undefined ? null : mapSale(row);
 }
 
+/**
+ * Voids and returns this device recorded (migration 0030), newest first, with
+ * the same per-record sync state as a sale. `totalMinor` is the refund, a
+ * magnitude; `receiptNo` is the return slip's own number.
+ */
+export async function recentReturns(db: LocalDb, limit = 20): Promise<RecordedSale[]> {
+  const rows = await db.getAll(
+    `SELECT id, created_at, server_ack_at, rejected_at, reject_reason,
+            last_refusal_reason, receipt_no,
+            CAST(total_minor AS TEXT) AS total_minor,
+            NULL AS tendered_minor, NULL AS change_minor
+       FROM outbox
+      WHERE kind = 'sale_return'
+      ORDER BY ${OUTBOX_QUEUE_ORDER_DESC}
+      LIMIT ?`,
+    [limit],
+  );
+  return rows.map(mapSale);
+}
+
 /** One way a recorded sale was paid, as this device rang it. */
 export interface RecordedTender {
   /** The tenant's own name for the method — rendered, never compared. */

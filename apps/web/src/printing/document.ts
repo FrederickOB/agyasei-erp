@@ -42,6 +42,10 @@ export interface ReceiptLabels {
   readonly copy: string;
   readonly includesTax: string;
   readonly reference: string;
+  /** Headings for the two reversing documents (migration 0030). */
+  readonly returnHeading: string;
+  readonly voidHeading: string;
+  readonly originalReceipt: string;
 }
 
 /** Product chrome defaults. A tenant overrides any of them through branding. */
@@ -56,7 +60,17 @@ export const DEFAULT_RECEIPT_LABELS: ReceiptLabels = {
   copy: 'COPY - REPRINT',
   includesTax: 'Includes',
   reference: 'Ref',
+  returnHeading: 'RETURN',
+  voidHeading: 'VOID',
+  originalReceipt: 'Original receipt',
 };
+
+/**
+ * What a document IS. A sale's receipt, or one of the two reversing documents
+ * (migration 0030): its lines, tax, total and refund lines are printed
+ * NEGATIVE under a heading nobody can mistake for a sale.
+ */
+export type ReceiptKind = 'SALE' | 'RETURN' | 'VOID';
 
 export interface ReceiptLineItem {
   readonly name: string;
@@ -131,6 +145,12 @@ export interface ReceiptDocument {
   readonly pack: ReceiptPackSlot;
   readonly footerLines: readonly string[];
   readonly labels: ReceiptLabels;
+  /**
+   * Absent on documents snapshotted before returns existed — read as 'SALE'.
+   * A RETURN or VOID carries the receipt number of the sale it reverses.
+   */
+  readonly kind?: ReceiptKind;
+  readonly originalReceiptNo?: string | null;
 }
 
 export const UNCONFIGURED_PACK_SLOT: ReceiptPackSlot = { slot: 'unconfigured', fields: [], qr: null };
@@ -169,6 +189,8 @@ export interface ReceiptDocumentInput {
   readonly pack?: ReceiptPackSlot;
   readonly footerLines?: readonly string[];
   readonly labels?: Partial<ReceiptLabels>;
+  readonly kind?: ReceiptKind;
+  readonly originalReceiptNo?: string | null;
 }
 
 const E4 = 10_000n;
@@ -233,6 +255,42 @@ export function buildReceiptDocument(input: ReceiptDocumentInput): ReceiptDocume
     pack: input.pack ?? UNCONFIGURED_PACK_SLOT,
     footerLines: input.footerLines ?? [],
     labels: { ...DEFAULT_RECEIPT_LABELS, ...(input.labels ?? {}) },
+    kind: input.kind ?? 'SALE',
+    originalReceiptNo: input.originalReceiptNo ?? null,
+  };
+}
+
+/** The heading a reversing document prints, or null for a sale. */
+export function documentHeading(doc: ReceiptDocument): string | null {
+  if (doc.kind === 'RETURN') return doc.labels.returnHeading ?? DEFAULT_RECEIPT_LABELS.returnHeading;
+  if (doc.kind === 'VOID') return doc.labels.voidHeading ?? DEFAULT_RECEIPT_LABELS.voidHeading;
+  return null;
+}
+
+/**
+ * A sale's receipt turned into the slip that reverses it: every line, tax line,
+ * total and tender NEGATIVE, under the reversing heading and the return's own
+ * number, naming the receipt it reverses. Change is never given on a refund.
+ */
+export function reversingDocument(
+  original: ReceiptDocument,
+  opts: { readonly kind: 'RETURN' | 'VOID'; readonly returnId: string; readonly returnNo: string; readonly issuedAtIso: string; readonly issuedAtText: string; readonly businessDate: string },
+): ReceiptDocument {
+  return {
+    ...original,
+    kind: opts.kind,
+    saleId: opts.returnId,
+    receiptNo: opts.returnNo,
+    originalReceiptNo: original.receiptNo,
+    issuedAtIso: opts.issuedAtIso,
+    issuedAtText: opts.issuedAtText,
+    businessDate: opts.businessDate,
+    lines: original.lines.map((l) => ({ ...l, amountMinor: -l.amountMinor })),
+    netMinor: original.netMinor === null ? null : -original.netMinor,
+    taxLines: original.taxLines.map((t) => ({ ...t, baseMinor: -t.baseMinor, taxMinor: -t.taxMinor })),
+    totalMinor: -original.totalMinor,
+    tenders: original.tenders.map((t) => ({ ...t, amountMinor: -t.amountMinor })),
+    changeMinor: 0n,
   };
 }
 

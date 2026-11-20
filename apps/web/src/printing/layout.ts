@@ -13,7 +13,7 @@
  */
 import { format } from '@erp/money';
 import { canEncode, toPrintable, type CodePage } from './codepage';
-import { rateBpText, type ReceiptCurrency, type ReceiptDocument } from './document';
+import { documentHeading, rateBpText, type ReceiptCurrency, type ReceiptDocument } from './document';
 
 export type Align = 'left' | 'center' | 'right';
 
@@ -145,6 +145,14 @@ export function layoutReceipt(doc: ReceiptDocument, options: LayoutOptions): Lay
   if (doc.locationName !== null) text(doc.locationName, { align: 'center' });
   rule();
 
+  // A reversing document says so first and loudest: nobody may read a refund
+  // slip as a sale (migration 0030).
+  const heading = documentHeading(doc);
+  if (heading !== null) {
+    text(heading, { align: 'center', bold: true, wide: 2, tall: 2 });
+    rule('=');
+  }
+
   // The number the customer will quote back: the biggest thing on the slip.
   text(`${l.receipt} ${doc.receiptNo}`, {
     align: 'center',
@@ -152,6 +160,9 @@ export function layoutReceipt(doc: ReceiptDocument, options: LayoutOptions): Lay
     wide: doc.receiptNo.length + l.receipt.length + 1 <= Math.floor(columns / 2) ? 2 : 1,
   });
   pairs(l.date, doc.issuedAtText);
+  if (doc.originalReceiptNo !== undefined && doc.originalReceiptNo !== null) {
+    pairs(l.originalReceipt ?? 'Original receipt', doc.originalReceiptNo);
+  }
   if (doc.customerName !== null) pairs(l.customer, doc.customerName);
   rule();
 

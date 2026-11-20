@@ -67,6 +67,16 @@ export const CAPABILITY = {
   /** Set a reorder threshold at a location. */
   reorderManage: 'stock.reorder.manage',
   /**
+   * Void a sale (the whole of it, in its own till) and take goods back
+   * against one (later, partially). Both work offline until the lease's full
+   * horizon (`until_lease_expiry`); the server re-checks both at ingest and
+   * bounds a return by the refund IT computes.
+   */
+  saleVoid: 'sale.void',
+  saleReturn: 'sale.return',
+  /** HQ's one-time bulk load of opening stock (Q20). Online only. */
+  stockOpeningImport: 'stock.opening.import',
+  /**
    * Correct what the ledger says is physically there, at a location. The
    * server derives this same code from the movement's `sourceKind` and
    * re-checks it at ingest; counter staff do not hold it.

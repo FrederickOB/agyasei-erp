@@ -1702,3 +1702,126 @@ export const opsAlert = platformSchema.table('ops_alert', {
   sendCount: integer('send_count').notNull(),
   resolvedAt: timestamp('resolved_at', { withTimezone: true }),
 });
+
+// ---------------------------------------------------------------------------
+// Voids and returns (migration 0030) — a NEW document against a sale; the sale
+// is never touched. Every figure is a NON-NEGATIVE magnitude of what is
+// reversed; the direction is `kind`. Identities asserted at COMMIT.
+// ---------------------------------------------------------------------------
+
+export const saleReturn = tenantTable(
+  'sale_return',
+  {
+    /** 'VOID' (whole sale, same till) | 'RETURN' (some lines, any later till here). */
+    kind: text('kind').notNull(),
+    originalSaleId: uuid('original_sale_id').notNull(),
+    /** = the original's location: returns are taken where the sale was made. */
+    locationId: uuid('location_id').notNull(),
+    cashSessionId: uuid('cash_session_id').notNull(),
+    businessDate: date('business_date').notNull(),
+    occurredAt: timestamp('occurred_at', { withTimezone: true }).notNull(),
+    customerId: uuid('customer_id'),
+    returnNo: text('return_no').notNull(),
+    returnNoClaimed: text('return_no_claimed'),
+    reason: text('reason').notNull(),
+    currencyCode: char('currency_code', { length: 3 }).notNull(),
+    moneyScale: bigint('money_scale', { mode: 'bigint' }).notNull(),
+    subtotalNetMinor: bigint('subtotal_net_minor', { mode: 'bigint' }).notNull(),
+    discountMinor: bigint('discount_minor', { mode: 'bigint' }).notNull(),
+    taxTotalMinor: bigint('tax_total_minor', { mode: 'bigint' }).notNull(),
+    totalMinor: bigint('total_minor', { mode: 'bigint' }).notNull(),
+  },
+  (t) => [
+    uniqueIndex('sale_return_no_uq').on(t.tenantId, t.locationId, t.returnNo),
+    index('sale_return_original_ix').on(t.tenantId, t.originalSaleId),
+    index('sale_return_session_ix').on(t.tenantId, t.cashSessionId),
+    index('sale_return_day_ix').on(t.tenantId, t.locationId, t.businessDate),
+  ],
+);
+
+export const saleReturnLine = tenantTable(
+  'sale_return_line',
+  {
+    returnId: uuid('return_id').notNull(),
+    lineNo: smallint('line_no').notNull(),
+    originalSaleLineId: uuid('original_sale_line_id').notNull(),
+    productId: uuid('product_id').notNull(),
+    locationId: uuid('location_id').notNull(),
+    qtySell: bigint('qty_sell', { mode: 'bigint' }).notNull(),
+    qtySellScale: smallint('qty_sell_scale').notNull(),
+    unitPriceE4: bigint('unit_price_e4', { mode: 'bigint' }).notNull(),
+    stockingUomId: uuid('stocking_uom_id').notNull(),
+    qtyStock: bigint('qty_stock', { mode: 'bigint' }).notNull(),
+    qtyStockScale: smallint('qty_stock_scale').notNull(),
+    lineNetMinor: bigint('line_net_minor', { mode: 'bigint' }).notNull(),
+    lineDiscountMinor: bigint('line_discount_minor', { mode: 'bigint' }).notNull(),
+    taxMinor: bigint('tax_minor', { mode: 'bigint' }).notNull(),
+    /** 'RESTOCK' | 'DAMAGED' — platform vocabulary. */
+    disposition: text('disposition').notNull(),
+  },
+  (t) => [
+    uniqueIndex('sale_return_line_uq').on(t.tenantId, t.returnId, t.lineNo),
+    uniqueIndex('sale_return_line_original_uq').on(t.tenantId, t.returnId, t.originalSaleLineId),
+    index('sale_return_line_original_ix').on(t.tenantId, t.originalSaleLineId),
+    index('sale_return_line_location_ix').on(t.tenantId, t.locationId),
+  ],
+);
+
+export const saleReturnTaxLine = tenantTable(
+  'sale_return_tax_line',
+  {
+    returnId: uuid('return_id').notNull(),
+    returnLineId: uuid('return_line_id').notNull(),
+    originalTaxLineId: uuid('original_tax_line_id').notNull(),
+    locationId: uuid('location_id').notNull(),
+    seq: smallint('seq').notNull(),
+    taxCode: text('tax_code').notNull(),
+    rateBp: integer('rate_bp').notNull(),
+    baseMinor: bigint('base_minor', { mode: 'bigint' }).notNull(),
+    taxMinor: bigint('tax_minor', { mode: 'bigint' }).notNull(),
+    /** The ORIGINAL sale's effective-dated rate row (ADR-0002). */
+    taxRateId: uuid('tax_rate_id').notNull(),
+  },
+  (t) => [
+    uniqueIndex('sale_return_tax_line_uq').on(t.tenantId, t.returnLineId, t.seq),
+    index('sale_return_tax_line_return_ix').on(t.tenantId, t.returnId),
+    index('sale_return_tax_line_location_ix').on(t.tenantId, t.locationId),
+  ],
+);
+
+export const saleReturnRefund = tenantTable(
+  'sale_return_refund',
+  {
+    returnId: uuid('return_id').notNull(),
+    seq: smallint('seq').notNull(),
+    methodId: uuid('method_id').notNull(),
+    amountMinor: bigint('amount_minor', { mode: 'bigint' }).notNull(),
+    claimedMinor: bigint('claimed_minor', { mode: 'bigint' }),
+    reference: text('reference'),
+    refundedAt: timestamp('refunded_at', { withTimezone: true }).notNull(),
+    locationId: uuid('location_id').notNull(),
+  },
+  (t) => [
+    uniqueIndex('sale_return_refund_uq').on(t.tenantId, t.returnId, t.seq),
+    index('sale_return_refund_location_ix').on(t.tenantId, t.locationId, t.methodId),
+  ],
+);
+
+/**
+ * One bulk load of opening STOCK (migration 0031; open-questions Q20). Its
+ * rows are `stock_movement` OPENING rows with source_id = this id. Posts
+ * nothing to the GL. `contentSha256` is unique: the same file lands once.
+ */
+export const openingStockImport = tenantTable(
+  'opening_stock_import',
+  {
+    contentSha256: text('content_sha256').notNull(),
+    fileName: text('file_name'),
+    asOfDate: date('as_of_date').notNull(),
+    rowCount: integer('row_count').notNull(),
+    locationCount: integer('location_count').notNull(),
+    productCount: integer('product_count').notNull(),
+    importedBy: uuid('imported_by').notNull(),
+  },
+  (t) => [uniqueIndex('opening_stock_import_content_uq').on(t.tenantId, t.contentSha256)],
+);

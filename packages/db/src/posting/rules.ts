@@ -287,6 +287,117 @@ export function saleEntry(doc: SaleDocument): ProposedEntry {
 }
 
 // ---------------------------------------------------------------------------
+// Voids and returns (migration 0030) — 05 §5.3 and §5.6.2 rule 10
+// ---------------------------------------------------------------------------
+
+/**
+ * A void or a return, as the ledger needs it. Every figure is a NON-NEGATIVE
+ * magnitude of what is being reversed (0030's sign convention); `refunds` are
+ * how the money went back, one part per role — Σ must equal the document's
+ * total, which the database asserted at commit (SRET0006).
+ */
+export interface SaleReturnDocument {
+  readonly returnId: string;
+  readonly kind: 'VOID' | 'RETURN';
+  /** The original sale's location: returns are taken there (SRET0001). */
+  readonly locationId: string;
+  readonly businessDate: string;
+  readonly refunds: readonly SaleTenderPart[];
+  readonly customerId?: string | undefined;
+  readonly revenueMinor: bigint;
+  readonly discountMinor: bigint;
+  readonly taxes: readonly SaleTaxComponent[];
+  /** Cost of what came back. 0n while Q16 has no costing method (see the sweep). */
+  readonly costMinor: bigint;
+  readonly productCategoryId?: string | undefined;
+}
+
+function swapSides(lines: readonly ProposedLine[]): ProposedLine[] {
+  return lines.map((l) => ({ ...l, debitMinor: l.creditMinor, creditMinor: l.debitMinor }));
+}
+
+/**
+ * A VOID is the sale's own entry with the sides swapped — 05 §5.3: "a reversal
+ * is generated, never hand-keyed: the same code path, run with the sides
+ * swapped". It is computed from the VOID document's figures (which 0030's
+ * SRET0014 pins to the original's exactly) rather than by `reverses_entry_id`
+ * against the original's journal entry, so a void never waits on its sale's
+ * posting and an exception on one cannot strand the other. The statement-
+ * level result is the same and is tested: Σ(sale + void) = 0 on every
+ * (role, location) pair. Gross sales fall by the voided sale — correct for a
+ * sale rung in error, which never happened.
+ *
+ * A RETURN is rule 10: CONTRA-revenue, so gross sales stay recoverable.
+ *
+ *   Dr SALES_RETURNS — the revenue reversed, NET of its discount
+ *   Dr OUTPUT_TAX    — one line per component, at the amounts charged
+ *   Dr INVENTORY / Cr COGS — at cost (0 until Q16)
+ *   Cr TILL_CASH / MOMO_WALLET / BANK / AR_TRADE — how the money went back
+ *
+ * NEEDS AN ACCOUNTANT (CLAUDE.md §2.8): whether a returned line's DISCOUNT
+ * should instead credit SALES_DISCOUNT back (keeping SALES_RETURNS gross).
+ * Either balances; this rule takes the simpler reading and names it.
+ */
+export function saleReturnEntry(doc: SaleReturnDocument): ProposedEntry {
+  const taxTotal = doc.taxes.reduce((a, t) => a + t.taxMinor, 0n);
+  const totalMinor = doc.revenueMinor - doc.discountMinor + taxTotal;
+  if (totalMinor === 0n && doc.costMinor === 0n) {
+    throw new UnbalancedRuleError('sale_return', 'a return with no value and no cost has nothing to post');
+  }
+  const byRole = new Map<SettlementRole, bigint>();
+  for (const r of doc.refunds) {
+    if (!isSettlementRole(r.role)) {
+      throw new UnbalancedRuleError('sale_return', `refund role ${String(r.role)} is not a settlement role`);
+    }
+    if (r.amountMinor < 0n) {
+      throw new UnbalancedRuleError('sale_return', `a refund of ${r.amountMinor} on ${r.role} is negative`);
+    }
+    byRole.set(r.role, (byRole.get(r.role) ?? 0n) + r.amountMinor);
+  }
+  let refunded = 0n;
+  for (const v of byRole.values()) refunded += v;
+  if (refunded !== totalMinor) {
+    throw new UnbalancedRuleError('sale_return', `refunds sum to ${refunded} but the document's total is ${totalMinor}`);
+  }
+
+  if (doc.kind === 'VOID') {
+    const original = saleEntry({
+      saleId: doc.returnId,
+      locationId: doc.locationId,
+      businessDate: doc.businessDate,
+      tenders: doc.refunds,
+      customerId: doc.customerId,
+      revenueMinor: doc.revenueMinor,
+      discountMinor: doc.discountMinor,
+      taxes: doc.taxes,
+      costMinor: doc.costMinor,
+      productCategoryId: doc.productCategoryId,
+    });
+    const lines = swapSides(original.lines);
+    assertBalances('sale_void', lines);
+    return { sourceKind: 'sale_void', sourceId: doc.returnId, documentDate: doc.businessDate, lines };
+  }
+
+  const onAccount = byRole.get('AR_TRADE') ?? 0n;
+  if (onAccount > 0n && doc.customerId === undefined) {
+    throw new UnbalancedRuleError('sale_return', 'an account credit with no customer cannot be posted to AR');
+  }
+  const at = doc.locationId;
+  const scope = doc.productCategoryId === undefined ? {} : { productCategoryId: doc.productCategoryId };
+  const customer =
+    doc.customerId !== undefined ? { counterpartyKind: 'customer' as const, counterpartyId: doc.customerId } : {};
+  const lines = live([
+    dr('SALES_RETURNS', at, doc.revenueMinor - doc.discountMinor, scope),
+    ...doc.taxes.map((t) => dr('OUTPUT_TAX', at, t.taxMinor, { memo: t.taxCode })),
+    dr('INVENTORY', at, doc.costMinor, scope),
+    cr('COGS', at, doc.costMinor, scope),
+    ...SETTLEMENT_ROLES.map((role) => cr(role, at, byRole.get(role) ?? 0n, role === 'AR_TRADE' ? customer : {})),
+  ]);
+  assertBalances('sale_return', lines);
+  return { sourceKind: 'sale_return', sourceId: doc.returnId, documentDate: doc.businessDate, lines };
+}
+
+// ---------------------------------------------------------------------------
 // Rules 11 and 11b — closing a till
 // ---------------------------------------------------------------------------
 

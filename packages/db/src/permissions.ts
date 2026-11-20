@@ -48,6 +48,10 @@ export const PERMISSION_CODES = [
   'sale.override_price',
   'sale.discount.apply',
   'sale.void',
+  // Migration 0030: taking goods back later, partially, bounded by the
+  // refund value the SERVER computes. A void is `sale.void`; they are
+  // different acts and different people in plenty of org charts.
+  'sale.return',
   'sale.view',
   'sale.receipt.reprint',
 
@@ -58,6 +62,9 @@ export const PERMISSION_CODES = [
   'stock.receive',
   'stock.count.perform',
   'stock.reorder.manage',
+  // Migration 0031: the one-time bulk load of opening stock (Q20). Online
+  // only, sensitive, and nothing to do with signing for a truck.
+  'stock.opening.import',
 
   'catalogue.view',
   'catalogue.manage',

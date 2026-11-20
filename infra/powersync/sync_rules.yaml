@@ -194,6 +194,35 @@ bucket_definitions:
           FROM "app"."sale_tender"
          WHERE tenant_id = bucket.tenant_id
            AND location_id = bucket.location_id
+      # Voids and returns at this location (migration 0030). Every table
+      # carries location_id, asserted equal to the document's at commit, so
+      # each rides THIS bucket directly — a till sees what has already come
+      # back of a sale before it takes more back, and prints a return slip
+      # from the server's own figures once they sync.
+      - SELECT id, tenant_id, kind, original_sale_id, location_id, cash_session_id,
+               business_date, occurred_at, customer_id, return_no, return_no_claimed,
+               reason, currency_code, money_scale, subtotal_net_minor, discount_minor,
+               tax_total_minor, total_minor, hlc, created_at
+          FROM "app"."sale_return"
+         WHERE tenant_id = bucket.tenant_id
+           AND location_id = bucket.location_id
+      - SELECT id, tenant_id, return_id, line_no, original_sale_line_id, product_id,
+               location_id, qty_sell, qty_sell_scale, unit_price_e4, stocking_uom_id,
+               qty_stock, qty_stock_scale, line_net_minor, line_discount_minor, tax_minor,
+               disposition, hlc, created_at
+          FROM "app"."sale_return_line"
+         WHERE tenant_id = bucket.tenant_id
+           AND location_id = bucket.location_id
+      - SELECT id, tenant_id, return_id, return_line_id, original_tax_line_id, location_id,
+               seq, tax_code, rate_bp, base_minor, tax_minor, tax_rate_id, hlc, created_at
+          FROM "app"."sale_return_tax_line"
+         WHERE tenant_id = bucket.tenant_id
+           AND location_id = bucket.location_id
+      - SELECT id, tenant_id, return_id, seq, method_id, amount_minor, claimed_minor,
+               reference, refunded_at, location_id, hlc, created_at
+          FROM "app"."sale_return_refund"
+         WHERE tenant_id = bucket.tenant_id
+           AND location_id = bucket.location_id
 
   # ---- The credit BOOK, for accounts/HQ (§3.2.2 tenant_credit) -------------
   # THE GATE IS THE PARAMETER QUERY. No root `credit.view` grant → no row in

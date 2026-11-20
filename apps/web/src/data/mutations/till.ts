@@ -137,14 +137,15 @@ export async function readLatestTill(db: DbExecutor): Promise<Till | null> {
 
 /**
  * What the drawer should hold: the float plus the cash APPLIED to every sale
- * rung into this till on this device — every sale, whatever its sync state,
- * because the money is in the drawer whether or not the server has heard of
- * it yet. Summed here in bigint, never in SQL (§8.3).
+ * rung into this till on this device, LESS the cash paid back out of it by
+ * every void and return (whose `drawer_minor` is negative) — whatever their
+ * sync state, because the money is in or out of the drawer whether or not the
+ * server has heard of it yet. Summed here in bigint, never in SQL (§8.3).
  */
 export async function tillExpectedCash(db: DbExecutor, till: Till): Promise<bigint> {
   const rows = await db.getAll(
     `SELECT CAST(drawer_minor AS TEXT) AS drawer_minor
-       FROM outbox WHERE kind = 'sale' AND cash_session_id = ?`,
+       FROM outbox WHERE kind IN ('sale', 'sale_return') AND cash_session_id = ?`,
     [till.id],
   );
   let cash = 0n;

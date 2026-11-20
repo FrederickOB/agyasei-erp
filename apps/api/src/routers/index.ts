@@ -6,11 +6,13 @@ import { creditRouter } from './credit.js';
 import { inventoryRouter } from './inventory.js';
 import { ledgerRouter } from './ledger.js';
 import { logisticsRouter } from './logistics.js';
+import { openingStockRouter } from './opening-stock.js';
 import { procurementRouter } from './procurement.js';
 import { provisioningRouter } from './provisioning.js';
 import { receivingRouter } from './receiving.js';
 import { reportsRouter } from './reports.js';
 import { reviewRouter } from './review.js';
+import { saleReturnsRouter } from './sale-returns.js';
 import { salesRouter } from './sales.js';
 import { sequenceRouter } from './sequence.js';
 import { sessionRouter } from './session.js';
@@ -20,7 +22,11 @@ export const appRouter = router({
   session: sessionRouter,
   catalogue: catalogueRouter,
   inventory: inventoryRouter,
+  // HQ's one-time bulk load of opening STOCK (0031; Q20). Posts nothing to the GL.
+  openingStock: openingStockRouter,
   sales: salesRouter,
+  // Voids and returns: a new document against a sale, never an edit (0030).
+  returns: saleReturnsRouter,
   // The till: open, close, and the online pre-open check (04 §4.8a).
   cashSession: cashSessionRouter,
   credit: creditRouter,
