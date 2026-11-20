@@ -468,7 +468,8 @@ button {
   display: flex;
   align-items: center;
   gap: var(--s-2);
-  min-height: 40px;
+  /* Tapped at the counter, so the counter's minimum (browser tests: it was 40px). */
+  min-height: var(--tap-min);
   padding: 0 var(--s-3);
   border: 1px solid var(--brand);
   border-radius: var(--r-full);
@@ -487,7 +488,11 @@ button {
 .counter {
   display: grid;
   gap: var(--s-4);
-  grid-template-columns: 1fr;
+  /* minmax(0, …), not a bare 1fr (= minmax(auto, 1fr)): the category chips
+     scroll inside their row, but their min-content still set this column's
+     floor, so a 360px phone laid the counter out 759px wide and the browser
+     zoomed the page out to fit it (found by the browser tests). */
+  grid-template-columns: minmax(0, 1fr);
   align-items: start;
 }
 @media (min-width: 900px) {
@@ -3060,7 +3065,8 @@ button {
   align-items: center;
   gap: var(--s-2);
   align-self: flex-end;
-  min-height: 40px;
+  /* A touch target like any other on the counter (browser tests: it was 40px). */
+  min-height: var(--tap-min);
   margin: 0 var(--s-4);
   padding: 0 var(--s-3);
   border: 1px solid var(--control-border);
@@ -3651,6 +3657,13 @@ button {
   text-align: center;
   color: var(--o-text);
   white-space: nowrap;
+}
+/* Clamped inside the plot (DailyBars EndLabel): flush to the edge it met. */
+.dailybars-end-right {
+  text-align: right;
+}
+.dailybars-end-left {
+  text-align: left;
 }
 
 /* Reports: the headline strip, the period control, the collapsible caveats. */
@@ -4324,6 +4337,10 @@ button {
 .admin-form {
   display: grid;
   gap: var(--s-3);
+  /* One column that may shrink: a select's min-content is its longest option,
+     and the enrol form's location picker laid the form out 468px wide on a
+     360px phone (found by the browser tests). */
+  grid-template-columns: minmax(0, 1fr);
 }
 .admin-form h2 {
   margin: 0;

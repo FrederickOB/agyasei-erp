@@ -782,23 +782,10 @@ async function main(): Promise<void> {
       `bound=${String(stillBound.priceListId)} (${stillBound.status}) vs RETAIL ${best.id}`,
     );
 
-    const histCart = await createCart(db, { nowIso, priceListId: histList.id });
-    for (let i = 0n; i < QTY; i += 1n) await addProductToCart(db, histCart, {
-      id: prod.id,
-      code: prod.sku_code,
-      name: prod.name,
-      aliases: null,
-      category: null,
-      uomLabel: prod.uom_code,
-      qtyScale: prod.qty_scale,
-      priceListId: histList.id,
-      unitPriceE4: BigInt(prod.unit_price_e4),
-    });
-    const histLines = await getCartLines(db, histCart);
-    const histBasis = await readPricingBasis(db, true, HIST_DATE);
-    const histLocal = priceCart(histLines, histBasis);
     // A BACK-DATED sale is rung into a till opened FOR that day (08 §8.2a):
-    // today's till is cashed up first, then a till for HIST_DATE is opened,
+    // today's till is cashed up first — BEFORE the back-dated cart exists,
+    // because a till cannot be cashed up with a sale in progress (the client
+    // refuses, rightly) — then a till for HIST_DATE is opened,
     // flagged offline because the server's date check would (rightly) refuse
     // it online. Both ride the outbox ahead of the sale.
     const todays = await readOpenTill(db);
@@ -816,6 +803,21 @@ async function main(): Promise<void> {
       openingFloatMinor: 0n, businessDate: HIST_DATE, openedOffline: true, drawer: 'SHARED',
       hlc: fixedHlc(Date.parse(nowIso) + 700, deviceNode), nowIso: histNow,
     });
+    const histCart = await createCart(db, { nowIso, priceListId: histList.id });
+    for (let i = 0n; i < QTY; i += 1n) await addProductToCart(db, histCart, {
+      id: prod.id,
+      code: prod.sku_code,
+      name: prod.name,
+      aliases: null,
+      category: null,
+      uomLabel: prod.uom_code,
+      qtyScale: prod.qty_scale,
+      priceListId: histList.id,
+      unitPriceE4: BigInt(prod.unit_price_e4),
+    });
+    const histLines = await getCartLines(db, histCart);
+    const histBasis = await readPricingBasis(db, true, HIST_DATE);
+    const histLocal = priceCart(histLines, histBasis);
     const histSale = await checkout(db, {
       cartId: histCart,
       tenderedMinor: expectedGross,

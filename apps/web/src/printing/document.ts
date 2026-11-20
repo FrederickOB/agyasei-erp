@@ -329,10 +329,21 @@ export function receiptTenders(
 
 const BIGINT_TAG = '$bigint';
 
+/**
+ * The tag is decided from the RAW value, `this[key]`, never from the replacer's
+ * second argument. JSON.stringify calls a value's own `toJSON` BEFORE the
+ * replacer, and @journeyapps/wa-sqlite installs `BigInt.prototype.toJSON`
+ * (returning a plain string) in every page that loads the database — so in the
+ * shipped bundle a `typeof v === 'bigint'` replacer never saw a bigint, nothing
+ * was tagged, and `deserializeDocument` rejected every queued receipt: no
+ * on-screen lines, no print, no reprint. jsdom never loads wa-sqlite, so only
+ * the browser tests could see it (e2e/sale.spec.ts).
+ */
 export function serializeDocument(doc: ReceiptDocument): string {
-  return JSON.stringify(doc, (_k, v: unknown) =>
-    typeof v === 'bigint' ? { [BIGINT_TAG]: v.toString() } : v,
-  );
+  return JSON.stringify(doc, function (this: Record<string, unknown>, key: string, value: unknown) {
+    const raw = this[key];
+    return typeof raw === 'bigint' ? { [BIGINT_TAG]: raw.toString() } : value;
+  });
 }
 
 export function deserializeDocument(json: string): ReceiptDocument | null {

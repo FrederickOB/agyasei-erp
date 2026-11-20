@@ -101,6 +101,19 @@ describe('the room a session lands in', () => {
     expect(rememberedRoom()).toBe('counter');
   });
 
+  it('lands a laptop in the office and every touch device at the counter, until a choice is remembered', () => {
+    // ADR-0003 A1. `setLayout(true)` answers every media query yes — the
+    // laptop's fine, hovering pointer on a desk-width screen.
+    setLayout(true);
+    expect(rememberedRoom()).toBe('office');
+    rememberRoom('counter');
+    expect(rememberedRoom()).toBe('counter');
+    // A touch device (coarse pointer) with nothing remembered: the counter.
+    freshStorage();
+    setLayout(false);
+    expect(rememberedRoom()).toBe('counter');
+  });
+
   it('offers the office only to a session holding something the office shows', () => {
     expect(officeOffered(holding([]))).toBe(false);
     expect(officeOffered(holding([CAPABILITY.stockAdjust]))).toBe(false);
