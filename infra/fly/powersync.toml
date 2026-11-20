@@ -1,0 +1,48 @@
+# Fly app: the PowerSync sync service — its OWN app, so its version is pinned
+# and rolled back independently of the API (09 §9.1, §9.8 Case B).
+#
+# Deploy from the REPOSITORY ROOT:
+#
+#   fly deploy . --config infra/fly/powersync.toml --dockerfile infra/docker/powersync.Dockerfile
+#
+# The image bakes the pinned service version, the production config and THE
+# SYNC RULES (the isolation boundary). A rules change is an image deploy —
+# and a fleet-wide bucket rebuild (Rule 9.3-D): schedule it, never ship it
+# with a schema change.
+#
+# ONE machine for the pilot: the unified runner both replicates and serves.
+# Scaling out means splitting `-r sync` (exactly one) from `-r api` (many);
+# do that before adding a second machine, not by `fly scale count 2`.
+
+app = "CHANGE-ME-erp-powersync"
+primary_region = "lhr"
+kill_signal = "SIGTERM"
+kill_timeout = "30s"
+
+[deploy]
+  strategy = "rolling"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "off"     # it holds the replication slot; stopping it grows WAL
+  auto_start_machines = true
+  min_machines_running = 1
+  processes = ["app"]
+
+  [http_service.concurrency]
+    # Devices hold long-lived streaming connections.
+    type = "connections"
+    soft_limit = 800
+    hard_limit = 1000
+
+  [[http_service.checks]]
+    grace_period = "60s"         # first start snapshots the published tables
+    interval = "15s"
+    method = "GET"
+    path = "/probes/liveness"
+    timeout = "5s"
+
+[[vm]]
+  size = "shared-cpu-2x"
+  memory = "2gb"                 # NODE_OPTIONS caps the heap at 1.5 GB

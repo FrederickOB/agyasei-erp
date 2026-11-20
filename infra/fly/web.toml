@@ -1,0 +1,41 @@
+# Fly app: the PWA (static files behind unprivileged nginx).
+#
+# Deploy from the REPOSITORY ROOT. The API and sync URLs are BUILD arguments
+# (Vite inlines them); the CSP origins and the release gate are runtime env:
+#
+#   fly deploy . --config infra/fly/web.toml --dockerfile infra/docker/web.Dockerfile \
+#     --build-arg VITE_API_URL=https://CHANGE-ME-erp-api.fly.dev \
+#     --build-arg VITE_POWERSYNC_URL=https://CHANGE-ME-erp-powersync.fly.dev \
+#     --build-arg BUILD_ID=$(git rev-parse --short HEAD)
+#
+# Releasing a web build is FLEET-WIDE today: /release.json names the image's
+# own build, so every device activates it at its next safe point. Per-ring
+# pinning (Requirement 9.7-A, the server-side /release endpoint) is not built;
+# until it is, RELEASE_BUILD_ID holds the whole fleet on a build it already
+# runs, and a client rollback is a redeploy of the previous web image.
+
+app = "CHANGE-ME-erp-web"
+primary_region = "lhr"
+
+[env]
+  # Origins the page may connect to (Content-Security-Policy, report-only for now).
+  CSP_CONNECT_SRC = "'self' https://CHANGE-ME-erp-api.fly.dev https://CHANGE-ME-erp-powersync.fly.dev wss://CHANGE-ME-erp-powersync.fly.dev"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 1
+  processes = ["app"]
+
+  [[http_service.checks]]
+    grace_period = "5s"
+    interval = "30s"
+    method = "GET"
+    path = "/healthz"
+    timeout = "3s"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"

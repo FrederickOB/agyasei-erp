@@ -1,0 +1,79 @@
+# Fly app: the API, the scheduled-job worker, and the migrator.
+#
+# Deploy from the REPOSITORY ROOT (the build context is the whole workspace):
+#
+#   fly deploy . --config infra/fly/api.toml --dockerfile infra/docker/api.Dockerfile \
+#     --build-arg ERP_BUILD=$(git rev-parse --short HEAD)
+#
+# One image, three commands:
+#   release_command  node dist/bin/migrate.js   runs BEFORE new machines start; a
+#                                               non-zero exit aborts the deploy
+#                                               with the old machines serving.
+#   api              node dist/bin/main.js      behind Fly's proxy, /readyz checked.
+#   worker           node dist/bin/jobs.js loop the scheduled jobs; ONE machine.
+#
+# Secrets (fly secrets set …) are listed in docs/production-runbook.md §3.
+# Nothing in this file is secret.
+
+app = "CHANGE-ME-erp-api"        # the founder chooses the app name at `fly apps create`
+primary_region = "lhr"           # London — co-located with Supabase eu-west-2 (ADR-0003 A2)
+kill_signal = "SIGTERM"
+kill_timeout = "30s"             # > SHUTDOWN_GRACE_MS, so in-flight uploads drain
+
+[deploy]
+  release_command = "node dist/bin/migrate.js"
+  strategy = "rolling"
+
+[env]
+  NODE_ENV = "production"
+  PORT = "8080"
+  HOST = "0.0.0.0"
+  DATABASE_SSL_MODE = "verify-full"
+  TRUST_PROXY = "true"
+  LOG_LEVEL = "info"
+  SHUTDOWN_GRACE_MS = "20000"
+  # Public origins — set to the real hostnames once chosen (fly certs add …).
+  POWERSYNC_URL = "https://CHANGE-ME-erp-powersync.fly.dev"
+  CORS_ORIGINS = "https://CHANGE-ME-erp-web.fly.dev"
+  RATE_LIMIT_PATHS = "/sync/token,/auth,/enrol"
+  # Worker: platform defaults for the §9.4 thresholds (packages/ops/src/config.ts).
+  ALERT_ENVIRONMENT = "production"
+  TRADING_DAYS = "1-6"
+  TRADING_OPEN = "07:00"
+  TRADING_CLOSE = "19:00"
+  DARK_DEVICE_AFTER_HOURS = "4"
+  EXPECT_LOGICAL_SLOT = "true"
+
+[processes]
+  api = "node dist/bin/main.js"
+  worker = "node dist/bin/jobs.js loop"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "off"     # devices sync at any hour; a cold start is a failed sync
+  auto_start_machines = true
+  min_machines_running = 2       # two, so a rolling deploy never empties the pool
+  processes = ["api"]
+
+  [http_service.concurrency]
+    type = "requests"
+    soft_limit = 200
+    hard_limit = 250
+
+  [[http_service.checks]]
+    grace_period = "15s"
+    interval = "15s"
+    method = "GET"
+    path = "/readyz"
+    timeout = "5s"
+
+[[vm]]
+  processes = ["api"]
+  size = "shared-cpu-1x"
+  memory = "512mb"
+
+[[vm]]
+  processes = ["worker"]
+  size = "shared-cpu-1x"
+  memory = "512mb"
