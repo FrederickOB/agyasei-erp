@@ -34,7 +34,7 @@
 
 /** Posting roles this module emits. Platform vocabulary, never a tenant's. */
 export type PostingRole =
-  | 'TILL_CASH' | 'MOMO_WALLET' | 'BANK' | 'BANK_CHARGES' | 'CASH_IN_TRANSIT'
+  | 'TILL_CASH' | 'MOMO_WALLET' | 'BANK' | 'BANK_CHARGES' | 'CASH_IN_TRANSIT' | 'CASH_OVER_SHORT'
   | 'SALES_REVENUE' | 'SALES_DISCOUNT' | 'SALES_RETURNS' | 'OUTPUT_TAX'
   | 'COGS' | 'INVENTORY' | 'INVENTORY_IN_TRANSIT'
   | 'AR_TRADE' | 'INTERLOC_CLEARING' | 'GRNI' | 'AP_TRADE' | 'INPUT_TAX'
@@ -139,11 +139,44 @@ export interface SaleTaxComponent {
   readonly taxMinor: bigint;
 }
 
+/**
+ * The posting roles a tender can settle into — the four places money that
+ * moved at a counter can land (05 §5.6.2 rules 1 and 2). Mirrors migration
+ * 0020's `tm_settlement_role` CHECK on `app.tender_method.posting_role`.
+ *
+ * Which of them a tenant's "Mobile Money" or "Cheque" uses is the tenant's
+ * row, not this module's business: the rule reads the ROLE and nothing else.
+ */
+export type SettlementRole = 'TILL_CASH' | 'MOMO_WALLET' | 'BANK' | 'AR_TRADE';
+
+/** In a FIXED order, so an entry's line order never depends on row order. */
+export const SETTLEMENT_ROLES: readonly SettlementRole[] = ['TILL_CASH', 'MOMO_WALLET', 'BANK', 'AR_TRADE'];
+
+export function isSettlementRole(role: string): role is SettlementRole {
+  return (SETTLEMENT_ROLES as readonly string[]).includes(role);
+}
+
+/** One way the sale was paid, already resolved to its role. */
+export interface SaleTenderPart {
+  readonly role: SettlementRole;
+  readonly amountMinor: bigint;
+}
+
 export interface SaleDocument {
   readonly saleId: string;
   readonly locationId: string;
   readonly businessDate: string;
-  readonly tender: 'CASH' | 'MOMO' | 'CREDIT';
+  /**
+   * How the customer paid — FROM `app.sale_tender`, one part per row (the
+   * rule aggregates per role). Σ amountMinor must equal the sale's total; the
+   * database asserts that at commit (migration 0022) and this rule refuses a
+   * document that disagrees rather than balancing it with a plug.
+   *
+   * Split tender is ordinary: part cash, part momo debits TILL_CASH and
+   * MOMO_WALLET separately, so each reconciles against its own statement.
+   */
+  readonly tenders: readonly SaleTenderPart[];
+  /** Counterparty for the AR line. Required when any part is AR_TRADE. */
   readonly customerId?: string | undefined;
   /**
    * Revenue GROSS of discount — `sale_line.line_net_minor` summed. 07 §7.3.2:
@@ -160,22 +193,20 @@ export interface SaleDocument {
   readonly productCategoryId?: string | undefined;
 }
 
-const TENDER_ROLE: Record<SaleDocument['tender'], PostingRole> = {
-  CASH: 'TILL_CASH',
-  MOMO: 'MOMO_WALLET',
-  CREDIT: 'AR_TRADE',
-};
-
 /**
  * Rules 1, 1b, 2 and 3 in one function, because they are one entry.
  *
- * Cash and credit differ ONLY in which account takes the debit, which is why
- * §5.6.2 describes rule 2 as "identical to #1 with the cash line swapped".
+ * Cash, momo, bank and credit differ ONLY in which account takes the debit,
+ * which is why §5.6.2 describes rule 2 as "identical to #1 with the cash line
+ * swapped". A split tender is the same entry with more than one debit.
  * Revenue is recognised here and not on payment.
  *
  * TAX IS A LIABILITY, NEVER REVENUE (rule 3). One credit per component, from
  * the rate rows in force on the document date — the caller has already priced
  * them; this rule does not compute tax and must never start.
+ *
+ * The customer is the counterparty of the AR line and ONLY the AR line: a
+ * cash sale to a known customer debits the till, not the customer.
  */
 export function saleEntry(doc: SaleDocument): ProposedEntry {
   const taxTotal = doc.taxes.reduce((a, t) => a + t.taxMinor, 0n);
@@ -194,16 +225,44 @@ export function saleEntry(doc: SaleDocument): ProposedEntry {
   // What the customer actually owes, and what `app.sale.total_minor` holds:
   // revenue gross of discount, less the discount, plus tax.
   const totalMinor = doc.revenueMinor - doc.discountMinor + taxTotal;
+
+  const byRole = new Map<SettlementRole, bigint>();
+  for (const t of doc.tenders) {
+    if (!isSettlementRole(t.role)) {
+      // Fail closed: a role this rule does not know where to put is neither
+      // dropped (which would unbalance the entry) nor guessed.
+      throw new UnbalancedRuleError('sale', `tender role ${String(t.role)} is not a settlement role`);
+    }
+    if (t.amountMinor < 0n) {
+      throw new UnbalancedRuleError('sale', `a tender of ${t.amountMinor} on ${t.role} is negative`);
+    }
+    byRole.set(t.role, (byRole.get(t.role) ?? 0n) + t.amountMinor);
+  }
+  let tendered = 0n;
+  for (const v of byRole.values()) tendered += v;
+  if (tendered !== totalMinor) {
+    // No plug, no suspense line: the document disagrees with itself and the
+    // exception says so. Migration 0022 makes this unreachable for a sale
+    // that committed; the check is here so the rule never depends on that.
+    throw new UnbalancedRuleError('sale', `tenders sum to ${tendered} but the sale's total is ${totalMinor}`);
+  }
+  const onAccount = byRole.get('AR_TRADE') ?? 0n;
+  if (onAccount > 0n && doc.customerId === undefined) {
+    throw new UnbalancedRuleError('sale', 'an on-account tender with no customer cannot be posted to AR');
+  }
+
   const at = doc.locationId;
   const scope = doc.productCategoryId === undefined ? {} : { productCategoryId: doc.productCategoryId };
-
-  const counterparty =
-    doc.tender === 'CREDIT' && doc.customerId !== undefined
+  const customer =
+    doc.customerId !== undefined
       ? { counterpartyKind: 'customer' as const, counterpartyId: doc.customerId }
       : {};
 
   const lines = live([
-    dr(TENDER_ROLE[doc.tender], at, totalMinor, counterparty),
+    // Rules 1 and 2: one debit per settlement role, in the catalogue's order.
+    ...SETTLEMENT_ROLES.map((role) =>
+      dr(role, at, byRole.get(role) ?? 0n, role === 'AR_TRADE' ? customer : {}),
+    ),
     // Rule 1b. Contra-income, debited, so gross sales stay recoverable.
     dr('SALES_DISCOUNT', at, doc.discountMinor, scope),
     cr('SALES_REVENUE', at, doc.revenueMinor, scope),
@@ -216,8 +275,197 @@ export function saleEntry(doc: SaleDocument): ProposedEntry {
 
   assertBalances('sale', lines);
   return {
-    sourceKind: doc.tender === 'CREDIT' ? 'credit_sale' : 'cash_sale',
+    // Stable across the change from INFERRED to RECORDED tender: a sale that
+    // charged an account is a credit sale, exactly as the sweep classified it
+    // before tenders existed, so an exception opened under the old inference
+    // is resolved by the same (source_kind, source_id) key.
+    sourceKind: onAccount > 0n ? 'credit_sale' : 'cash_sale',
     sourceId: doc.saleId,
+    documentDate: doc.businessDate,
+    lines,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Voids and returns (migration 0030) — 05 §5.3 and §5.6.2 rule 10
+// ---------------------------------------------------------------------------
+
+/**
+ * A void or a return, as the ledger needs it. Every figure is a NON-NEGATIVE
+ * magnitude of what is being reversed (0030's sign convention); `refunds` are
+ * how the money went back, one part per role — Σ must equal the document's
+ * total, which the database asserted at commit (SRET0006).
+ */
+export interface SaleReturnDocument {
+  readonly returnId: string;
+  readonly kind: 'VOID' | 'RETURN';
+  /** The original sale's location: returns are taken there (SRET0001). */
+  readonly locationId: string;
+  readonly businessDate: string;
+  readonly refunds: readonly SaleTenderPart[];
+  readonly customerId?: string | undefined;
+  readonly revenueMinor: bigint;
+  readonly discountMinor: bigint;
+  readonly taxes: readonly SaleTaxComponent[];
+  /** Cost of what came back. 0n while Q16 has no costing method (see the sweep). */
+  readonly costMinor: bigint;
+  readonly productCategoryId?: string | undefined;
+}
+
+function swapSides(lines: readonly ProposedLine[]): ProposedLine[] {
+  return lines.map((l) => ({ ...l, debitMinor: l.creditMinor, creditMinor: l.debitMinor }));
+}
+
+/**
+ * A VOID is the sale's own entry with the sides swapped — 05 §5.3: "a reversal
+ * is generated, never hand-keyed: the same code path, run with the sides
+ * swapped". It is computed from the VOID document's figures (which 0030's
+ * SRET0014 pins to the original's exactly) rather than by `reverses_entry_id`
+ * against the original's journal entry, so a void never waits on its sale's
+ * posting and an exception on one cannot strand the other. The statement-
+ * level result is the same and is tested: Σ(sale + void) = 0 on every
+ * (role, location) pair. Gross sales fall by the voided sale — correct for a
+ * sale rung in error, which never happened.
+ *
+ * A RETURN is rule 10: CONTRA-revenue, so gross sales stay recoverable.
+ *
+ *   Dr SALES_RETURNS — the revenue reversed, NET of its discount
+ *   Dr OUTPUT_TAX    — one line per component, at the amounts charged
+ *   Dr INVENTORY / Cr COGS — at cost (0 until Q16)
+ *   Cr TILL_CASH / MOMO_WALLET / BANK / AR_TRADE — how the money went back
+ *
+ * NEEDS AN ACCOUNTANT (CLAUDE.md §2.8): whether a returned line's DISCOUNT
+ * should instead credit SALES_DISCOUNT back (keeping SALES_RETURNS gross).
+ * Either balances; this rule takes the simpler reading and names it.
+ */
+export function saleReturnEntry(doc: SaleReturnDocument): ProposedEntry {
+  const taxTotal = doc.taxes.reduce((a, t) => a + t.taxMinor, 0n);
+  const totalMinor = doc.revenueMinor - doc.discountMinor + taxTotal;
+  if (totalMinor === 0n && doc.costMinor === 0n) {
+    throw new UnbalancedRuleError('sale_return', 'a return with no value and no cost has nothing to post');
+  }
+  const byRole = new Map<SettlementRole, bigint>();
+  for (const r of doc.refunds) {
+    if (!isSettlementRole(r.role)) {
+      throw new UnbalancedRuleError('sale_return', `refund role ${String(r.role)} is not a settlement role`);
+    }
+    if (r.amountMinor < 0n) {
+      throw new UnbalancedRuleError('sale_return', `a refund of ${r.amountMinor} on ${r.role} is negative`);
+    }
+    byRole.set(r.role, (byRole.get(r.role) ?? 0n) + r.amountMinor);
+  }
+  let refunded = 0n;
+  for (const v of byRole.values()) refunded += v;
+  if (refunded !== totalMinor) {
+    throw new UnbalancedRuleError('sale_return', `refunds sum to ${refunded} but the document's total is ${totalMinor}`);
+  }
+
+  if (doc.kind === 'VOID') {
+    const original = saleEntry({
+      saleId: doc.returnId,
+      locationId: doc.locationId,
+      businessDate: doc.businessDate,
+      tenders: doc.refunds,
+      customerId: doc.customerId,
+      revenueMinor: doc.revenueMinor,
+      discountMinor: doc.discountMinor,
+      taxes: doc.taxes,
+      costMinor: doc.costMinor,
+      productCategoryId: doc.productCategoryId,
+    });
+    const lines = swapSides(original.lines);
+    assertBalances('sale_void', lines);
+    return { sourceKind: 'sale_void', sourceId: doc.returnId, documentDate: doc.businessDate, lines };
+  }
+
+  const onAccount = byRole.get('AR_TRADE') ?? 0n;
+  if (onAccount > 0n && doc.customerId === undefined) {
+    throw new UnbalancedRuleError('sale_return', 'an account credit with no customer cannot be posted to AR');
+  }
+  const at = doc.locationId;
+  const scope = doc.productCategoryId === undefined ? {} : { productCategoryId: doc.productCategoryId };
+  const customer =
+    doc.customerId !== undefined ? { counterpartyKind: 'customer' as const, counterpartyId: doc.customerId } : {};
+  const lines = live([
+    dr('SALES_RETURNS', at, doc.revenueMinor - doc.discountMinor, scope),
+    ...doc.taxes.map((t) => dr('OUTPUT_TAX', at, t.taxMinor, { memo: t.taxCode })),
+    dr('INVENTORY', at, doc.costMinor, scope),
+    cr('COGS', at, doc.costMinor, scope),
+    ...SETTLEMENT_ROLES.map((role) => cr(role, at, byRole.get(role) ?? 0n, role === 'AR_TRADE' ? customer : {})),
+  ]);
+  assertBalances('sale_return', lines);
+  return { sourceKind: 'sale_return', sourceId: doc.returnId, documentDate: doc.businessDate, lines };
+}
+
+// ---------------------------------------------------------------------------
+// Rules 11 and 11b — closing a till
+// ---------------------------------------------------------------------------
+
+/**
+ * A closed cash session, as the ledger needs it. Every figure is the SERVER's,
+ * frozen on `app.cash_session` at close (migration 0020) — never the device's.
+ */
+export interface CashSessionCloseDocument {
+  readonly sessionId: string;
+  /** The outlet whose till this is. Every line lands here. */
+  readonly locationId: string;
+  readonly businessDate: string;
+  /** Cash taken out of the drawer for the bank at close (rule 11). */
+  readonly bankedMinor: bigint;
+  /**
+   * counted − expected (rule 11b). Negative is a SHORTAGE, positive an
+   * OVERAGE. A session nobody counted (the midnight auto-close) has no
+   * variance; the caller passes 0n, never a guess.
+   */
+  readonly varianceMinor: bigint;
+}
+
+/**
+ * Rules 11 (leg 1) and 11b in ONE entry, because the close is one document
+ * (05 §5.2.4) and both halves are facts about the same drawer at the same
+ * moment.
+ *
+ *   Rule 11  — cash leaves the till for the bank:  Dr CASH_IN_TRANSIT / Cr TILL_CASH.
+ *              A real asset in a real place. Leg 2 (rule 11a) — the bank
+ *              credits the account — clears it, and is bank reconciliation's
+ *              document, not the till's.
+ *   Rule 11b — the count disagrees with what the drawer should hold:
+ *              short:  Dr CASH_OVER_SHORT / Cr TILL_CASH
+ *              over:   Dr TILL_CASH       / Cr CASH_OVER_SHORT   (the sign reverses)
+ *
+ * All at the counting location: a till count is an outlet activity (§5.6.2).
+ * This rule does not compute the variance — the close did, and froze it.
+ */
+export function cashSessionCloseEntry(doc: CashSessionCloseDocument): ProposedEntry {
+  if (doc.bankedMinor < 0n) {
+    throw new UnbalancedRuleError('cash_session_close', `banked ${doc.bankedMinor} is negative`);
+  }
+  if (doc.bankedMinor === 0n && doc.varianceMinor === 0n) {
+    throw new UnbalancedRuleError(
+      'cash_session_close',
+      'a till closed with nothing banked and no variance has nothing to post',
+    );
+  }
+  const at = doc.locationId;
+  const short = doc.varianceMinor < 0n ? -doc.varianceMinor : 0n;
+  const over = doc.varianceMinor > 0n ? doc.varianceMinor : 0n;
+
+  const lines = live([
+    // Rule 11, leg 1.
+    dr('CASH_IN_TRANSIT', at, doc.bankedMinor),
+    cr('TILL_CASH', at, doc.bankedMinor, { memo: 'banked at close' }),
+    // Rule 11b — a shortage.
+    dr('CASH_OVER_SHORT', at, short),
+    cr('TILL_CASH', at, short, { memo: 'count short' }),
+    // Rule 11b — an overage.
+    dr('TILL_CASH', at, over, { memo: 'count over' }),
+    cr('CASH_OVER_SHORT', at, over),
+  ]);
+
+  assertBalances('cash_session_close', lines);
+  return {
+    sourceKind: 'cash_session_close',
+    sourceId: doc.sessionId,
     documentDate: doc.businessDate,
     lines,
   };

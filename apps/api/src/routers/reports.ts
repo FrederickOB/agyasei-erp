@@ -139,36 +139,47 @@ interface SalesRow {
  * total = subtotal − discount + tax. Summing exact integers preserves that,
  * so the aggregate identity holds for the same reason the row one does.
  *
- * VOIDS: `app.sale.voids_sale_id` exists and nothing writes it yet — there is
- * no void endpoint in Phase 1 (`sale.void` is catalogued and unimplemented).
- * When voiding lands, the compensating document's sign convention decides
- * whether this aggregate needs a predicate. Written down here, in the query
- * it would affect, so that it is a decision somebody makes rather than an
- * omission somebody discovers.
+ * VOIDS AND RETURNS (0030) are their own documents, `app.sale_return`, with
+ * POSITIVE magnitudes; nothing is ever written to the original sale. These
+ * figures are NET of them, in the period the void or return happened (its
+ * own business date — the till the refund left), which is how the books post
+ * them (rule 10 contra-revenue; a void reverses its sale's entry). The sale
+ * COUNT counts sales only: a return is not a negative sale.
  */
-const SALES_BY_LOCATION_SQL = `
-  select s.location_id,
-         count(*)::bigint::text                              as sale_count,
-         coalesce(sum(s.subtotal_net_minor), 0)::bigint::text as subtotal_net_minor,
-         coalesce(sum(s.discount_minor), 0)::bigint::text     as discount_minor,
-         coalesce(sum(s.tax_total_minor), 0)::bigint::text    as tax_total_minor,
-         coalesce(sum(s.total_minor), 0)::bigint::text        as total_minor
+const SALES_AND_RETURNS_SQL = `
+  select s.location_id, s.business_date, 1 as n,
+         s.subtotal_net_minor as subtotal, s.discount_minor as discount,
+         s.tax_total_minor as tax, s.total_minor as total
     from app.sale s
    where s.location_id = any($1::uuid[])
      and s.business_date between $2::date and $3::date
-   group by s.location_id
+  union all
+  select r.location_id, r.business_date, 0,
+         -r.subtotal_net_minor, -r.discount_minor, -r.tax_total_minor, -r.total_minor
+    from app.sale_return r
+   where r.location_id = any($1::uuid[])
+     and r.business_date between $2::date and $3::date
+`;
+
+const SALES_BY_LOCATION_SQL = `
+  select x.location_id,
+         coalesce(sum(x.n), 0)::bigint::text        as sale_count,
+         coalesce(sum(x.subtotal), 0)::bigint::text as subtotal_net_minor,
+         coalesce(sum(x.discount), 0)::bigint::text as discount_minor,
+         coalesce(sum(x.tax), 0)::bigint::text      as tax_total_minor,
+         coalesce(sum(x.total), 0)::bigint::text    as total_minor
+    from (${SALES_AND_RETURNS_SQL}) x
+   group by x.location_id
 `;
 
 /** The same predicate, aggregated WITHOUT the grouping. Rule 1's other half. */
 const SALES_TOTAL_SQL = `
-  select count(*)::bigint::text                               as sale_count,
-         coalesce(sum(s.subtotal_net_minor), 0)::bigint::text  as subtotal_net_minor,
-         coalesce(sum(s.discount_minor), 0)::bigint::text      as discount_minor,
-         coalesce(sum(s.tax_total_minor), 0)::bigint::text     as tax_total_minor,
-         coalesce(sum(s.total_minor), 0)::bigint::text         as total_minor
-    from app.sale s
-   where s.location_id = any($1::uuid[])
-     and s.business_date between $2::date and $3::date
+  select coalesce(sum(x.n), 0)::bigint::text        as sale_count,
+         coalesce(sum(x.subtotal), 0)::bigint::text as subtotal_net_minor,
+         coalesce(sum(x.discount), 0)::bigint::text as discount_minor,
+         coalesce(sum(x.tax), 0)::bigint::text      as tax_total_minor,
+         coalesce(sum(x.total), 0)::bigint::text    as total_minor
+    from (${SALES_AND_RETURNS_SQL}) x
 `;
 
 interface SalesFigures {
@@ -251,17 +262,15 @@ async function loadSales(
  * location (never the server clock), so a day here is a day on that till.
  */
 const SALES_BY_DAY_SQL = `
-  select s.business_date::text                                as business_date,
-         count(*)::bigint::text                               as sale_count,
-         coalesce(sum(s.subtotal_net_minor), 0)::bigint::text as subtotal_net_minor,
-         coalesce(sum(s.discount_minor), 0)::bigint::text     as discount_minor,
-         coalesce(sum(s.tax_total_minor), 0)::bigint::text    as tax_total_minor,
-         coalesce(sum(s.total_minor), 0)::bigint::text        as total_minor
-    from app.sale s
-   where s.location_id = any($1::uuid[])
-     and s.business_date between $2::date and $3::date
-   group by s.business_date
-   order by s.business_date
+  select x.business_date::text                      as business_date,
+         coalesce(sum(x.n), 0)::bigint::text        as sale_count,
+         coalesce(sum(x.subtotal), 0)::bigint::text as subtotal_net_minor,
+         coalesce(sum(x.discount), 0)::bigint::text as discount_minor,
+         coalesce(sum(x.tax), 0)::bigint::text      as tax_total_minor,
+         coalesce(sum(x.total), 0)::bigint::text    as total_minor
+    from (${SALES_AND_RETURNS_SQL}) x
+   group by x.business_date
+   order by x.business_date
 `;
 
 interface SalesDayRow extends Omit<SalesRow, 'location_id'> {
@@ -609,34 +618,38 @@ export const reportsRouter = router({
   }),
 
   /**
-   * Cash position by location, by tender.
+   * Cash position by location, by tender method — and the tills behind it.
    *
    * ═════════════════════════════════════════════════════════════════════════
    * READ THIS BEFORE QUOTING A FIGURE FROM IT — what it is and is not
    * ═════════════════════════════════════════════════════════════════════════
-   * It reports what each till BILLED, split by how the sale was settled. It
-   * is NOT a cash-drawer position, and the difference is not pedantic:
+   * It reports what each location TOOK, split by HOW it was paid, from
+   * `app.sale_tender` (migration 0021) — one row per way a customer paid, so a
+   * sale settled part in cash and part by mobile money counts in both. Until
+   * 0021 the split was INFERRED (credit iff a CHARGE named the sale, everything
+   * else "immediate") and mobile money was invisible; it is recorded now.
    *
-   *  · `app.sale` has NO tender column. Settlement is derived from the credit
-   *    ledger — a sale is on credit exactly when a CHARGE entry names it
-   *    (`source_kind = 'SALE'`, `source_id = sale.id`), which `sales.ts`
-   *    writes for a CREDIT tender and for nothing else. Exact today, and
-   *    derived rather than stored, which is why it is stated here.
-   *  · Cash TENDERED and change given are not recorded anywhere: the sale
-   *    contract refuses them because there is no table to put them in
-   *    (`packages/contracts/src/sale.ts`, decision (a)). So this cannot tell
-   *    you what is in the drawer, only what should have gone into it.
-   *  · There is no cash session, opening float, drop or variance model, so a
-   *    till reconciliation cannot be produced at all. That is a Phase 1 gap,
-   *    not a limitation of this query.
+   *  · `immediateTenderMinor` is every tender received at the counter — cash,
+   *    mobile money, transfer, cheque; `creditTenderMinor` is what went on
+   *    account. Both are sums of TENDERS, and the identity that holds is
+   *        immediate + credit = Σ sale.total_minor = billed
+   *    per location and in total, because migration 0022 makes Σ tenders =
+   *    total for every sale. The router refuses to answer if it ever fails.
+   *  · `tenders[]` is the same money by the tenant's own methods. The method's
+   *    code and name are tenant data, rendered and never branched on; what the
+   *    report reads is `is_cash` / `is_on_account`, platform properties
+   *    derived from the method's posting role.
+   *  · `tills` is the cash-up view: sessions opened in the range, how many are
+   *    closed and counted, and the net count variance. A till whose count
+   *    disagrees is a number a person must explain; that is the pilot's
+   *    "reconciles to the pesewa" criterion (09 §9.7.1), read off the books'
+   *    own source documents.
+   *  · Sales recorded before 0021 settle under two inactive methods the
+   *    migration created and named as such — history is reported, not hidden.
    *  · Payments RECEIVED against credit accounts have no location:
    *    `app.credit_entry` carries no `location_id`. They are reported once,
    *    tenant-wide, under `unattributed` — never spread across locations on a
    *    guess.
-   *
-   * Mobile money is not a separate tender in the platform's vocabulary; the
-   * wire contract's tender enum is CASH | CREDIT, and `sale.record`'s own
-   * catalogue description folds mobile money into immediate settlement.
    */
   cashPosition: reportProcedure.input(cashPositionReportInput).query(async ({ ctx, input }) => {
     const scope = await resolveLocationScope(ctx, {
@@ -648,41 +661,108 @@ export const reportsRouter = router({
 
     const result = await ctx.deps.runner.withTenant(ctx.identity.tenantId, async (tx) => {
       const ids = [...scope.locationIds];
-      const settled = `
-        select s.location_id,
-               s.total_minor,
-               exists (
-                 select 1 from app.credit_entry ce
-                  where ce.source_kind = 'SALE'
-                    and ce.source_id = s.id
-                    and ce.kind = 'CHARGE'
-               ) as on_credit
-          from app.sale s
-         where s.location_id = any($1::uuid[])
-           and s.business_date between $2::date and $3::date
-      `;
-      const rows = await tx.query<{
+      // One row per (location, method): the recorded tenders of sales whose
+      // business date is in range. Money summed in SQL and cast straight back
+      // to bigint text — sum(bigint) is numeric and must never surface.
+      const byMethod = await tx.query<{
         location_id: string;
-        immediate_minor: string;
-        credit_minor: string;
-        immediate_count: string;
-        credit_count: string;
+        method_id: string;
+        code: string;
+        name: string;
+        posting_role: string;
+        is_cash: boolean;
+        is_on_account: boolean;
+        amount_minor: string;
+        sale_count: string;
       }>(
-        `select location_id,
-                coalesce(sum(total_minor) filter (where not on_credit), 0)::bigint::text as immediate_minor,
-                coalesce(sum(total_minor) filter (where on_credit), 0)::bigint::text     as credit_minor,
-                count(*) filter (where not on_credit)::bigint::text                      as immediate_count,
-                count(*) filter (where on_credit)::bigint::text                          as credit_count
-           from (${settled}) t
-          group by location_id`,
+        // NET of refunds (0030): a void's or return's refund leaves through a
+        // method and is subtracted from that method, in the period of the
+        // return. sale_count counts sales only.
+        `select x.location_id, x.method_id, m.code, m.name, m.posting_role,
+                m.is_cash, m.is_on_account,
+                coalesce(sum(x.amount), 0)::bigint::text as amount_minor,
+                count(distinct x.sale_id)::bigint::text  as sale_count
+           from (
+             select st.tenant_id, st.location_id, st.method_id, st.amount_minor as amount, st.sale_id
+               from app.sale_tender st
+               join app.sale s on s.tenant_id = st.tenant_id and s.id = st.sale_id
+              where st.location_id = any($1::uuid[])
+                and s.business_date between $2::date and $3::date
+             union all
+             select rf.tenant_id, r.location_id, rf.method_id, -rf.amount_minor, null::uuid
+               from app.sale_return_refund rf
+               join app.sale_return r on r.tenant_id = rf.tenant_id and r.id = rf.return_id
+              where r.location_id = any($1::uuid[])
+                and r.business_date between $2::date and $3::date
+           ) x
+           join app.tender_method m on m.tenant_id = x.tenant_id and m.id = x.method_id
+          group by x.location_id, x.method_id, m.code, m.name, m.posting_role,
+                   m.is_cash, m.is_on_account
+          order by x.location_id, m.code`,
         [ids, input.from, input.to],
       );
 
-      // Rule 1: the same predicate, aggregated independently.
-      const totalRes = await tx.query<{ immediate_minor: string; credit_minor: string }>(
-        `select coalesce(sum(total_minor) filter (where not on_credit), 0)::bigint::text as immediate_minor,
-                coalesce(sum(total_minor) filter (where on_credit), 0)::bigint::text     as credit_minor
-           from (${settled}) t`,
+      // Per-location sale counts by kind of settlement, and the BILLED total
+      // from the sale headers — aggregated independently of the tender rows,
+      // so the identity below compares two different readings.
+      const perLocation = await tx.query<{
+        location_id: string;
+        billed_minor: string;
+        immediate_count: string;
+        credit_count: string;
+      }>(
+        // Billed NET of voids and returns, read off the document headers —
+        // still a different reading from the tender rows above.
+        `select x.location_id,
+                coalesce(sum(x.billed), 0)::bigint::text  as billed_minor,
+                coalesce(sum(x.imm), 0)::bigint::text     as immediate_count,
+                coalesce(sum(x.cred), 0)::bigint::text    as credit_count
+           from (
+             select s.location_id, s.total_minor as billed,
+                    (exists (select 1 from app.sale_tender st join app.tender_method m
+                               on m.tenant_id = st.tenant_id and m.id = st.method_id
+                              where st.sale_id = s.id and not m.is_on_account))::int as imm,
+                    (exists (select 1 from app.sale_tender st join app.tender_method m
+                               on m.tenant_id = st.tenant_id and m.id = st.method_id
+                              where st.sale_id = s.id and m.is_on_account))::int as cred
+               from app.sale s
+              where s.location_id = any($1::uuid[])
+                and s.business_date between $2::date and $3::date
+             union all
+             select r.location_id, -r.total_minor, 0, 0
+               from app.sale_return r
+              where r.location_id = any($1::uuid[])
+                and r.business_date between $2::date and $3::date
+           ) x
+          group by x.location_id`,
+        [ids, input.from, input.to],
+      );
+
+      // The tills in range: the cash-up view.
+      const tills = await tx.query<{
+        location_id: string;
+        opened: string;
+        closed: string;
+        counted: string;
+        auto_closed: string;
+        opened_offline: string;
+        variance_minor: string;
+        banked_minor: string;
+        off_count: string;
+      }>(
+        `select location_id,
+                count(*)::bigint::text                                          as opened,
+                count(*) filter (where status = 'CLOSED')::bigint::text         as closed,
+                count(*) filter (where counted_minor is not null)::bigint::text as counted,
+                count(*) filter (where auto_closed)::bigint::text               as auto_closed,
+                count(*) filter (where opened_offline)::bigint::text            as opened_offline,
+                coalesce(sum(variance_minor), 0)::bigint::text                  as variance_minor,
+                coalesce(sum(banked_minor), 0)::bigint::text                    as banked_minor,
+                count(*) filter (where variance_minor <> 0)::bigint::text       as off_count
+           from app.cash_session
+          where location_id = any($1::uuid[])
+            and business_date between $2::date and $3::date
+          group by location_id`,
         [ids, input.from, input.to],
       );
 
@@ -697,40 +777,124 @@ export const reportsRouter = router({
         [input.from, input.to],
       );
 
-      return { rows: rows.rows, total: totalRes.rows[0]!, receipts: receipts.rows[0]! };
+      return {
+        byMethod: byMethod.rows,
+        perLocation: perLocation.rows,
+        tills: tills.rows,
+        receipts: receipts.rows[0]!,
+      };
     });
 
-    const byLocation = new Map(result.rows.map((r) => [r.location_id, r]));
-    const partsImmediate = result.rows.reduce((a, r) => a + BigInt(r.immediate_minor), 0n);
-    const partsCredit = result.rows.reduce((a, r) => a + BigInt(r.credit_minor), 0n);
-    const totalImmediate = BigInt(result.total.immediate_minor);
-    const totalCredit = BigInt(result.total.credit_minor);
-    assertAggregateIdentity('cashPosition.immediateMinor', partsImmediate, totalImmediate);
-    assertAggregateIdentity('cashPosition.creditMinor', partsCredit, totalCredit);
+    interface MethodTotal {
+      methodId: string;
+      code: string;
+      name: string;
+      postingRole: string;
+      isCash: boolean;
+      isOnAccount: boolean;
+      amount: bigint;
+      saleCount: bigint;
+    }
+    const methodsByLocation = new Map<string, MethodTotal[]>();
+    const network = new Map<string, MethodTotal>();
+    for (const r of result.byMethod) {
+      const row: MethodTotal = {
+        methodId: r.method_id,
+        code: r.code,
+        name: r.name,
+        postingRole: r.posting_role,
+        isCash: r.is_cash,
+        isOnAccount: r.is_on_account,
+        amount: BigInt(r.amount_minor),
+        saleCount: BigInt(r.sale_count),
+      };
+      methodsByLocation.set(r.location_id, [...(methodsByLocation.get(r.location_id) ?? []), row]);
+      const agg = network.get(r.method_id);
+      if (agg) {
+        agg.amount += row.amount;
+        agg.saleCount += row.saleCount;
+      } else {
+        network.set(r.method_id, { ...row });
+      }
+    }
+    const sumOf = (rows: readonly MethodTotal[], onAccount: boolean): bigint =>
+      rows.filter((m) => m.isOnAccount === onAccount).reduce((a, m) => a + m.amount, 0n);
+    const methodDto = (m: MethodTotal) => ({
+      methodId: m.methodId,
+      code: m.code,
+      name: m.name,
+      postingRole: m.postingRole,
+      isCash: m.isCash,
+      isOnAccount: m.isOnAccount,
+      amountMinor: wire(m.amount),
+      saleCount: wire(m.saleCount),
+    });
+
+    const salesByLocation = new Map(result.perLocation.map((r) => [r.location_id, r]));
+    const tillsByLocation = new Map(result.tills.map((r) => [r.location_id, r]));
+
+    let totalImmediate = 0n;
+    let totalCredit = 0n;
+    let totalBilled = 0n;
+    const locations = scope.locations.map((l) => {
+      const methods = methodsByLocation.get(l.id) ?? [];
+      const immediate = sumOf(methods, false);
+      const credit = sumOf(methods, true);
+      const sales = salesByLocation.get(l.id);
+      const billed = sales ? BigInt(sales.billed_minor) : 0n;
+      // THE IDENTITY, per location: tenders settle the sale headers exactly.
+      assertAggregateIdentity(`cashPosition.tenders(${l.code})`, immediate + credit, billed);
+      totalImmediate += immediate;
+      totalCredit += credit;
+      totalBilled += billed;
+      const t = tillsByLocation.get(l.id);
+      return {
+        ...locationHeader(l),
+        /** Received at the counter: cash, mobile money, transfer, cheque. */
+        immediateTenderMinor: wire(immediate),
+        immediateSaleCount: sales ? sales.immediate_count : '0',
+        /** Settled onto a customer account. */
+        creditTenderMinor: wire(credit),
+        creditSaleCount: sales ? sales.credit_count : '0',
+        billedTotalMinor: wire(billed),
+        /** The same money by the tenant's own methods. Names are tenant data. */
+        tenders: methods.map(methodDto),
+        tills: {
+          opened: t ? t.opened : '0',
+          closed: t ? t.closed : '0',
+          counted: t ? t.counted : '0',
+          autoClosed: t ? t.auto_closed : '0',
+          openedOffline: t ? t.opened_offline : '0',
+          /** Σ (counted − expected) over counted tills. Zero means every count reconciled. */
+          varianceMinor: t ? t.variance_minor : '0',
+          /** Tills whose count did not match to the minor unit. */
+          offCount: t ? t.off_count : '0',
+          bankedMinor: t ? t.banked_minor : '0',
+        },
+      };
+    });
+
+    // …and in total: Σ locations, and Σ methods, both equal billed.
+    const networkMethods = [...network.values()].sort((a, b) =>
+      a.code < b.code ? -1 : a.code > b.code ? 1 : 0,
+    );
+    assertAggregateIdentity(
+      'cashPosition.methods',
+      networkMethods.reduce((a, m) => a + m.amount, 0n),
+      totalImmediate + totalCredit,
+    );
+    assertAggregateIdentity('cashPosition.billed', totalImmediate + totalCredit, totalBilled);
 
     return {
       from: input.from,
       to: input.to,
       scope: { network: scope.network, locationCount: scope.locations.length },
-      locations: scope.locations.map((l) => {
-        const r = byLocation.get(l.id);
-        const immediate = r ? BigInt(r.immediate_minor) : 0n;
-        const credit = r ? BigInt(r.credit_minor) : 0n;
-        return {
-          ...locationHeader(l),
-          /** Sales settled at the counter (cash or mobile money). */
-          immediateTenderMinor: wire(immediate),
-          immediateSaleCount: r ? r.immediate_count : '0',
-          /** Sales settled onto a customer credit account — no cash today. */
-          creditTenderMinor: wire(credit),
-          creditSaleCount: r ? r.credit_count : '0',
-          billedTotalMinor: wire(immediate + credit),
-        };
-      }),
+      locations,
       total: {
         immediateTenderMinor: wire(totalImmediate),
         creditTenderMinor: wire(totalCredit),
-        billedTotalMinor: wire(totalImmediate + totalCredit),
+        billedTotalMinor: wire(totalBilled),
+        tenders: networkMethods.map(methodDto),
       },
       unattributed: {
         /** Payments received against credit accounts, tenant-wide. */
@@ -740,9 +904,9 @@ export const reportsRouter = router({
           'till that took it. Reported once, tenant-wide, never apportioned.',
       },
       caveats: [
-        'Derived settlement: app.sale has no tender column; a sale counts as credit exactly when a CHARGE credit_entry names it.',
-        'Cash tendered and change are not recorded anywhere, so this is what the till billed, not what is in the drawer.',
-        'No cash session, opening float, drop or variance model exists — a till reconciliation cannot be produced.',
+        'Settlement is recorded per tender (app.sale_tender): a split sale counts under each method it used.',
+        'The note handed over and the change given are receipt facts kept on the device; the drawer figures are the cash applied.',
+        'Sales recorded before tender methods existed appear under two inactive methods named for that.',
       ],
     };
   }),

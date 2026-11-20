@@ -79,7 +79,7 @@ describe('random carts: totals are exact bigint identities', () => {
       });
       const businessDate = dates[Math.floor(rng() * dates.length)]!;
 
-      const sale = await caller.sales.createSale({
+      const sale = await caller.sales.createSale(await h.legacySale({
         idempotencyKey: uuidv7(),
         locationId: outletId,
         priceListCode: 'WHOLESALE',
@@ -87,7 +87,7 @@ describe('random carts: totals are exact bigint identities', () => {
         businessDate,
         tender: 'CASH',
         lines,
-      });
+      }));
 
       // (1) Inside the response.
       let net = 0n;

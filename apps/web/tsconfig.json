@@ -16,5 +16,5 @@
       "@erp/money": ["../../packages/money/src/index.ts"]
     }
   },
-  "include": ["src", "tests", "vite.config.ts"]
+  "include": ["src", "tests", "e2e", "vite.config.ts", "playwright.config.ts", "playwright.live.config.ts"]
 }

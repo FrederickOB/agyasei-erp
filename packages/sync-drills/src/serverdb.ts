@@ -7,6 +7,7 @@
  * used ONLY for cross-checks that deliberately bypass tenant scoping is NOT
  * offered: predictions for D5 are tenant-scoped by construction.
  */
+import { createHash } from 'node:crypto';
 import pg from 'pg';
 import { createHlcClock, hlcNodeFromName, uuidv7, sha256Hex, type HlcClock } from '@erp/db';
 import { provisionPrincipal } from '@erp/db/seed';
@@ -117,8 +118,64 @@ export class ServerDb {
     });
   }
 
+  /**
+   * Enrol a drill device in `app.device`, with its location as its ceiling.
+   *
+   * Since migration 0024 every sync bucket is keyed on the token's `did` AND
+   * `sub` through `app.device_sync_*`: a token whose device is not an ACTIVE
+   * row in `app.device` — or whose user's scope does not meet the device's
+   * ceiling — receives NOTHING, which is the point (02 §2.3 Contract 1). So a
+   * drill device must be a real enrolled device, exactly as a till is. The key
+   * is a placeholder: the drills speak the DEV HS256 path, which carries no
+   * proof-of-possession; the DPoP path is proven in apps/api's identity suite.
+   *
+   * Call AFTER the device's principal is provisioned (enrolled_by is that user).
+   */
+  async enrolDevice(
+    tenantId: string,
+    d: { deviceId: string; userId: string; name: string; locationId: string },
+  ): Promise<void> {
+    const jkt = createHash('sha256').update(`drill-device:${d.deviceId}`).digest('base64url');
+    await this.withTenant(tenantId, async (tx) => {
+      const writeId = uuidv7();
+      await tx.query(
+        `insert into app.write_log (tenant_id, id, origin, hlc, device_id, user_id, op, schema_version, request_hash)
+         values ($1, $2, 'SERVER', $3, $4, $5, 'drill.enrol_device', 1, decode($6, 'hex'))`,
+        [tenantId, writeId, this.clock.next(), d.deviceId, d.userId, sha256Hex(`drill.enrol:${d.deviceId}:${writeId}`)],
+      );
+      await tx.query(
+        `insert into app.device (tenant_id, id, write_id, hlc, label, form_factor, public_jwk, jkt, status, enrolled_by)
+         values ($1, $2, $3, $4, $5, 'tablet', '{"kty":"EC","crv":"P-256","drill":true}'::jsonb, $6, 'active', $7)
+         on conflict do nothing`,
+        [tenantId, d.deviceId, writeId, this.clock.next(), `Drill ${d.name}`.slice(0, 80), jkt, d.userId],
+      );
+      await tx.query(
+        `insert into app.device_location_scope (tenant_id, id, write_id, hlc, device_id, location_id, added_by)
+         values ($1, $2, $3, $4, $5, $6, $7)
+         on conflict do nothing`,
+        [tenantId, uuidv7(), writeId, this.clock.next(), d.deviceId, d.locationId, d.userId],
+      );
+    });
+  }
+
   /** A STOCKED, sellable product whose default sell unit is its stocking
    *  unit at qty_scale 0 (the same pick rule the API tests use). */
+  /**
+   * The tenant's drawer-cash tender method (migration 0020), found by its
+   * PLATFORM property — never by a code or a name, which are tenant words.
+   */
+  async cashMethod(tenantId: string): Promise<string> {
+    return this.withTenant(tenantId, async (tx) => {
+      const res = await tx.query<{ id: string }>(
+        `select id from app.tender_method
+          where is_cash and is_active and deleted_at is null order by sort_order, id limit 1`,
+      );
+      const id = res.rows[0]?.id;
+      if (!id) throw new Error(`tenant ${tenantId} has no cash tender method — re-run pnpm stack:bootstrap`);
+      return id;
+    });
+  }
+
   async pickProduct(tenantId: string): Promise<{ id: string; skuCode: string; uomId: string }> {
     return this.withTenant(tenantId, async (tx) => {
       const res = await tx.query<{ id: string; sku_code: string; uom_id: string }>(
@@ -244,6 +301,10 @@ export class ServerDb {
     tenantId: string,
     locationId: string,
     userId?: string,
+    /** The enrolled device. Since migration 0024 the counter's credit slice is
+     *  user scope ∩ DEVICE scope (02 §2.5), so a prediction without the device
+     *  predicts the pre-0024 rule — the one D8 was red against. */
+    deviceId?: string,
   ): Promise<Record<string, number>> {
     const refTables = [
       'location', 'location_type', 'unit_of_measure', 'product_category',
@@ -344,11 +405,13 @@ export class ServerDb {
     }
 
     // The counter's slice is keyed (tenant, location) and gated on
-    // sale.record.credit AT THAT LOCATION, intersected with location scope.
+    // sale.record.credit AT THAT LOCATION, intersected with location scope —
+    // and, since 0024, with where THIS DEVICE is enrolled: read the same
+    // device projection the `location_credit_allowance` parameter query reads.
     const locScope =
-      userId === undefined
+      userId === undefined || deviceId === undefined
         ? []
-        : await this.locationScopeFor(tenantId, userId);
+        : await this.deviceCreditScopeFor(tenantId, deviceId, userId);
     if (locScope.length === 0) {
       out['credit_allowance'] = 0;
     } else {
@@ -361,8 +424,22 @@ export class ServerDb {
     return out;
   }
 
-  /** The (tenant, user) rows of the location-scope gate the
-   *  `location_credit_allowance` parameter query reads. */
+  /** The locations whose credit allowance THIS device may hold for THIS
+   *  user — exactly the rows `location_credit_allowance`'s parameter query
+   *  selects (infra/powersync/sync_rules.yaml, migration 0024). */
+  async deviceCreditScopeFor(tenantId: string, deviceId: string, userId: string): Promise<string[]> {
+    return this.withTenant(tenantId, async (tx) => {
+      const r = await tx.query<{ location_id: string }>(
+        `select location_id from app.device_sync_location_scope
+          where device_id = $1 and user_id = $2 and credit_allowance = 'allowance'`,
+        [deviceId, userId],
+      );
+      return r.rows.map((x) => x.location_id);
+    });
+  }
+
+  /** The (tenant, user) rows of 0013's user-level location-scope projection
+   *  (an INPUT to the device projection since 0024, not the gate itself). */
   async locationScopeFor(tenantId: string, userId: string): Promise<string[]> {
     return this.withTenant(tenantId, async (tx) => {
       const r = await tx.query<{ location_id: string }>(
@@ -445,6 +522,9 @@ export class ServerDb {
   async refreshCreditScope(tenantId: string): Promise<void> {
     await this.withTenant(tenantId, async (tx) => {
       await tx.query(`select app.refresh_credit_sync_scope($1)`, [tenantId]);
+      // …and the device projection every bucket's parameter query reads
+      // (0024), in the order the production reconciler runs them.
+      await tx.query(`select app.refresh_device_sync_scope($1)`, [tenantId]);
     });
   }
 

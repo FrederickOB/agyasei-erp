@@ -21,7 +21,7 @@ import { CONFIG_KEY_PRICE_LIST_ID, readActivePriceListId } from '../src/data/que
 import { blocksSale, resolveCartPriceList } from '../src/data/session/device-price-list';
 import { readPendingOps } from '../src/data/sync/upload';
 import { uuidv7 } from '../src/lib/uuidv7';
-import { fixedHlc, provisionDevice, seedProduct } from './helpers/fixtures';
+import { ensureOpenTill, fixedHlc, provisionDevice, seedProduct } from './helpers/fixtures';
 import { openTestDb } from './helpers/node-db';
 
 const TODAY = '2026-08-21';
@@ -220,6 +220,7 @@ describe('starting a fresh cart', () => {
     // Every attempt refuses, and the cart survives every refusal — which is
     // correct, and is also why nothing ever mints a replacement.
     for (let attempt = 0; attempt < 2; attempt += 1) {
+      await ensureOpenTill(db, TODAY);
       await expect(
         checkout(db, { cartId, tenderedMinor: 100_000_000n, hlc: fixedHlc(), nowIso: NOW }),
       ).rejects.toBeInstanceOf(SaleContextIncompleteError);
@@ -285,6 +286,7 @@ describe('starting a fresh cart', () => {
       priceListId: goodListId,
     });
     await addProductToCart(db, freshId, product);
+    await ensureOpenTill(db, TODAY);
     const result = await checkout(db, {
       cartId: freshId,
       tenderedMinor: 100_000_000n,

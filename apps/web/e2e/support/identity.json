@@ -1,0 +1,11 @@
+{
+  "$comment": "The browser tests' device identity. Read by e2e/build.mjs (baked into the e2e build as a dev bearer) and by the fixtures. Every id is a fixture UUID; the API origin is the reserved .invalid TLD, answered only by page routes; the sync URL is a closed local port, so PowerSync is genuinely unreachable.",
+  "apiOrigin": "http://api.e2e.invalid",
+  "powersyncUrl": "http://127.0.0.1:9",
+  "tenantId": "01930000-0000-7000-8000-00000000e2e1",
+  "userId": "01930000-0000-7000-8000-00000000e2e2",
+  "locationId": "01930000-0000-7000-8000-00000000e2e3",
+  "otherLocationId": "01930000-0000-7000-8000-00000000e2e4",
+  "priceListId": "01930000-0000-7000-8000-00000000e2e5",
+  "buildId": "e2e"
+}

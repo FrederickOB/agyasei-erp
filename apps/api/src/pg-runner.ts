@@ -17,24 +17,53 @@
  * JS `number` on this path (ADR-0004).
  */
 import pg from 'pg';
-import type { AdminRunner, Queryable, TenantRunner } from './db.js';
+import type { AdminRunner, PreTenantRunner, Queryable, TenantRunner } from './db.js';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export interface PgRunners {
   runner: TenantRunner;
-  admin: AdminRunner;
+  /** Undefined when the operator plane is disabled (production default). */
+  admin: AdminRunner | undefined;
+  /** app_user, no tenant GUC — the two pre-tenant route lookups only. */
+  preTenant: PreTenantRunner;
+  /**
+   * One statement as the CONNECTING role, outside any tenant context — for
+   * health checks against non-tenant tables only (erp_meta). Forced RLS
+   * makes `app.*` return nothing here, by design.
+   */
+  query<T>(sql: string, params?: unknown[]): Promise<{ rows: T[] }>;
   close(): Promise<void>;
 }
 
-export function createPgRunners(databaseUrl: string): PgRunners {
-  const pool = new pg.Pool({ connectionString: databaseUrl, max: 10 });
+export interface PgRunnerOptions {
+  /** Full pool config (TLS, size, timeouts) — production builds it with @erp/ops pgPoolConfig. */
+  poolConfig?: pg.PoolConfig;
+  /**
+   * Where operator-plane statements run:
+   *  - 'same-pool' (default, dev): the tenant pool's own credential;
+   *  - a pool config: a separate operator credential (erp_operator);
+   *  - 'disabled': no operator plane at all; operator procedures refuse.
+   */
+  operator?: 'same-pool' | 'disabled' | pg.PoolConfig;
+}
+
+export function createPgRunners(databaseUrl: string, options: PgRunnerOptions = {}): PgRunners {
+  const pool = new pg.Pool(options.poolConfig ?? { connectionString: databaseUrl, max: 10 });
+  // An idle pooled connection dropping (pooler restart, failover) must not
+  // crash the process; the next checkout reconnects.
+  pool.on('error', () => undefined);
+  const operator = options.operator ?? 'same-pool';
+  const operatorPool =
+    operator === 'same-pool' ? pool : operator === 'disabled' ? null : new pg.Pool(operator);
+  operatorPool?.on('error', () => undefined);
 
   async function inTransaction<T>(
     setup: (tx: Queryable) => Promise<void>,
     fn: (tx: Queryable) => Promise<T>,
+    on: pg.Pool = pool,
   ): Promise<T> {
-    const client = await pool.connect();
+    const client = await on.connect();
     const tx: Queryable = {
       query: async <R>(sql: string, params?: unknown[]) => {
         const res = await client.query(sql, params as never);
@@ -73,11 +102,28 @@ export function createPgRunners(databaseUrl: string): PgRunners {
         }, fn);
       },
     },
-    admin: {
-      run(fn) {
-        return inTransaction(async () => undefined, fn);
+    admin:
+      operatorPool === null
+        ? undefined
+        : {
+            run(fn) {
+              return inTransaction(async () => undefined, fn, operatorPool);
+            },
+          },
+    async query<T>(sql: string, params?: unknown[]) {
+      const res = await pool.query(sql, params as never);
+      return { rows: res.rows as T[] };
+    },
+    close: async () => {
+      await pool.end();
+      if (operatorPool !== null && operatorPool !== pool) await operatorPool.end();
+    },
+    preTenant: {
+      withoutTenant(fn) {
+        return inTransaction(async (tx) => {
+          await tx.query('set local role app_user');
+        }, fn);
       },
     },
-    close: () => pool.end(),
   };
 }

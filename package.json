@@ -15,13 +15,17 @@
     "stack:reset": "node infra/scripts/stack.mjs reset",
     "stack:bootstrap": "tsx infra/scripts/bootstrap.ts",
     "dev:token": "node infra/scripts/dev-token.mjs",
+    "dev:idp": "node infra/dev-idp/server.mjs",
     "dev:api": "pnpm --filter @erp/api dev:stack",
     "dev:web": "pnpm --filter @erp/web dev",
     "lint:payroll": "node tools/lint-payroll.mjs",
-    "dev:post-settled": "tsx infra/scripts/dev-post-settled.ts"
+    "dev:post-settled": "tsx infra/scripts/dev-post-settled.ts",
+    "release:smoke": "pnpm --filter @erp/api build && infra/scripts/release-smoke.sh",
+    "poc:setup": "tsx infra/scripts/poc-setup.ts"
   },
   "devDependencies": {
     "@erp/db": "workspace:*",
+    "@erp/ops": "workspace:*",
     "@types/pg": "^8.11.10",
     "jose": "^5.9.6",
     "pg": "^8.23.0",

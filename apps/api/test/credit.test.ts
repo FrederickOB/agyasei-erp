@@ -1059,8 +1059,8 @@ describe('a suspended account is refused a credit sale AT THE TILL', () => {
   }
 
   it('sells on credit while ACTIVE — the positive control the refusal is measured against', async () => {
-    await expect(tillCaller.sales.createSale(sale('CREDIT'))).resolves.toMatchObject({
-      tender: 'CREDIT',
+    await expect(tillCaller.sales.createSale(await h.legacySale(sale('CREDIT')))).resolves.toMatchObject({
+      tenders: [{ settlement: 'ON_ACCOUNT' }],
     });
   });
 
@@ -1072,14 +1072,14 @@ describe('a suspended account is refused a credit sale AT THE TILL', () => {
       expectedStatus: 'ACTIVE',
       reason: 'ageing review: 61-90 bucket and no contact',
     });
-    await expect(tillCaller.sales.createSale(sale('CREDIT'))).rejects.toThrow(
+    await expect(tillCaller.sales.createSale(await h.legacySale(sale('CREDIT')))).rejects.toThrow(
       /credit account is SUSPENDED/,
     );
   });
 
   it('…and the SAME customer may still buy for CASH. Suspending credit is not a ban', async () => {
-    await expect(tillCaller.sales.createSale(sale('CASH'))).resolves.toMatchObject({
-      tender: 'CASH',
+    await expect(tillCaller.sales.createSale(await h.legacySale(sale('CASH')))).resolves.toMatchObject({
+      tenders: [{ settlement: 'IMMEDIATE' }],
     });
   });
 
@@ -1100,7 +1100,7 @@ describe('a suspended account is refused a credit sale AT THE TILL', () => {
       expectedStatus: 'SUSPENDED',
       reason: 'settled in full and closed',
     });
-    await expect(tillCaller.sales.createSale(sale('CREDIT'))).rejects.toThrow(
+    await expect(tillCaller.sales.createSale(await h.legacySale(sale('CREDIT')))).rejects.toThrow(
       /credit account is CLOSED/,
     );
   });
@@ -1113,8 +1113,8 @@ describe('a suspended account is refused a credit sale AT THE TILL', () => {
       expectedStatus: 'CLOSED',
       reason: 'customer settled and asked to trade again',
     });
-    await expect(tillCaller.sales.createSale(sale('CREDIT'))).resolves.toMatchObject({
-      tender: 'CREDIT',
+    await expect(tillCaller.sales.createSale(await h.legacySale(sale('CREDIT')))).resolves.toMatchObject({
+      tenders: [{ settlement: 'ON_ACCOUNT' }],
     });
   });
 });

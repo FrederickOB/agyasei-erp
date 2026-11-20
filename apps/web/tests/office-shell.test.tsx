@@ -101,6 +101,19 @@ describe('the room a session lands in', () => {
     expect(rememberedRoom()).toBe('counter');
   });
 
+  it('lands a laptop in the office and every touch device at the counter, until a choice is remembered', () => {
+    // ADR-0003 A1. `setLayout(true)` answers every media query yes — the
+    // laptop's fine, hovering pointer on a desk-width screen.
+    setLayout(true);
+    expect(rememberedRoom()).toBe('office');
+    rememberRoom('counter');
+    expect(rememberedRoom()).toBe('counter');
+    // A touch device (coarse pointer) with nothing remembered: the counter.
+    freshStorage();
+    setLayout(false);
+    expect(rememberedRoom()).toBe('counter');
+  });
+
   it('offers the office only to a session holding something the office shows', () => {
     expect(officeOffered(holding([]))).toBe(false);
     expect(officeOffered(holding([CAPABILITY.stockAdjust]))).toBe(false);
@@ -158,14 +171,16 @@ describe('inside the office', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Open the office' }));
     const rail = await screen.findByRole('navigation', { name: 'Office' });
     const labels = [...rail.querySelectorAll('button')].map((b) => b.textContent);
-    expect(labels).toEqual(['Dashboard', 'Reports', 'Stock', 'Books']);
+    expect(labels).toEqual(['Dashboard', 'Reports', 'Stock', 'Books', 'Printer']);
   });
 
   it('composes the dashboard from capabilities, and every tile refuses on its own', async () => {
     const db = await till();
     renderShell(db, holding([CAPABILITY.reportLocation, CAPABILITY.conflictReview]));
     fireEvent.click(await screen.findByRole('button', { name: 'Open the office' }));
-    const sales = await screen.findByRole('region', { name: 'Sales' });
+    // The office is a LAZY chunk (Shell.tsx): under a loaded parallel test run
+    // its first import can take longer than the default second.
+    const sales = await screen.findByRole('region', { name: 'Sales' }, { timeout: 8000 });
     const taken = screen.getByRole('region', { name: 'Taken' });
     const decisions = screen.getByRole('region', { name: 'Decisions' });
     // Not held: no tile, rather than a tile of zeroes.
@@ -182,14 +197,14 @@ describe('inside the office', () => {
     const db = await till();
     renderShell(db, holding([CAPABILITY.reportLocation]));
     fireEvent.click(await screen.findByRole('button', { name: 'Open the office' }));
-    const rail = await screen.findByRole('navigation', { name: 'Office' });
+    const rail = await screen.findByRole('navigation', { name: 'Office' }, { timeout: 8000 });
     fireEvent.click(within(rail).getByRole('button', { name: 'Reports' }));
     expect(within(rail).getByRole('button', { name: 'Reports' }).getAttribute('aria-current')).toBe('page');
     await waitFor(() => expect(screen.queryByRole('region', { name: 'Sales' })).toBeNull());
     // The office's own reporting page, with its period control.
-    await screen.findByRole('heading', { name: 'Reports' });
+    await screen.findByRole('heading', { name: 'Reports' }, { timeout: 8000 });
     expect(screen.getByRole('group', { name: 'Period' })).toBeTruthy();
     fireEvent.click(within(rail).getByRole('button', { name: 'Dashboard' }));
-    await screen.findByRole('region', { name: 'Sales' });
+    await screen.findByRole('region', { name: 'Sales' }, { timeout: 8000 });
   });
 });

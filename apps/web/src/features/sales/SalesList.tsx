@@ -3,14 +3,19 @@
  * with their totals and their per-record sync badges, so "did that go
  * through?" is answered without the network and without a manager.
  */
-import type { ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
+import { CAPABILITY, holdsCapabilityAt, type PermissionsState } from '../../data/api/session';
 import type { LocalDb } from '../../data/db';
-import { recentSales, type RecordedSale } from '../../data/queries/sales';
+import { findSaleKeyByReceiptNo } from '../../data/queries/returns';
+import { recentReturns, recentSales, type RecordedSale } from '../../data/queries/sales';
+import { readDeviceLocation } from '../../data/queries/session';
 import { useLiveQuery } from '../../data/use-live-query';
 import { recordBadgeLabel } from '../../lib/badges';
 import { Money } from '../../money/Money';
 import { Icon } from '../../ui/Icon';
 import { saleNumberLabel } from '../counter/ReceiptView';
+import { PrintStatus } from '../printing/PrintStatus';
+import { ReturnFlow } from './ReturnFlow';
 
 function timeOf(iso: string): string {
   const d = new Date(iso);
@@ -62,8 +67,84 @@ function ServerAnswer({ sale }: { readonly sale: RecordedSale }): ReactNode {
   return null;
 }
 
-export function SalesList({ db }: { readonly db: LocalDb }): ReactNode {
+/**
+ * Find a sale by the number on the customer's paper — the way a return days
+ * later actually starts ("I bought this on Tuesday"), including a sale another
+ * till at this location rang. Local only: the synced `sale` rows plus this
+ * device's own outbox.
+ */
+function FindReceipt({ db, onFound }: { readonly db: LocalDb; readonly onFound: (key: string) => void }): ReactNode {
+  const [text, setText] = useState('');
+  const [missing, setMissing] = useState(false);
+  const look = async (): Promise<void> => {
+    const key = await findSaleKeyByReceiptNo(db, text);
+    setMissing(key === null);
+    if (key !== null) onFound(key);
+  };
+  return (
+    <form
+      className="find-receipt"
+      onSubmit={(e) => {
+        e.preventDefault();
+        void look();
+      }}
+    >
+      <input
+        className="tender-input"
+        type="text"
+        autoComplete="off"
+        placeholder="Receipt number to return from"
+        aria-label="Receipt number"
+        value={text}
+        onChange={(e) => {
+          setText(e.target.value);
+          setMissing(false);
+        }}
+      />
+      <button type="submit" className="secondary-action pressable" disabled={text.trim().length === 0}>
+        <Icon name="search" size={20} /> Find
+      </button>
+      {missing ? (
+        <p className="tender-hint" role="status">
+          No sale with that number is on this device yet. It may still be on its way from another till.
+        </p>
+      ) : null}
+    </form>
+  );
+}
+
+export function SalesList({
+  db,
+  permissions,
+  onOpenPrinterSettings,
+}: {
+  readonly db: LocalDb;
+  /** Absent in older callers: then no void/return is offered. */
+  readonly permissions?: PermissionsState;
+  readonly onOpenPrinterSettings?: () => void;
+}): ReactNode {
   const sales = useLiveQuery(db, (d) => recentSales(d, 20), []);
+  const refunds = useLiveQuery(db, (d) => recentReturns(d, 10), []);
+  const location = useLiveQuery(db, readDeviceLocation, []);
+  const [reversing, setReversing] = useState<string | null>(null);
+  const here = location?.id ?? '';
+  const mayReverse =
+    permissions !== undefined &&
+    here.length > 0 &&
+    (holdsCapabilityAt(permissions, CAPABILITY.saleVoid, here) ||
+      holdsCapabilityAt(permissions, CAPABILITY.saleReturn, here));
+
+  if (reversing !== null && permissions !== undefined) {
+    return (
+      <ReturnFlow
+        db={db}
+        saleKey={reversing}
+        permissions={permissions}
+        onDone={() => setReversing(null)}
+        {...(onOpenPrinterSettings === undefined ? {} : { onOpenPrinterSettings })}
+      />
+    );
+  }
 
   // Not `null` while the read resolves: a blank panel where a list belongs
   // reads as "nothing sold today", which is the one answer this screen must
@@ -77,7 +158,7 @@ export function SalesList({ db }: { readonly db: LocalDb }): ReactNode {
       </ul>
     );
   }
-  if (sales.length === 0) {
+  if (sales.length === 0 && !mayReverse) {
     return (
       <div className="empty-state">
         <Icon name="receipt" size={40} />
@@ -90,6 +171,8 @@ export function SalesList({ db }: { readonly db: LocalDb }): ReactNode {
     );
   }
   return (
+    <>
+    {mayReverse ? <FindReceipt db={db} onFound={setReversing} /> : null}
     <ul className="sales-list" aria-label="Recent sales">
       {sales.map((sale) => (
         <li key={sale.id} className="sales-row">
@@ -108,8 +191,34 @@ export function SalesList({ db }: { readonly db: LocalDb }): ReactNode {
             </span>
           </span>
           <ServerAnswer sale={sale} />
+          <PrintStatus db={db} saleId={sale.id} onOpenSettings={onOpenPrinterSettings} showStatus={false} />
+          {mayReverse ? (
+            <button type="button" className="secondary-action pressable sales-reverse" onClick={() => setReversing(sale.id)}>
+              <Icon name="undo" size={18} /> Void or return
+            </button>
+          ) : null}
         </li>
       ))}
     </ul>
+    {refunds !== undefined && refunds.length > 0 ? (
+      <ul className="sales-list" aria-label="Recent voids and returns">
+        {refunds.map((r) => (
+          <li key={r.id} className="sales-row sales-row-refund">
+            <span className="sales-number">Return {saleNumberLabel(r)}</span>
+            <Money amount={-r.totalMinor} className="money sales-total" />
+            <span className="sales-meta">
+              <span className="tabular">{timeOf(r.createdAt)}</span>
+              <span className={`sync-badge badge-${r.syncState}`}>
+                <Icon name={r.syncState === 'synced' ? 'check' : r.syncState === 'pending' ? 'clock' : 'alert'} size={14} />
+                {recordBadgeLabel(r.syncState)}
+              </span>
+            </span>
+            <ServerAnswer sale={r} />
+            <PrintStatus db={db} saleId={r.id} onOpenSettings={onOpenPrinterSettings} showStatus={false} />
+          </li>
+        ))}
+      </ul>
+    ) : null}
+    </>
   );
 }

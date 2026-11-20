@@ -158,8 +158,9 @@ export async function forgedSyncToken(
   subUserId: string,
   claimedTenantId: string,
   locationId: string,
+  deviceId?: string,
 ): Promise<string> {
-  return new SignJWT({ tid: claimedTenantId, location_id: locationId })
+  return new SignJWT({ tid: claimedTenantId, location_id: locationId, ...(deviceId ? { did: deviceId } : {}) })
     .setProtectedHeader({ alg: 'HS256' })
     .setSubject(subUserId)
     .setAudience('powersync')

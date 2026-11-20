@@ -101,6 +101,22 @@ export const WRITE_ID_EXEMPT: readonly string[] = [
   'credit_position_snapshot',
   'credit_position_bucket',
   'credit_allowance',
+  // Migration 0023. A device session is server-authored SECURITY state, not a
+  // unit of business work: it is minted at sign-in and its refresh credential
+  // rotates every ~15 minutes per signed-in clerk. It is in no sync rule and
+  // no device can write one. A write_log row per rotation would be a write
+  // spine for bookkeeping; the acts that matter (enrolment, revocation, the
+  // detection of a reused refresh credential) are audited in identity_event,
+  // which DOES carry the spine.
+  'device_session',
+  // Migration 0024. The device-keyed sync projections — derived exactly as
+  // 0013's credit projections are, from rows that carry their own spine.
+  'device_sync_grant',
+  'device_sync_location_scope',
+  // Migration 0029. Requirement 9.5-A's digest is computed by a scheduled
+  // server job from rows that already carry their own spine; no device can
+  // author one and no sync rule names the table.
+  'table_digest',
 ];
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any

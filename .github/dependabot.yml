@@ -1,0 +1,17 @@
+# Base images are pinned by DIGEST (infra/docker/*.Dockerfile) and actions by
+# major version. Dependabot proposes the bumps; a human merges them after CI —
+# never a moving tag resolving differently on deploy day.
+#
+# The PowerSync service image is deliberately included: its upgrade is a
+# reviewed change with its own staging deploy, and a rollback may cost every
+# device a re-sync (09 §9.8 Case B).
+version: 2
+updates:
+  - package-ecosystem: docker
+    directory: /infra/docker
+    schedule:
+      interval: weekly
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly

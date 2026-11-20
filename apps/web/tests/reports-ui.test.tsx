@@ -14,7 +14,7 @@
  * because the words are the product here.
  */
 import { afterEach, describe, expect, it } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import type { ApiCallOptions, ApiEndpoint, ApiFetch } from '../src/data/api/client';
 import { CAPABILITY, type PermissionsState } from '../src/data/api/session';
 import { DEV_PLACEHOLDER_CURRENCY } from '../src/data/seed';
@@ -63,9 +63,22 @@ function cashPayload(network: boolean): unknown {
         creditTenderMinor: '25000',
         creditSaleCount: '1',
         billedTotalMinor: '115000',
+        tenders: [
+          { methodId: 'm1', name: 'Notes and coins', postingRole: 'TILL_CASH', isCash: true, isOnAccount: false, amountMinor: '60000', saleCount: '2' },
+          { methodId: 'm2', name: 'Phone wallet', postingRole: 'MOMO_WALLET', isCash: false, isOnAccount: false, amountMinor: '30000', saleCount: '1' },
+          { methodId: 'm3', name: 'Tab', postingRole: 'AR_TRADE', isCash: false, isOnAccount: true, amountMinor: '25000', saleCount: '1' },
+        ],
+        tills: { opened: '1', closed: '1', counted: '1', autoClosed: '0', openedOffline: '0', varianceMinor: '-150', offCount: '1', bankedMinor: '50000' },
       },
     ],
-    total: { immediateTenderMinor: '90000', creditTenderMinor: '25000', billedTotalMinor: '115000' },
+    total: {
+      immediateTenderMinor: '90000', creditTenderMinor: '25000', billedTotalMinor: '115000',
+      tenders: [
+        { methodId: 'm1', name: 'Notes and coins', postingRole: 'TILL_CASH', isCash: true, isOnAccount: false, amountMinor: '60000', saleCount: '2' },
+        { methodId: 'm2', name: 'Phone wallet', postingRole: 'MOMO_WALLET', isCash: false, isOnAccount: false, amountMinor: '30000', saleCount: '1' },
+        { methodId: 'm3', name: 'Tab', postingRole: 'AR_TRADE', isCash: false, isOnAccount: true, amountMinor: '25000', saleCount: '1' },
+      ],
+    },
     unattributed: { creditReceiptsMinor: '5000', reason: 'no location on a payment' },
     caveats: ['This is what the till billed, not what is in the drawer.'],
   };
@@ -269,6 +282,31 @@ describe('whose total is it', () => {
     expect(await screen.findAllByText(/Whole organisation · 4 locations/)).not.toHaveLength(0);
     expect(screen.getAllByText(/Total, whole organisation/).length).toBeGreaterThan(0);
     expect(screen.queryByText(/not the whole organisation/i)).toBeNull();
+  });
+});
+
+describe('cash position by the tenant’s own payment methods, and the tills behind it', () => {
+  it('lists each method under ITS name, and says how the counts reconciled', async () => {
+    const db = await till();
+    const opts: ApiCallOptions = {
+      endpoint: ENDPOINT,
+      fetchFn: router({
+        'reports.salesByLocation': salesPayload(false),
+        'reports.cashPosition': cashPayload(false),
+        'reports.stockOnHand': stockPayload(false),
+      }),
+    };
+    renderReports(db, holding([CAPABILITY.reportLocation]), opts);
+    const table = await screen.findByRole('table', { name: 'By payment method' });
+    // The names are the tenant's rows, rendered — "Phone wallet" is visible
+    // as itself, not folded into "settled at the counter".
+    expect(within(table).getByText('Phone wallet')).toBeTruthy();
+    expect(within(table).getByText((t) => t.includes('300.00'))).toBeTruthy();
+    expect(within(table).getByText(/on account/)).toBeTruthy();
+    const tills = screen.getByRole('list', { name: 'Tills' });
+    expect(tills.textContent).toMatch(/1 of 1 tills closed, 1 counted, 1 off by a net/);
+    expect(tills.textContent).toMatch(/1\.50/);
+    expect(tills.textContent).toMatch(/short/);
   });
 });
 

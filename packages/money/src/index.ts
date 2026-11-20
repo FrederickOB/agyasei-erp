@@ -53,4 +53,10 @@ export {
   type TaxGrossUpFraction,
 } from './tax-extract.js';
 export { format, formatWithSymbol, parse } from './format.js';
+export {
+  cumulativeSlice,
+  returnSlice,
+  type ReturnSlice,
+  type SoldLineFigures,
+} from './return-slice.js';
 export { deserializeMoney, serializeMoney } from './serialize.js';

@@ -46,13 +46,19 @@ import { createApiHarness, JWT_SECRET, type ApiHarness } from '../../../apps/api
 import { addProductToCart, createCart } from '../../../apps/web/src/data/mutations/cart';
 import { loadActiveProducts } from '../../../apps/web/src/data/queries/products';
 import { checkout } from '../../../apps/web/src/data/mutations/checkout';
+import { openTill } from '../../../apps/web/src/data/mutations/till';
 import { CredentialCache } from '../../../apps/web/src/data/sync/credentials';
 import type { FetchLike, HttpResponseLike } from '../../../apps/web/src/data/sync/credentials';
 import { httpUploadTransport } from '../../../apps/web/src/data/sync/transport';
 import { classifyRejection, drainOutbox, readPendingOps } from '../../../apps/web/src/data/sync/upload';
 import type { LocalDb } from '../../../apps/web/src/data/db';
 import { openTestDb } from '../../../apps/web/tests/helpers/node-db';
-import { fixedHlc, provisionDevice, seedProduct } from '../../../apps/web/tests/helpers/fixtures';
+import {
+  fixedHlc,
+  provisionDevice,
+  replaceTenderMethods,
+  seedProduct,
+} from '../../../apps/web/tests/helpers/fixtures';
 
 /** The origin the PWA is served from in dev — a browser, not a Node client. */
 const PWA_ORIGIN = 'http://localhost:5173';
@@ -125,6 +131,11 @@ let tenantId: string;
 let outlet: { id: string; code: string };
 let product: { id: string; skuCode: string; uomCode: string; qtyScale: number };
 let bearer: string;
+/** The tenant's own tender methods, read from the server. */
+let serverTenderMethods: {
+  id: string; name: string; postingRole: string; isCash: boolean;
+  isOnAccount: boolean; requiresReference: boolean; sortOrder: number;
+}[];
 
 /**
  * A `fetch` the PWA's own transport can use, that speaks to the real server
@@ -167,7 +178,11 @@ async function provisionedDevice(deviceNode: string): Promise<LocalDb> {
     locationId: outlet.id,
     locationCode: outlet.code,
     priceListCode: 'WHOLESALE',
+    till: false,
   });
+  // The tenant's REAL tender methods, as the reference bucket delivers them —
+  // a sale naming a method id the server has never issued is refused.
+  await replaceTenderMethods(db, serverTenderMethods);
   await seedProduct(db, {
     id: product.id,
     code: product.skuCode,
@@ -180,6 +195,20 @@ async function provisionedDevice(deviceNode: string): Promise<LocalDb> {
     unitPriceE4: 99_000_000n,
     priceListId: device.priceListId,
   });
+  // There is no path to a sale without a till (08 §8.2a). Opened through the
+  // PWA's OWN openTill — queued, then drained to the real API — so every sale
+  // below names a till the server really holds, and the rest of this file's
+  // queue assertions see only the sale.
+  const clock = tillClock(-30);
+  await openTill(db, {
+    openingFloatMinor: 0n,
+    businessDate: BUSINESS_DATE,
+    openedOffline: false,
+    hlc: fixedHlc(Date.parse(clock), deviceNode),
+    nowIso: clock,
+  });
+  const opened = await drainOutbox(db, transport());
+  expect(opened).toMatchObject({ completed: 1, rejected: 0, deferred: 0 });
   return db;
 }
 
@@ -206,7 +235,6 @@ async function ringUpAndCheckout(
     tenderedMinor: 100_000_000n,
     hlc: fixedHlc(Date.parse(nowIso), deviceNode),
     nowIso,
-    businessDate: BUSINESS_DATE,
   });
   return { saleId: result.saleId, receiptNo: result.receiptNo, totalMinor: result.totalMinor };
 }
@@ -274,6 +302,19 @@ beforeAll(async () => {
     qtyScale: picked.qtyScale,
   };
   await h.seedWholesalePrice(tenantId, product.id, SERVER_UNIT_PRICE_E4);
+  serverTenderMethods = await h.db.withTenant(tenantId, async (tx) => {
+    const res = await tx.query<{
+      id: string; name: string; posting_role: string; is_cash: boolean;
+      is_on_account: boolean; requires_reference: boolean; sort_order: number;
+    }>(
+      `select id, name, posting_role, is_cash, is_on_account, requires_reference, sort_order
+         from app.tender_method where is_active and deleted_at is null`,
+    );
+    return res.rows.map((r) => ({
+      id: r.id, name: r.name, postingRole: r.posting_role, isCash: r.is_cash,
+      isOnAccount: r.is_on_account, requiresReference: r.requires_reference, sortOrder: r.sort_order,
+    }));
+  });
 
   // A TOKEN IS NOT AUTHORITY. `sales.createSale` resolves the caller's
   // capability from `app.effective_permission` on every request, so this uid
@@ -339,6 +380,12 @@ describe('the router validates with the shared contract, not a private schema', 
       // half of the pin that the `satisfies` clause cannot check.
       'goods.record_receipt': appRouter.receiving.recordReceipt,
       'logistics.update_delivery_status': appRouter.logistics.updateStatus,
+      // The till (04 §4.8a): opened before the sales that name it and closed
+      // after them, on the same ordered outbox.
+      'cash_session.open': appRouter.cashSession.open,
+      'cash_session.close': appRouter.cashSession.close,
+      // Voids and returns (0030): behind the sale they reverse.
+      'sale.return': appRouter.returns.record,
     };
     for (const [kind, procedure] of Object.entries(routed)) {
       expect(routerInputOf(procedure)).toBe(

@@ -2,3 +2,10 @@ node_modules/
 dist/
 dev-dist/
 package-lock.json
+# Browser tests (playwright.config.ts): builds and artefacts
+dist-e2e/
+dist-guard/
+dist-live/
+test-results/
+playwright-report/
+blob-report/

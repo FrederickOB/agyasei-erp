@@ -1,0 +1,159 @@
+# Render Blueprint — the FREE-TIER POC environment. docs/poc-runbook.md.
+#
+# NOT PRODUCTION. Production is Supabase + Fly.io (ADR-0003 A2,
+# docs/production-runbook.md) and this file changes nothing there. The POC
+# holds DEMO DATA ONLY: a free database has no point-in-time recovery.
+#
+#   erp-poc-api  API + scheduled-job worker + migrations in ONE free container
+#                (apps/api/src/cli/combined.ts). Free instances sleep after 15
+#                idle minutes; the runbook's uptime check on /readyz keeps it
+#                awake (~744 of the 750 free hours a month — so it must be the
+#                ONLY free web service on the Render account).
+#   erp-poc-web  the PWA as a static site: free, on Render's CDN, never sleeps.
+#
+# Render has no London region; Frankfurt is its EU choice (~15 ms from
+# Supabase London). Every value marked `sync: false` is asked for when the
+# Blueprint is created and never lives in this file.
+
+services:
+  - type: web
+    name: erp-poc-api
+    runtime: docker
+    plan: free
+    region: frankfurt
+    branch: poc/free-tier
+    dockerfilePath: ./infra/docker/api.Dockerfile
+    dockerContext: .
+    dockerCommand: node dist/bin/combined.js
+    healthCheckPath: /readyz
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: TRUST_PROXY
+        value: "true"
+      - key: DATABASE_SSL_MODE
+        value: verify-full
+      - key: LOG_LEVEL
+        value: info
+      - key: SHUTDOWN_GRACE_MS
+        value: "20000"
+      - key: DB_POOL_MAX
+        value: "5"
+      - key: RATE_LIMIT_PATHS
+        value: /sync/token,/auth,/enrol
+      - key: ALERT_ENVIRONMENT
+        value: poc
+      - key: TRADING_DAYS
+        value: 1-6
+      - key: TRADING_OPEN
+        value: "07:00"
+      - key: TRADING_CLOSE
+        value: "19:00"
+      - key: DARK_DEVICE_AFTER_HOURS
+        value: "4"
+      - key: EXPECT_LOGICAL_SLOT
+        value: "true"
+      # A free database has a small disk. If the sync service goes away (the
+      # PowerSync free plan removes an instance idle for 7 days) its slot keeps
+      # WAL; page at 256 MB retained, not production's 2 GiB.
+      - key: SLOT_RETAINED_GIB
+        value: "0.25"
+      # ── Database (Supabase) — runbook step 2 ─────────────────────────────
+      - key: DATABASE_URL            # erp_api.<ref> @ pooler :6543 (transaction)
+        sync: false
+      - key: MIGRATE_DATABASE_URL    # postgres.<ref> @ pooler :5432 (session)
+        sync: false
+      - key: JOBS_DATABASE_URL       # erp_jobs.<ref> @ pooler :5432 (session)
+        sync: false
+      - key: DATABASE_CA_CERT        # Supabase's CA (PEM; newlines may be written \n)
+        sync: false
+      # ── Public origins ───────────────────────────────────────────────────
+      - key: POWERSYNC_URL           # https://<instance>.powersync.journeyapps.com
+        sync: false
+      - key: CORS_ORIGINS            # https://erp-poc-web.onrender.com
+        sync: false
+      # ── Identity — runbook steps 3 and 4 ─────────────────────────────────
+      - key: ERP_TOKEN_ISSUER        # https://erp-poc-api.onrender.com/
+        sync: false
+      - key: ERP_PUBLIC_URL          # https://erp-poc-api.onrender.com
+        sync: false
+      - key: ERP_SIGNING_JWKS        # gen-identity-keys.mjs signing-YYYY-MM
+        sync: false
+      - key: ERP_LEASE_JWKS          # gen-identity-keys.mjs lease-YYYY-MM
+        sync: false
+      - key: OIDC_ISSUER             # https://<instance>.zitadel.cloud
+        sync: false
+      - key: OIDC_CLIENT_ID          # the Zitadel app's client ID
+        sync: false
+
+  - type: web
+    name: erp-poc-web
+    runtime: static
+    branch: poc/free-tier
+    buildCommand: node infra/render/build-web.mjs
+    staticPublishPath: ./apps/web/dist
+    pullRequestPreviewsEnabled: false
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: VITE_API_URL            # https://erp-poc-api.onrender.com
+        sync: false
+      - key: VITE_POWERSYNC_URL      # https://<instance>.powersync.journeyapps.com
+        sync: false
+    # The OIDC redirect lands on /auth/callback, which only index.html serves.
+    # Nothing else is rewritten: a missing /assets/ chunk must stay a 404, never
+    # an HTML page (infra/docker/web/default.conf.template).
+    routes:
+      - type: rewrite
+        source: /auth/*
+        destination: /index.html
+    # The nginx image's headers (infra/docker/web/), as static-host rules.
+    headers:
+      - path: /*
+        name: X-Content-Type-Options
+        value: nosniff
+      - path: /*
+        name: Referrer-Policy
+        value: no-referrer
+      - path: /*
+        name: X-Frame-Options
+        value: DENY
+      - path: /*
+        name: Strict-Transport-Security
+        value: max-age=31536000; includeSubDomains
+      - path: /*
+        name: Permissions-Policy
+        value: bluetooth=(self), usb=(self), serial=(self), camera=(), microphone=(), geolocation=(), payment=()
+      # REPORT-ONLY, as in production. Wildcard origins so the hostnames need
+      # no edit here; the IdP is listed because the PWA posts to its token
+      # endpoint (PKCE).
+      - path: /*
+        name: Content-Security-Policy-Report-Only
+        value: "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://*.onrender.com https://*.powersync.journeyapps.com wss://*.powersync.journeyapps.com https://*.zitadel.cloud; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; font-src 'self'; manifest-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'"
+      # Cache rules ARE the offline story (default.conf.template): the service
+      # worker and shell always revalidate, hashed assets are immutable, and the
+      # version gate is never cached.
+      - path: /
+        name: Cache-Control
+        value: no-cache
+      - path: /index.html
+        name: Cache-Control
+        value: no-cache
+      - path: /sw.js
+        name: Cache-Control
+        value: no-cache
+      - path: /registerSW.js
+        name: Cache-Control
+        value: no-cache
+      - path: /manifest.webmanifest
+        name: Cache-Control
+        value: no-cache
+      - path: /release.json
+        name: Cache-Control
+        value: no-store
+      - path: /assets/*
+        name: Cache-Control
+        value: public, max-age=31536000, immutable
+      - path: /workbox-*
+        name: Cache-Control
+        value: public, max-age=31536000, immutable

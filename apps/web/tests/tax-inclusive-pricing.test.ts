@@ -57,7 +57,7 @@ import { getRecordedSale } from '../src/data/queries/sales';
 import { reconcileDevicePriceList } from '../src/data/session/device-price-list';
 import { readPendingOps } from '../src/data/sync/upload';
 import { uuidv7 } from '../src/lib/uuidv7';
-import { fixedHlc, seedProduct } from './helpers/fixtures';
+import { ensureOpenTill, fixedHlc, seedProduct } from './helpers/fixtures';
 import { openTestDb } from './helpers/node-db';
 
 const TODAY = '2026-08-21';
@@ -512,6 +512,7 @@ describe('a counter selling from an inclusive list', () => {
     const products = await loadActiveProducts(db);
     const cartId = await createCart(db, { nowIso: NOW });
     await addProductToCart(db, cartId, products[0]!);
+    await ensureOpenTill(db, TODAY);
     const result = await checkout(db, {
       cartId,
       tenderedMinor: 100_000n,
@@ -543,6 +544,7 @@ describe('a counter selling from an inclusive list', () => {
     const cartId = await createCart(db, { nowIso: NOW });
     await addProductToCart(db, cartId, products[0]!);
 
+    await ensureOpenTill(db, TODAY);
     await expect(
       checkout(db, { cartId, tenderedMinor: 61_999n, hlc: fixedHlc(), nowIso: NOW }),
     ).rejects.toBeInstanceOf(ShortTenderError);
@@ -590,6 +592,7 @@ describe('a counter selling from an EXCLUSIVE list', () => {
     const products = await loadActiveProducts(db);
     const cartId = await createCart(db, { nowIso: NOW });
     await addProductToCart(db, cartId, products[0]!);
+    await ensureOpenTill(db, TODAY);
     const result = await checkout(db, {
       cartId, tenderedMinor: 120_000n, hlc: fixedHlc(), nowIso: NOW,
     });
@@ -617,6 +620,7 @@ describe('a counter selling from an EXCLUSIVE list', () => {
     const products = await loadActiveProducts(db);
     const cartId = await createCart(db, { nowIso: NOW });
     await addProductToCart(db, cartId, products[0]!);
+    await ensureOpenTill(db, TODAY);
     const result = await checkout(db, {
       cartId, tenderedMinor: 100_000n, hlc: fixedHlc(), nowIso: NOW,
     });
@@ -642,6 +646,7 @@ describe('the price check the client’s total feeds', () => {
     const products = await loadActiveProducts(db);
     const cartId = await createCart(db, { nowIso: NOW });
     await addProductToCart(db, cartId, products[0]!);
+    await ensureOpenTill(db, TODAY);
     await checkout(db, { cartId, tenderedMinor: 62_000n, hlc: fixedHlc(), nowIso: NOW });
 
     const payload = JSON.parse((await readPendingOps(db))[0]!.payloadJson) as Record<string, unknown>;

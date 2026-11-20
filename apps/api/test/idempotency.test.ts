@@ -48,8 +48,8 @@ function saleInput(key: string, receiptNo: string) {
 describe('idempotent createSale', () => {
   it('same key twice → one sale, identical responses, one write_log row', async () => {
     const key = uuidv7();
-    const first = await caller.sales.createSale(saleInput(key, 'R-0001'));
-    const second = await caller.sales.createSale(saleInput(key, 'R-0001'));
+    const first = await caller.sales.createSale(await h.legacySale(saleInput(key, 'R-0001')));
+    const second = await caller.sales.createSale(await h.legacySale(saleInput(key, 'R-0001')));
     expect(second).toEqual(first); // the STORED response, replayed verbatim
 
     const counts = await h.db.asAdmin((tx) =>
@@ -67,7 +67,7 @@ describe('idempotent createSale', () => {
   it('concurrent same-key calls → exactly one effect, identical responses', async () => {
     const key = uuidv7();
     const input = saleInput(key, 'R-0002');
-    const [r1, r2] = await Promise.all([caller.sales.createSale(input), caller.sales.createSale(input)]);
+    const [r1, r2] = await Promise.all([caller.sales.createSale(await h.legacySale(input)), caller.sales.createSale(await h.legacySale(input))]);
     expect(r2).toEqual(r1);
 
     const count = await h.db.asAdmin((tx) =>
@@ -99,8 +99,8 @@ describe('idempotent createSale', () => {
 
   it('same key, DIFFERENT payload → 409 IDEMPOTENCY_KEY_REUSE, nothing applied', async () => {
     const key = uuidv7();
-    await caller.sales.createSale(saleInput(key, 'R-0003'));
-    await expect(caller.sales.createSale(saleInput(key, 'R-0003-DIFFERENT'))).rejects.toMatchObject({
+    await caller.sales.createSale(await h.legacySale(saleInput(key, 'R-0003')));
+    await expect(caller.sales.createSale(await h.legacySale(saleInput(key, 'R-0003-DIFFERENT')))).rejects.toMatchObject({
       code: 'CONFLICT',
       message: expect.stringContaining('IDEMPOTENCY_KEY_REUSE'),
     });

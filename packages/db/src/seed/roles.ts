@@ -122,6 +122,11 @@ const COUNTER_STAFF: TemplateRole = {
     // it. Reading a delivery's status exposes no commercial terms — unlike
     // supplier.view, which carries payment terms and is deliberately absent.
     { code: 'logistics.delivery.view' },
+    // The till: whoever stands at the counter opens it for the day and counts
+    // it at the end. A tenant that wants a supervisor to count removes the
+    // close row here and grants it a level up — data, not a patch.
+    { code: 'cash.session.open' },
+    { code: 'cash.session.close' },
     // DELIBERATELY ABSENT: sale.override_price, credit.limit.change.
   ],
 };
@@ -138,6 +143,12 @@ const OUTLET_MANAGER: TemplateRole = {
     { code: 'sale.record.credit', bound: { max_order_value_minor: '500000' } }, // GH₵5,000
     { code: 'sale.discount.apply', bound: { max_bps: 300 } }, // 3%
     { code: 'sale.void' },
+    // Takes goods back and refunds them, bounded by the SERVER's repriced
+    // refund — the same ceiling as a credit sale here, because both put the
+    // tenant's money in a customer's hand. Counter staff do not hold it: a
+    // return is the till's most common theft pattern, and a tenant that wants
+    // its counter to refund adds this row for that role.
+    { code: 'sale.return', bound: { max_refund_minor: '500000' } }, // GH₵5,000
     { code: 'sale.view' },
     { code: 'sale.receipt.reprint' },
     { code: 'stock.view' },
@@ -155,6 +166,13 @@ const OUTLET_MANAGER: TemplateRole = {
     { code: 'customer.manage' },
     { code: 'report.view.location' },
     { code: 'admin.device.enrol' },
+    // ...and REVOKE them, at their own outlet. A tablet that walks out of the
+    // yard must be stoppable by the person standing in the yard, not only by
+    // the founder — revocation speed is the security property (02 §2.7). The
+    // grant is location-scoped like every other: a manager at Techiman cannot
+    // revoke Wenchi's tablets. Widening a device's scope
+    // (admin.device.scope.manage) stays with the owner role.
+    { code: 'admin.device.revoke' },
     // Procurement, from the yard's side: raise the order for what their
     // outlet is running out of, sign for what the truck brings, and book a
     // haulier to take goods to a customer's site.
@@ -164,6 +182,8 @@ const OUTLET_MANAGER: TemplateRole = {
     { code: 'goods.receive' },
     { code: 'logistics.delivery.view' },
     { code: 'logistics.dispatch.manage' },
+    { code: 'cash.session.open' },
+    { code: 'cash.session.close' },
     // DELIBERATELY ABSENT: credit.view — see THE RESIDENCY RULE in the header.
     // The manager sells on credit up to the bound above; they do not hold the
     // book. Also absent: credit.limit.change (the brief), sale.override_price,

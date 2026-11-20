@@ -35,8 +35,8 @@ afterAll(async () => {
   await h.close();
 });
 
-function saleOn(businessDate: string, receiptNo: string) {
-  return caller.sales.createSale({
+async function saleOn(businessDate: string, receiptNo: string) {
+  return caller.sales.createSale(await h.legacySale({
     idempotencyKey: uuidv7(),
     locationId: outletId,
     priceListCode: 'WHOLESALE',
@@ -44,7 +44,7 @@ function saleOn(businessDate: string, receiptNo: string) {
     businessDate,
     tender: 'CASH',
     lines: [{ productId, qty: '5' }], // net = 5 × 5500 = 27500
-  });
+  }));
 }
 
 describe('tax boundary: the rate row in force on the business date', () => {

@@ -37,7 +37,7 @@ import {
   type UploadAck,
   type UploadAckStatus,
 } from '@erp/contracts';
-import { createContextFromHeader, type ContextOptions } from './context.js';
+import { requestAuth, type ContextOptions } from './context.js';
 import { appRouter } from './routers/index.js';
 import { createCallerFactory, type Context } from './trpc.js';
 
@@ -83,6 +83,12 @@ const DEVICE_OPS: Record<DeviceOpKind, DeviceOpHandler> = {
   // after a flaky sync appends no second stock movement.
   'goods.record_receipt': (c, i) => c.receiving.recordReceipt(i as never),
   'logistics.update_delivery_status': (c, i) => c.logistics.updateStatus(i as never),
+  // The till (04 §4.8a). Opened before the sales that name it, closed after
+  // the last of them — the ordered outbox is what makes both true offline.
+  'cash_session.open': (c, i) => c.cashSession.open(i as never),
+  'cash_session.close': (c, i) => c.cashSession.close(i as never),
+  // Voids and returns (0030): behind the sale they reverse, before the close.
+  'sale.return': (c, i) => c.returns.record(i as never),
 };
 
 /** Tenant identity never comes from a client payload (CLAUDE.md §2.1) —
@@ -160,6 +166,12 @@ export interface SyncRouteOptions {
   powersyncUrl?: string;
   /** Client-token lifetime in seconds. Short-lived: ≤ 5 min is PowerSync's norm. */
   tokenTtlSeconds?: number;
+  /**
+   * Body cap for POST /sync/upload, which legitimately carries up to
+   * MAX_UPLOAD_BATCH ops and so needs more than the server-wide default.
+   * Unset: the server-wide limit applies.
+   */
+  uploadBodyLimit?: number;
 }
 
 const DEFAULT_POWERSYNC_URL = 'http://localhost:8080';
@@ -171,11 +183,19 @@ export async function registerSyncRoutes(
   app: FastifyInstance,
   opts: ContextOptions & { sync?: SyncRouteOptions | undefined },
 ): Promise<void> {
-  app.post('/sync/upload', async (req, reply) => {
-    const ctx = await createContextFromHeader(opts, req.headers.authorization);
-    if (!ctx.identity) {
+  const uploadBodyLimit = opts.sync?.uploadBodyLimit;
+  app.post('/sync/upload', uploadBodyLimit !== undefined ? { bodyLimit: uploadBodyLimit } : {}, async (req, reply) => {
+    // Authenticated ONCE by the onRequest hook (server.ts): a revoked device
+    // was already answered 423 there and never reaches this handler.
+    const auth = requestAuth(req);
+    if (auth.kind !== 'identity') {
       return reply.code(401).send({ error: 'UNAUTHORIZED: missing or invalid bearer token' });
     }
+    const ctx = {
+      deps: opts.deps,
+      identity: auth.identity,
+      ...(opts.identity ? { identityService: opts.identity } : {}),
+    } satisfies Context;
     const parsed = uploadBodySchema.safeParse(req.body);
     if (!parsed.success) {
       // A malformed ENVELOPE refuses the whole batch, applying nothing —
@@ -197,11 +217,33 @@ export async function registerSyncRoutes(
   });
 
   app.get('/sync/token', async (req, reply) => {
-    const ctx = await createContextFromHeader(opts, req.headers.authorization);
-    if (!ctx.identity) {
+    const auth = requestAuth(req);
+    if (auth.kind !== 'identity') {
       return reply.code(401).send({ error: 'UNAUTHORIZED: missing or invalid bearer token' });
     }
-    const identity = ctx.identity;
+    const identity = auth.identity;
+
+    // ── THE DEVICE PATH ─────────────────────────────────────────────────
+    // An enrolled device's session gets an ES256 token with audience
+    // erp-sync, verified by the sync service against our JWKS, carrying the
+    // `did` and `sub` every parameter query keys on (migration 0024) — and a
+    // fresh offline lease, because this IS the sync (02 §2.7).
+    if (identity.authKind === 'device') {
+      if (!opts.identity) return reply.code(401).send({ error: 'UNAUTHORIZED: device sign-in not configured' });
+      const minted = await opts.identity.syncToken(identity);
+      const lease = await opts.identity.lease(identity);
+      const body: SyncTokenResponse = {
+        token: minted.token,
+        expires_at: new Date(minted.expiresAtS * 1000).toISOString(),
+        endpoint: opts.sync?.powersyncUrl ?? DEFAULT_POWERSYNC_URL,
+        lease,
+      };
+      return reply.code(200).send(body);
+    }
+
+    // ── THE DEV PATH ────────────────────────────────────────────────────
+    // HS256 with the shared dev secret; only reachable when the server was
+    // built with one (context.ts).
     const secret = opts.sync?.powersyncSecret ?? opts.jwtSecret;
     const endpoint = opts.sync?.powersyncUrl ?? DEFAULT_POWERSYNC_URL;
     const ttlS = opts.sync?.tokenTtlSeconds ?? DEFAULT_TOKEN_TTL_S;
@@ -209,13 +251,16 @@ export async function registerSyncRoutes(
     const expS = nowS + ttlS;
 
     // tid comes from the VERIFIED session identity — there is deliberately
-    // no input (body, query, header) that can influence it. location_id is
-    // the interim location-scope claim (sync_rules.yaml): the user's first
-    // scoped location, set server-side; no scope → no claim → no location
-    // bucket → zero rows (fail closed).
+    // no input (body, query, header) that can influence it. `did` is what the
+    // sync rules key on since migration 0024, together with `sub`: a dev
+    // device must therefore exist in app.device, with a scope, or it
+    // receives nothing (infra/scripts/dev-token.mjs enrols one).
+    // `location_id` is VESTIGIAL — no rule reads it since 0024 — and is kept
+    // only so a drill pinned to it does not break silently mid-migration.
     const firstLocation = identity.locationIds[0];
     const token = await new SignJWT({
       tid: identity.tenantId,
+      did: identity.deviceId,
       ...(firstLocation !== undefined ? { location_id: firstLocation } : {}),
     })
       .setProtectedHeader({ alg: 'HS256' })

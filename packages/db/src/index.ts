@@ -47,12 +47,17 @@ export {
 export {
   UnbalancedRuleError,
   assertBalances,
+  cashSessionCloseEntry,
   clearingNets,
+  isSettlementRole,
   paymentEntry,
   payrollEntry,
   saleEntry,
+  saleReturnEntry,
+  SETTLEMENT_ROLES,
   stockAdjustmentEntry,
   transferEntry,
+  type CashSessionCloseDocument,
   type PaymentDocument,
   type PayrollDocument,
   type PayrollLine,
@@ -60,7 +65,10 @@ export {
   type ProposedEntry,
   type ProposedLine,
   type SaleDocument,
+  type SaleReturnDocument,
   type SaleTaxComponent,
+  type SaleTenderPart,
+  type SettlementRole,
   type StockAdjustmentDocument,
   type TransferDocument,
 } from './posting/rules.js';
@@ -68,6 +76,7 @@ export {
 export {
   POSTING_ERROR,
   postDocument,
+  recordRuleFailure,
   type PostOptions,
   type PostResult,
   type PostingRunner,
@@ -112,4 +121,12 @@ export {
 } from './reconciliation/reconcile.js';
 
 export { seedDevLedger, type DevLedgerResult } from './seed/dev-ledger.js';
-export { sweepSettledSales, type SweepOptions, type SweepResult } from './posting/sweep.js';
+export {
+  sweepClosedCashSessions,
+  sweepSaleReturns,
+  sweepSettledSales,
+  type ReturnSweepResult,
+  type SessionSweepResult,
+  type SweepOptions,
+  type SweepResult,
+} from './posting/sweep.js';

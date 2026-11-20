@@ -48,6 +48,10 @@ export const PERMISSION_CODES = [
   'sale.override_price',
   'sale.discount.apply',
   'sale.void',
+  // Migration 0030: taking goods back later, partially, bounded by the
+  // refund value the SERVER computes. A void is `sale.void`; they are
+  // different acts and different people in plenty of org charts.
+  'sale.return',
   'sale.view',
   'sale.receipt.reprint',
 
@@ -58,6 +62,9 @@ export const PERMISSION_CODES = [
   'stock.receive',
   'stock.count.perform',
   'stock.reorder.manage',
+  // Migration 0031: the one-time bulk load of opening stock (Q20). Online
+  // only, sensitive, and nothing to do with signing for a truck.
+  'stock.opening.import',
 
   'catalogue.view',
   'catalogue.manage',
@@ -87,6 +94,10 @@ export const PERMISSION_CODES = [
   'admin.device.enrol',
   'admin.device.revoke',
   'admin.template.apply',
+  // Migration 0023 (02 §2.4): the device ceiling, and assignment as its own
+  // capability so a user-manager cannot hand themselves the owner role.
+  'admin.device.scope.manage',
+  'admin.assignment.manage',
 
   'sync.conflict.review',
 
@@ -105,6 +116,12 @@ export const PERMISSION_CODES = [
 
   'logistics.delivery.view',
   'logistics.dispatch.manage',
+
+  // Go-live — the till (migration 0020). Two codes because "anyone at the
+  // counter opens it, a supervisor counts it" is a boundary that falls in
+  // real org charts; tenant #1's template grants both to every selling role.
+  'cash.session.open',
+  'cash.session.close',
 ] as const;
 
 export type PermissionCode = (typeof PERMISSION_CODES)[number];
@@ -209,7 +226,8 @@ const EFFECTIVE_PERMISSION_SQL = `
   select permission_code, location_id, scope_location_id, scope_depth,
          grant_id, role_id, bound, via_owner_role
     from app.effective_permission
-   where user_id = $1
+   where tenant_id = app.current_tenant()
+     and user_id = $1
 `;
 
 /**

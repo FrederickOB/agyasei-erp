@@ -1,6 +1,12 @@
+import { useEffect, useState, type ReactNode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { App } from './App';
+import type { LocalDb } from './data/db';
+import { authMode, deviceAuth } from './data/auth/runtime';
 import { openLocalDb, readApiBearerToken, syncConfigured } from './data/powersync';
+import type { DeviceLocationState } from './data/session/device-location';
+import type { DevicePriceListState } from './data/session/device-price-list';
+import { AuthGate } from './features/auth/AuthGate';
 import { seedDevDataIfEmpty } from './data/seed';
 import { reconcileDeviceLocation } from './data/session/device-location';
 import { reconcileCurrencySpec } from './data/session/currency-spec';
@@ -11,6 +17,15 @@ import './app.css';
 async function bootstrap(): Promise<void> {
   setupServiceWorker();
   const db = await openLocalDb();
+
+  // BROWSER TESTS ONLY. `import.meta.env.MODE` is a build-time literal: in
+  // every build but `--mode e2e` this is `if (false)`, and the branch and its
+  // chunk are dropped. e2e/build-guard.spec.ts proves the production bundle
+  // carries no trace of it. See src/e2e/download-seam.ts for what it may write.
+  if (import.meta.env.MODE === 'e2e') {
+    const { applyE2eDownload } = await import('./e2e/download-seam');
+    await applyE2eDownload(db);
+  }
 
   // ── ORDER MATTERS, AND IT IS LOAD-BEARING ────────────────────────────────
   // 1. The dev seed runs first. It is a FLOOR under a device with nothing —
@@ -54,9 +69,43 @@ async function bootstrap(): Promise<void> {
 
   const container = document.getElementById('root');
   if (container === null) throw new Error('missing #root element');
+
+  // ── THE DEVICE PATH (production) ─────────────────────────────────────────
+  // No token in the build: the device enrols, a person signs in, a PIN
+  // unlocks. Steps 2–4 above re-run per UNLOCKED SESSION, because "which
+  // counter is this, for whom" is the session's answer, not the build's.
+  const auth = deviceAuth();
+  if (authMode() === 'device' && auth !== null) {
+    createRoot(container).render(
+      <AuthGate auth={auth}>{(userId) => <DeviceSessionApp key={userId} db={db} />}</AuthGate>,
+    );
+    return;
+  }
+
+  // ── THE DEV-BEARER AND LOCAL-ONLY PATHS ─────────────────────────────────
   createRoot(container).render(
     <App db={db} deviceLocation={deviceLocation} devicePriceList={devicePriceList} />,
   );
+}
+
+/** Reconcile this session's location, price list and currency, then the app. */
+function DeviceSessionApp({ db }: { readonly db: LocalDb }): ReactNode {
+  const [ready, setReady] = useState<{ location: DeviceLocationState; priceList: DevicePriceListState } | null>(null);
+  useEffect(() => {
+    let live = true;
+    void (async () => {
+      const descriptor = readApiBearerToken();
+      const location = await reconcileDeviceLocation(db, descriptor);
+      const priceList = await reconcileDevicePriceList(db, descriptor);
+      await reconcileCurrencySpec(db, descriptor !== null);
+      if (live) setReady({ location, priceList });
+    })();
+    return () => {
+      live = false;
+    };
+  }, [db]);
+  if (ready === null) return null;
+  return <App db={db} deviceLocation={ready.location} devicePriceList={ready.priceList} />;
 }
 
 void bootstrap();

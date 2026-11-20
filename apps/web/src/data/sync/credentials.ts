@@ -18,7 +18,7 @@
  * No `@powersync/web` import here: this module is plain logic so the unit
  * tests can exercise it with a mocked fetch (no live service).
  */
-import { syncTokenResponse } from '@erp/contracts';
+import { syncTokenResponse, type LeaseEnvelope } from '@erp/contracts';
 
 export interface FetchedSyncToken {
   /** The PowerSync client JWT (opaque to us). */
@@ -45,8 +45,17 @@ export type FetchLike = (url: string, init: FetchInitLike) => Promise<HttpRespon
 export interface CredentialCacheOptions {
   /** API dev server base URL (VITE_API_URL), e.g. http://localhost:3001. */
   readonly apiUrl: string;
-  /** Bearer for the API. Dev-only static token; real exchange is the online login flow (§8.2). */
+  /** DEV ONLY static bearer (`pnpm dev:token`). Ignored when `authorize` is given. */
   readonly apiToken: string;
+  /**
+   * THE DEVICE PATH: DPoP-bound headers for one request (data/auth). The sync
+   * token it buys is ES256, audience erp-sync, keyed on did + sub + tid.
+   */
+  readonly authorize?: (method: string, url: string) => Promise<Record<string, string>>;
+  /** Every successful sync-token exchange carries a fresh offline lease (§2.7). */
+  readonly onLease?: (lease: LeaseEnvelope) => void | Promise<void>;
+  /** A `423 device_revoked` — the device drains, then wipes. */
+  readonly onRevoked?: (body: Record<string, unknown>) => void | Promise<void>;
   /** PowerSync service URL (VITE_POWERSYNC_URL) — configuration is authoritative for the endpoint. */
   readonly powersyncUrl: string;
   readonly fetchFn?: FetchLike;
@@ -104,10 +113,14 @@ export class CredentialCache {
     const fetchFn: FetchLike =
       this.opts.fetchFn ?? ((url, init) => fetch(url, init) as Promise<HttpResponseLike>);
     const url = `${trimTrailingSlash(this.opts.apiUrl)}/sync/token`;
-    const res = await fetchFn(url, {
-      method: 'GET',
-      headers: { authorization: `Bearer ${this.opts.apiToken}` },
-    });
+    const headers = this.opts.authorize
+      ? await this.opts.authorize('GET', url)
+      : { authorization: `Bearer ${this.opts.apiToken}` };
+    const res = await fetchFn(url, { method: 'GET', headers });
+    if (res.status === 423 && this.opts.onRevoked) {
+      const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+      await this.opts.onRevoked(body);
+    }
     if (!res.ok) {
       throw new TokenEndpointError(res.status, `token endpoint answered ${res.status}`);
     }
@@ -128,6 +141,7 @@ export class CredentialCache {
       );
     }
     const { token, expires_at: expiresAt } = parsed.data;
+    if (parsed.data.lease && this.opts.onLease) await this.opts.onLease(parsed.data.lease);
     const expiresAtMs = Date.parse(expiresAt);
     if (Number.isNaN(expiresAtMs)) {
       throw new TokenEndpointError(res.status, `unparseable expires_at: ${expiresAt}`);

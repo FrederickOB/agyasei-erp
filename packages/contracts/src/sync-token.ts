@@ -27,6 +27,7 @@
  * assert.
  */
 import { z } from 'zod';
+import { leaseEnvelope } from './identity.js';
 
 export const syncTokenResponse = z.object({
   /** The PowerSync client JWT. Opaque to the client. */
@@ -35,6 +36,12 @@ export const syncTokenResponse = z.object({
   expires_at: z.string().datetime({ offset: true }),
   /** Advisory service endpoint; client configuration wins. */
   endpoint: z.string().min(1).optional(),
+  /**
+   * A fresh offline lease (02 §2.7: "issued by the server on every successful
+   * sync"). Present for an enrolled device's session; absent on the dev-token
+   * path, which has no device key to bind a lease to.
+   */
+  lease: leaseEnvelope.optional(),
 });
 
 export type SyncTokenResponse = z.infer<typeof syncTokenResponse>;

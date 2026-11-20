@@ -4,7 +4,7 @@
  * go through?" must never require the network or a manager.
  */
 import { deriveRecordSyncState, type RecordSyncState } from '../../lib/badges';
-import type { DbRow, LocalDb } from '../db';
+import type { DbExecutor, DbRow, LocalDb } from '../db';
 import { OUTBOX_QUEUE_ORDER_DESC } from '../sync/queue-seq';
 
 export interface RecordedSale {
@@ -79,6 +79,78 @@ export async function getRecordedSale(db: LocalDb, saleId: string): Promise<Reco
   );
   const row = rows[0];
   return row === undefined ? null : mapSale(row);
+}
+
+/**
+ * Voids and returns this device recorded (migration 0030), newest first, with
+ * the same per-record sync state as a sale. `totalMinor` is the refund, a
+ * magnitude; `receiptNo` is the return slip's own number.
+ */
+export async function recentReturns(db: LocalDb, limit = 20): Promise<RecordedSale[]> {
+  const rows = await db.getAll(
+    `SELECT id, created_at, server_ack_at, rejected_at, reject_reason,
+            last_refusal_reason, receipt_no,
+            CAST(total_minor AS TEXT) AS total_minor,
+            NULL AS tendered_minor, NULL AS change_minor
+       FROM outbox
+      WHERE kind = 'sale_return'
+      ORDER BY ${OUTBOX_QUEUE_ORDER_DESC}
+      LIMIT ?`,
+    [limit],
+  );
+  return rows.map(mapSale);
+}
+
+/** One way a recorded sale was paid, as this device rang it. */
+export interface RecordedTender {
+  /** The tenant's own name for the method — rendered, never compared. */
+  readonly name: string;
+  readonly amountMinor: bigint;
+  readonly reference: string | null;
+}
+
+/**
+ * How a sale on this device was paid, read back from the payload it queued —
+ * the receipt's "paid by". The BALANCE line (no amount on the wire) shows the
+ * rest of the device's total. Parsed here, in the data layer, so no component
+ * ever touches the stored JSON; amounts come off the wire as decimal strings
+ * and become bigint exactly once, here.
+ */
+export async function getRecordedSaleTenders(db: DbExecutor, saleId: string): Promise<RecordedTender[]> {
+  const rows = await db.getAll(
+    `SELECT payload, CAST(total_minor AS TEXT) AS total_minor
+       FROM outbox WHERE kind = 'sale' AND id = ? LIMIT 1`,
+    [saleId],
+  );
+  const row = rows[0];
+  if (row === undefined) return [];
+  let tenders: unknown;
+  try {
+    tenders = (JSON.parse(String(row['payload'])) as { tenders?: unknown }).tenders;
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(tenders)) return [];
+  const total = BigInt(String(row['total_minor'] ?? '0'));
+  const parsed = tenders.map((t) => {
+    const r = t as { methodId?: unknown; amountMinor?: unknown; reference?: unknown };
+    return {
+      methodId: typeof r.methodId === 'string' ? r.methodId : '',
+      amount: typeof r.amountMinor === 'string' && /^\d+$/.test(r.amountMinor) ? BigInt(r.amountMinor) : null,
+      reference: typeof r.reference === 'string' ? r.reference : null,
+    };
+  });
+  const stated = parsed.reduce((a, t) => a + (t.amount ?? 0n), 0n);
+  const out: RecordedTender[] = [];
+  for (const t of parsed) {
+    const named = await db.getAll('SELECT name FROM tender_method WHERE id = ? LIMIT 1', [t.methodId]);
+    out.push({
+      name: typeof named[0]?.['name'] === 'string' ? String(named[0]['name']) : 'Payment',
+      amountMinor: t.amount ?? total - stated,
+      reference: t.reference,
+    });
+  }
+  return out;
 }
 
 export interface OutboxQueueSnapshot {

@@ -9,11 +9,15 @@
  * Rules:
  * - A session that holds none of the office capabilities is never offered the
  *   office at all. This is a courtesy, not a control (Shell.tsx rule 2).
- * - The default is the COUNTER. The office is a room a person chose, and a
- *   tablet handed to a cashier mid-shift must come up selling, not reporting.
- *   The remembered room wins only while the session can still hold it.
- * - Storage is best-effort. A private window, cleared site data, or a blocked
- *   accessor all mean "counter", never an error.
+ * - A REMEMBERED room wins, while the session can still hold it.
+ * - With nothing remembered, the room follows the FORM FACTOR (ADR-0003 A1):
+ *   a laptop — a fine pointer that hovers, on a desk-width screen — opens into
+ *   the office; every touch device opens into the COUNTER, because a tablet
+ *   handed to a cashier mid-shift must come up selling, not reporting. This is
+ *   a first landing only: one tap on either door is remembered from then on.
+ * - Storage and media queries are best-effort. A private window, cleared site
+ *   data, a blocked accessor or no `matchMedia` all mean "counter", never an
+ *   error.
  */
 import { CAPABILITY, holdsCapability, type PermissionsState } from '../../data/api/session';
 
@@ -41,12 +45,31 @@ export function officeOffered(permissions: PermissionsState): boolean {
   return OFFICE_CAPABILITIES.some((code) => holdsCapability(permissions, code));
 }
 
-export function rememberedRoom(): Room {
+/**
+ * A laptop, as ADR-0003 A1 means it: the primary pointer is fine and hovers,
+ * and the screen is desk-width. Android tablets and phones report a coarse
+ * pointer whatever their width, so a tablet in landscape is still a counter.
+ */
+export const LAPTOP_FORM_FACTOR = '(pointer: fine) and (hover: hover) and (min-width: 1024px)';
+
+function defaultRoom(): Room {
   try {
-    return window.localStorage.getItem(KEY) === 'office' ? 'office' : 'counter';
+    return typeof window.matchMedia === 'function' && window.matchMedia(LAPTOP_FORM_FACTOR).matches
+      ? 'office'
+      : 'counter';
   } catch {
     return 'counter';
   }
+}
+
+export function rememberedRoom(): Room {
+  try {
+    const stored = window.localStorage.getItem(KEY);
+    if (stored === 'office' || stored === 'counter') return stored;
+  } catch {
+    // Unreadable storage is "nothing remembered".
+  }
+  return defaultRoom();
 }
 
 export function rememberRoom(room: Room): void {

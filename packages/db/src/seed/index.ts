@@ -3,6 +3,7 @@ export { parseSkus, TEMPLATE_UOMS, SKUS_CSV_PATH, type CatalogueLine, type Selli
 export { parseOutlets, OUTLETS_CSV_PATH, type OutletPlan, type OutletRow } from './outlets.js';
 export { seedGhanaJurisdiction, GHANA } from './ghana.js';
 export { TEMPLATE_ROLES, type TemplateRole, type TemplateRolePermission } from './roles.js';
+export { TEMPLATE_TENDER_METHODS, type TemplateTenderMethod } from './tenders.js';
 export {
   TEMPLATE_CEMENT_SUB_CATEGORY,
   TEMPLATE_PREFERRED_CEMENT_SUPPLIER_REF,

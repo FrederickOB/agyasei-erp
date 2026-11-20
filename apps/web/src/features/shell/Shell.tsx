@@ -92,7 +92,7 @@ const VIEWS: readonly ViewDef[] = [
   // Local data, so it works offline and needs no capability: these are this
   // device's own sales, which it already holds.
   { id: 'sales', label: 'Sales', icon: 'receipt', requires: null },
-  ...DESTINATIONS.map((d) => ({ id: d.id, label: d.label, icon: d.icon, requires: d.requires })),
+  ...DESTINATIONS.filter((d) => d.officeOnly !== true).map((d) => ({ id: d.id, label: d.label, icon: d.icon, requires: d.requires })),
 ];
 
 export interface ShellProps {
@@ -203,9 +203,16 @@ export function Shell({ db, permissions, status, notice, apiOptions }: ShellProp
           {/* The counter is always rendered; `hidden` removes it from the
               accessibility tree and the tab order without unmounting it. */}
           <div className="view-pane" hidden={active !== 'counter'}>
-            <Counter db={db} />
+            <Counter
+              db={db}
+              permissions={permissions}
+              {...(apiOptions === undefined ? {} : { apiOptions })}
+              onOpenPrinterSettings={() => setView('printer')}
+            />
           </div>
-          {active === 'sales' ? <SalesList db={db} /> : null}
+          {active === 'sales' ? (
+            <SalesList db={db} permissions={permissions} onOpenPrinterSettings={() => setView('printer')} />
+          ) : null}
           {active !== 'counter' && active !== 'sales'
             ? renderDestination(active, { db, permissions, apiOptions })
             : null}

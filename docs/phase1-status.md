@@ -1487,7 +1487,9 @@ every `pnpm test`, plus D6 in the drill report.
    privilege one, and the trigger is the stronger half in any case: a `REVOKE` is silent for a
    superuser and the trigger raises for everyone.
 
-4. **Sync rules still scope from the token claim — except the two credit buckets, which
+4. **CLOSED 2026-11-19 (PR #30; live-verified, `docs/go-live-status.md` §5).** Every bucket is
+   now table-driven through the device projections, and `sync.scope_refresh` runs every 60 s.
+   *The original item follows.* **Sync rules still scope from the token claim — except the two credit buckets, which
    are now table-driven.** CLAUDE.md §2.6: sync rules are the authorization boundary.
 
    *What landed (2026-08-23).* `app.effective_permission` and `app.user_location_scope`

@@ -64,12 +64,25 @@
  * that is allowed to care).
  * ============================================================================
  *
- * Authorisation: the capability follows the TENDER — `sale.record` for cash,
- * `sale.record.credit` for credit — at the request's location, resolved from
- * the database per request and never from the token (see `SALE_PERMISSION`
- * below). A credit sale is checked TWICE: once by the middleware for the
- * capability, and again inside the plan for the bound, against the server's
- * own repriced total. The reads are `sale.view`, at the sale's own location.
+ * Authorisation: the capability follows THE MONEY — `sale.record` for a tender
+ * received now (cash, mobile money, a transfer, a cheque), `sale.record.credit`
+ * for a tender on account — at the request's location, resolved from the
+ * database per request and never from the token (see `../tender.ts`). An
+ * on-account line is checked TWICE: once for the capability, and again inside
+ * the plan for the bound, against the SERVER's own figure for that line. The
+ * reads are `sale.view`, at the sale's own location.
+ *
+ * ============================================================================
+ * THE TILL AND THE TENDERS (04 §4.8, §4.8a; migrations 0020–0022)
+ * ============================================================================
+ * Every sale names the cash session it was rung in, and its business date IS
+ * the session's — the device does not get to assert one (03 §3.4.2). Every
+ * sale records how it was paid, one `app.sale_tender` row per line, and the
+ * database refuses at COMMIT a sale whose tenders do not sum to its total or
+ * whose on-account tender differs from the CHARGE it raised (0022). A device
+ * that priced against a stale list has its split reconciled onto the server's
+ * total by a stated rule, its own figures kept, and a review opened
+ * (`reconcileTenders`, ../tender.ts) — never a refusal, never silence.
  *
  * ============================================================================
  * Q8 SEAM — Ghana e-VAT clearance (docs/open-questions.md Q8, UNRESOLVED).
@@ -84,12 +97,20 @@
  */
 import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
-import { comparePriceCheck, createSaleInput, type CreateSaleParsed } from '@erp/contracts';
-import { deterministicUuid, type PermissionCode } from '@erp/db';
+import { comparePriceCheck, createSaleInput } from '@erp/contracts';
+import { deterministicUuid, isSettlementRole } from '@erp/db';
 import { lineNetMinor, mulBps, mulDiv, type RoundingMode } from '@erp/money';
 import { emergencyNumber } from '@erp/sequence';
 import type { Queryable } from '../db.js';
+import { documentNumberHolder } from '../document-numbers.js';
 import { runIdempotent, type JsonValue } from '../pipeline.js';
+import {
+  reconcileTenders,
+  ROLE_SETTLEMENT,
+  salePermission,
+  SETTLEMENT_PERMISSION,
+  type TenderClaim,
+} from '../tender.js';
 import {
   assertPackPriceable,
   computeLineTaxes,
@@ -230,50 +251,26 @@ function priceInclusive(
 }
 
 /**
- * WHICH CAPABILITY A SALE NEEDS (02 §2.4; CLAUDE.md §2.6).
+ * WHICH CAPABILITY A SALE NEEDS (02 §2.4; CLAUDE.md §2.6) lives in
+ * `../tender.ts`, beside the reconciliation rule, and is re-exported here for
+ * the callers that have always imported it from the sale router.
  *
- * The boundary the brief draws through the sale path is the TENDER, not the
- * amount and not the counter: "outlet staff … POS" versus "outlet manager …
- * credit sales up to a set limit". Cash takes money in; credit hands out the
- * tenant's own working capital and creates an exposure that outlives the
- * transaction. Two different acts, two different capabilities.
- *
- * `tender` is PLATFORM vocabulary — a closed `z.enum(['CASH','CREDIT'])` in
- * `@erp/contracts`, the same declaration both sides of the wire parse with.
- * It is emphatically NOT a tenant's word: deriving authority from tenant
- * vocabulary (a payment-method name a tenant can edit, a role label) would
- * let a tenant rename its way out of a control, which CLAUDE.md §2.9 forbids.
- * The same rule is why `movementPermission` in inventory.ts reads `sourceKind`
- * and refuses to read `reasonCode`.
- *
- * The map is TOTAL over the contract's union and TypeScript proves it: adding
- * a tender to `createSaleInput` without deciding which capability guards it is
- * a compile error here, not a sale that silently needs nothing.
+ * The derivation reads each tender line's `settlement` — PLATFORM vocabulary,
+ * a closed enum in `@erp/contracts` — and never a tender method's code or
+ * name, which are the tenant's words: deriving authority from a word a tenant
+ * can edit would let a tenant rename its way out of a control (CLAUDE.md
+ * §2.9). The same rule is why `movementPermission` in inventory.ts reads
+ * `sourceKind` and refuses to read `reasonCode`. The plan then checks the
+ * declared settlement against the method's own posting role, and refuses a
+ * disagreement.
  */
-export type SaleTender = CreateSaleParsed['tender'];
+export { salePermission, SETTLEMENT_PERMISSION };
 
-export const SALE_PERMISSION: Record<SaleTender, PermissionCode> = {
-  CASH: 'sale.record',
-  CREDIT: 'sale.record.credit',
-};
-
-/**
- * Read the required code out of the VALIDATED input. Anything unrecognised
- * returns undefined, which the middleware turns into a refusal — never into a
- * default capability and never into the weaker of the two.
- *
- * zod has already rejected an unknown tender by the time this runs, so this
- * is the second of two independent refusals rather than the only one. It is
- * written anyway: the middleware contract is "an unrecognised intent denies",
- * and a map lookup that fell through to `sale.record` would make a future
- * third tender authorise itself against the cash capability on the day it was
- * added to the contract and forgotten here.
- */
-export function salePermission(input: Record<string, unknown>): PermissionCode | undefined {
-  const tender = input['tender'];
-  if (typeof tender !== 'string') return undefined;
-  return SALE_PERMISSION[tender as SaleTender];
-}
+/** Conflict classes this router opens (03 §3.6). Severity 2: money moved, a
+ *  person must look, but no figure is unrecoverable. */
+export const TENDER_RECONCILED_CLASS = 'SALE_TENDER_RECONCILED';
+export const SALE_AFTER_TILL_CLOSED_CLASS = 'SALE_AFTER_TILL_CLOSED';
+const SEVERITY_REVIEW = 2;
 
 export const salesRouter = router({
   /**
@@ -294,8 +291,11 @@ export const salesRouter = router({
     .use(requiresPermission({ code: salePermission, at: 'input' }))
     .mutation(async ({ ctx, input }) => {
       assertLocationInScope(ctx.identity, input.locationId);
-      if (input.tender === 'CREDIT' && !input.customerId) {
-        throw new TRPCError({ code: 'BAD_REQUEST', message: 'a credit sale requires customerId' });
+      // The contract already refuses an on-account line with no customer
+      // (`createSaleInput`'s refinement); this is the server's own second
+      // refusal, kept because the contract is also the client's to run.
+      if (input.tenders.some((t) => t.settlement === 'ON_ACCOUNT') && !input.customerId) {
+        throw new TRPCError({ code: 'BAD_REQUEST', message: 'an on-account tender requires customerId' });
       }
       const tenantId = ctx.identity.tenantId;
       const key = input.idempotencyKey;
@@ -324,12 +324,114 @@ export const salesRouter = router({
             throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'sales are recorded at OUTLET locations' });
           }
 
+          // ── THE TILL (04 §4.8a; 03 §3.4.2) ─────────────────────────────────
+          // The business date every price and tax rate below resolves against
+          // is the SESSION's — a date a named person asserted when they opened
+          // the till, not whatever this tablet's clock says.
+          const sess = await tx.query<{
+            id: string;
+            location_id: string;
+            device_id: string | null;
+            business_date: string;
+            status: string;
+          }>(
+            `select id, location_id, device_id, business_date::text, status
+               from app.cash_session where id = $1`,
+            [input.cashSessionId],
+          );
+          const session = sess.rows[0];
+          if (!session) {
+            // The outbox is ORDERED, so a till's open reaches the server before
+            // any sale rung into it. Arriving first means the open is still in
+            // flight (or was refused and is in front of a person) — retryable,
+            // never a definitive loss of the sale (03 §3.3.4).
+            throw new TRPCError({
+              code: 'CONFLICT',
+              message: `RETRY_LATER: cash session ${input.cashSessionId} is not recorded yet — the till's open must land first`,
+            });
+          }
+          if (session.location_id !== input.locationId) {
+            throw new TRPCError({
+              code: 'BAD_REQUEST',
+              message: 'this sale names a till at a different location',
+            });
+          }
+          // A device's own drawer is that device's: cash rung into another
+          // device's till would make both drawers' counts wrong. A SHARED
+          // drawer (device_id NULL) is any device's at the location.
+          if (session.device_id !== null && session.device_id !== ctx.identity.deviceId) {
+            throw new TRPCError({
+              code: 'BAD_REQUEST',
+              message: 'this sale names another device’s till; ring it into this device’s own session',
+            });
+          }
+          const businessDate = session.business_date;
+
+          // ── THE TENDER METHODS — two answers that must agree ───────────────
+          // The line DECLARED its settlement (that is what the middleware
+          // authorised); the method's POSTING ROLE says what it really is. A
+          // disagreement is refused, so an on-account method cannot be sent as
+          // "immediate" to dodge `sale.record.credit` and its bound. The
+          // method's code and name are never read: they are the tenant's words.
+          const methodIds = [...new Set(input.tenders.map((t) => t.methodId))];
+          const methodRes = await tx.query<{
+            id: string;
+            posting_role: string;
+            requires_reference: boolean;
+          }>(
+            `select id, posting_role, requires_reference
+               from app.tender_method where id = any($1::uuid[]) and deleted_at is null`,
+            [methodIds],
+          );
+          const methods = new Map(methodRes.rows.map((m) => [m.id, m]));
+          const claims: TenderClaim[] = input.tenders.map((t, i) => {
+            const m = methods.get(t.methodId);
+            if (!m) {
+              throw new TRPCError({ code: 'BAD_REQUEST', message: `unknown tender method ${t.methodId}` });
+            }
+            if (!isSettlementRole(m.posting_role)) {
+              // Migration 0020's CHECK makes this unreachable. Fail closed.
+              throw new TRPCError({
+                code: 'BAD_REQUEST',
+                message: `tender method ${t.methodId} settles into ${m.posting_role}, which no sale may use`,
+              });
+            }
+            if (ROLE_SETTLEMENT[m.posting_role] !== t.settlement) {
+              throw new TRPCError({
+                code: 'BAD_REQUEST',
+                message:
+                  `tender line ${i + 1} declares ${t.settlement} but its method settles ` +
+                  `${ROLE_SETTLEMENT[m.posting_role]} — the two must agree`,
+              });
+            }
+            if (m.requires_reference && t.reference === undefined) {
+              throw new TRPCError({
+                code: 'BAD_REQUEST',
+                message: `tender line ${i + 1} needs a reference (a transaction id or cheque number)`,
+              });
+            }
+            return {
+              seq: i + 1,
+              methodId: t.methodId,
+              role: m.posting_role,
+              claimedMinor: t.amountMinor ?? null,
+              ...(t.reference === undefined ? {} : { reference: t.reference }),
+            };
+          });
+          // A sale with lines of BOTH kinds was authorised by the middleware
+          // for one of them. The other is asserted here, against the same
+          // already-resolved snapshot; the on-account bound comes later, once
+          // the server's own figure for that line exists.
+          for (const settlement of new Set(input.tenders.map((t) => t.settlement))) {
+            ctx.permissions.requireAt(SETTLEMENT_PERMISSION[settlement], input.locationId);
+          }
+
           const pl = await tx.query<{ id: string; is_tax_inclusive: boolean }>(
             `select id, is_tax_inclusive from app.price_list
              where code = $1 and deleted_at is null
                and effective_from <= $2::date
                and (effective_to is null or effective_to > $2::date)`,
-            [input.priceListCode, input.businessDate],
+            [input.priceListCode, businessDate],
           );
           const priceList = pl.rows[0];
           if (!priceList) {
@@ -340,12 +442,12 @@ export const salesRouter = router({
           // it is never stored on the sale and never leaves in a response.
           const taxInclusive = priceList.is_tax_inclusive;
 
-          const components = await taxComponentsInForce(tx, jur.jurisdictionCode, input.businessDate);
+          const components = await taxComponentsInForce(tx, jur.jurisdictionCode, businessDate);
           if (components.length === 0) {
             throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'no tax rates in force on the business date' });
           }
           // Fail closed, once, before any line is priced (07 §7.2.4 M12).
-          assertPackPriceable(components, input.businessDate);
+          assertPackPriceable(components, businessDate);
 
           const pricedLines: PricedLine[] = [];
           // The steepest discount any single line carries, in basis points of
@@ -379,7 +481,7 @@ export const salesRouter = router({
             if (!components.some((c) => c.taxCode === product.tax_code)) {
               throw new TRPCError({
                 code: 'PRECONDITION_FAILED',
-                message: `no ${product.tax_code} rate in force on ${input.businessDate} — cannot produce a statutory receipt`,
+                message: `no ${product.tax_code} rate in force on ${businessDate} — cannot produce a statutory receipt`,
               });
             }
 
@@ -413,13 +515,13 @@ export const salesRouter = router({
                  and min_qty <= $5
                order by min_qty desc, effective_from desc
                limit 1`,
-              [priceList.id, line.productId, sell.uom_id, input.businessDate, wire(line.qty)],
+              [priceList.id, line.productId, sell.uom_id, businessDate, wire(line.qty)],
             );
             const priced = item.rows[0];
             if (!priced) {
               throw new TRPCError({
                 code: 'PRECONDITION_FAILED',
-                message: `no price for product ${line.productId} on list ${input.priceListCode} on ${input.businessDate}`,
+                message: `no price for product ${line.productId} on list ${input.priceListCode} on ${businessDate}`,
               });
             }
             const unitPriceE4 = BigInt(priced.unit_price_e4);
@@ -501,6 +603,18 @@ export const salesRouter = router({
           const taxTotal = pricedLines.reduce((a, l) => a + l.lineTaxMinor, 0n);
           const total = subtotalNet - discountTotal + taxTotal;
 
+          // ── THE TENDERS, ON THE SERVER'S TOTAL ─────────────────────────────
+          // The device split ITS total; the server's may differ (a stale price
+          // list). `reconcileTenders` places any difference by a stated rule —
+          // on account first, then drawer cash, then the rest — and keeps every
+          // claimed figure. A non-zero difference opens a review below.
+          const reconciliation = reconcileTenders(claims, total);
+          const tenders = reconciliation.lines;
+          const onAccountMinor = tenders
+            .filter((t) => ROLE_SETTLEMENT[t.role] === 'ON_ACCOUNT')
+            .reduce((a, t) => a + t.amountMinor, 0n);
+          const hasOnAccount = input.tenders.some((t) => t.settlement === 'ON_ACCOUNT');
+
           // ── THE BOUND (02 §2.4; the template's "credit sales up to a set
           // limit"). ────────────────────────────────────────────────────────
           //
@@ -510,13 +624,15 @@ export const salesRouter = router({
           // this call existed those figures were data nothing read, and a
           // clerk could open unbounded credit exposure through this path.
           //
-          // MEASURED AGAINST `total` — the SERVER's repriced figure, gross of
-          // tax and net of discount, which is the exact amount that lands in
-          // `app.credit_entry` below and therefore the exact exposure this
-          // sale creates. Never `input.clientTotalMinor`: that is the till's
-          // claim, it is optional, and a device that could set the number the
-          // bound is measured against would have no bound at all. (The claim
-          // is still recorded, and compared, further down.)
+          // MEASURED AGAINST `onAccountMinor` — the SERVER's figure for the
+          // on-account line, derived from its own repriced total (the line
+          // absorbs any repricing difference first), which is the exact amount
+          // that lands in `app.credit_entry` below and therefore the exact
+          // exposure this sale creates. For a sale wholly on account that is
+          // `total`, exactly as before split tender existed. Never the device's
+          // claim for the line, and never `input.clientTotalMinor`: a device
+          // that could set the number the bound is measured against would have
+          // no bound at all. (The claims are still recorded, and compared.)
           //
           // SYNCHRONOUS, against the snapshot `requiresPermission` already
           // resolved from the database for this request. It must stay that
@@ -529,8 +645,8 @@ export const salesRouter = router({
           // Throwing here rolls the whole transaction back, marker included,
           // and applies nothing — so a refused credit sale leaves no sale, no
           // stock movement and no credit entry behind.
-          if (input.tender === 'CREDIT') {
-            ctx.permissions.requireWithinAmount('sale.record.credit', input.locationId, total);
+          if (hasOnAccount) {
+            ctx.permissions.requireWithinAmount('sale.record.credit', input.locationId, onAccountMinor);
           }
 
           // ── THE DISCOUNT BOUND (02 §2.4; CLAUDE.md §2.6). ────────────────
@@ -567,9 +683,9 @@ export const salesRouter = router({
             );
           }
 
-          // Credit tender: resolve the account BEFORE committing to anything.
+          // On-account tender: resolve the account BEFORE committing to anything.
           let credit: { accountId: string; termsDays: number; dueDate: string } | null = null;
-          if (input.tender === 'CREDIT') {
+          if (hasOnAccount) {
             const acc = await tx.query<{ id: string; terms_days: number; status: string }>(
               `select id, terms_days, status from app.customer_account
                where customer_id = $1 and deleted_at is null`,
@@ -585,7 +701,7 @@ export const salesRouter = router({
             credit = {
               accountId: account.id,
               termsDays: account.terms_days,
-              dueDate: addCalendarDays(input.businessDate, account.terms_days),
+              dueDate: addCalendarDays(businessDate, account.terms_days),
             };
           }
 
@@ -610,23 +726,18 @@ export const salesRouter = router({
           // paper actually says; and a severity-1 review names both documents.
           // The op acks `applied`, so the outbox drains and the till keeps
           // trading — the discrepancy is visible work, not a stalled queue.
-          const clash = await tx.query<{ id: string; receipt_no: string }>(
-            `select id, receipt_no from app.sale
-              where location_id = $1 and receipt_no = $2`,
-            [input.locationId, input.receiptNo],
-          );
-          const collidesWith = clash.rows[0] ?? null;
+          // A return slip draws from the same device series (0030), so the
+          // number may be held by either document type.
+          const held = await documentNumberHolder(tx, input.locationId, input.receiptNo);
+          const collidesWith = held === null ? null : { id: held.id, receipt_no: held.number };
           let storedReceiptNo = input.receiptNo;
           if (collidesWith !== null) {
             const emergency = emergencyNumber(input.receiptNo, ctx.identity.deviceId, saleId);
-            const taken = await tx.query<{ id: string }>(
-              `select id from app.sale where location_id = $1 and receipt_no = $2`,
-              [input.locationId, emergency],
-            );
+            const taken = await documentNumberHolder(tx, input.locationId, emergency);
             // Vanishingly unlikely, but a second collision here would raise the
             // same raw unique violation and stall the queue all over again. The
             // fallback is unique BY CONSTRUCTION: one sale row per sale id.
-            storedReceiptNo = taken.rows.length === 0 ? emergency : `${input.receiptNo}-${saleId}`;
+            storedReceiptNo = taken === null ? emergency : `${input.receiptNo}-${saleId}`;
           }
           const claimedReceiptNo = collidesWith === null ? null : input.receiptNo;
 
@@ -654,11 +765,25 @@ export const salesRouter = router({
             receiptNoClaimed: claimedReceiptNo,
             /** Set when this sale landed under the #14 emergency form. */
             receiptCollisionWithSaleId: collidesWith?.id ?? null,
-            businessDate: input.businessDate,
+            /** The TILL's date — never the device's. */
+            businessDate,
+            cashSessionId: input.cashSessionId,
             currencyCode: jur.currencyCode,
             moneyScale: wire(jur.minorUnitsPerMajor),
             priceListCode: input.priceListCode,
-            tender: input.tender,
+            /**
+             * How the sale was settled, on the SERVER's total. `claimedMinor` is
+             * present only where the server reconciled a line (null = as tendered).
+             */
+            tenders: tenders.map((t) => ({
+              seq: t.seq,
+              methodId: t.methodId,
+              settlement: ROLE_SETTLEMENT[t.role],
+              amountMinor: wire(t.amountMinor),
+              claimedMinor:
+                t.claimedMinor === null || t.claimedMinor === t.amountMinor ? null : wire(t.claimedMinor),
+              reference: t.reference ?? null,
+            })),
             subtotalNetMinor: wire(subtotalNet),
             discountMinor: wire(discountTotal),
             taxTotalMinor: wire(taxTotal),
@@ -691,7 +816,7 @@ export const salesRouter = router({
               })),
             })),
             credit: credit
-              ? { accountId: credit.accountId, dueDate: credit.dueDate, chargeMinor: wire(total) }
+              ? { accountId: credit.accountId, dueDate: credit.dueDate, chargeMinor: wire(onAccountMinor) }
               : null,
             ...(priceCheck === undefined ? {} : { priceCheck }),
           } satisfies JsonValue & Record<string, unknown>;
@@ -705,8 +830,9 @@ export const salesRouter = router({
                    (tenant_id, id, write_id, hlc, location_id, customer_id, price_list_id,
                     receipt_no, receipt_no_claimed, business_date, occurred_at,
                     currency_code, money_scale,
-                    subtotal_net_minor, discount_minor, tax_total_minor, total_minor)
-                 values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::date,$11,$12,$13,$14,$15,$16,$17)`,
+                    subtotal_net_minor, discount_minor, tax_total_minor, total_minor,
+                    cash_session_id)
+                 values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::date,$11,$12,$13,$14,$15,$16,$17,$18)`,
                 [
                   tenantId,
                   saleId,
@@ -717,7 +843,7 @@ export const salesRouter = router({
                   priceList.id,
                   storedReceiptNo,
                   claimedReceiptNo,
-                  input.businessDate,
+                  businessDate,
                   occurredAt,
                   jur.currencyCode,
                   wire(jur.minorUnitsPerMajor),
@@ -725,8 +851,35 @@ export const salesRouter = router({
                   wire(discountTotal),
                   wire(taxTotal),
                   wire(total),
+                  input.cashSessionId,
                 ],
               );
+
+              // How it was paid — one row per tender line, the SERVER's figure
+              // in amount_minor and the device's kept beside it only where
+              // they differ. Σ = total_minor is asserted at COMMIT (0022).
+              for (const t of tenders) {
+                await atx.query(
+                  `insert into app.sale_tender
+                     (tenant_id, id, write_id, hlc, sale_id, seq, method_id, amount_minor,
+                      claimed_minor, reference, tendered_at, location_id)
+                   values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+                  [
+                    tenantId,
+                    deterministicUuid(key, 'sale_tender', String(t.seq)),
+                    key,
+                    clock.next(),
+                    saleId,
+                    t.seq,
+                    t.methodId,
+                    wire(t.amountMinor),
+                    t.claimedMinor === null || t.claimedMinor === t.amountMinor ? null : wire(t.claimedMinor),
+                    t.reference ?? null,
+                    occurredAt,
+                    input.locationId,
+                  ],
+                );
+              }
 
               for (const l of pricedLines) {
                 const lineId = deterministicUuid(key, 'sale_line', String(l.lineNo));
@@ -821,8 +974,9 @@ export const salesRouter = router({
                   await atx.query(
                     `insert into app.stock_movement
                        (tenant_id, id, write_id, hlc, location_id, product_id, qty_delta, qty_scale,
-                        uom_id, reason_id, source_kind, source_id, occurred_at, business_date)
-                     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'SALE',$11,$12,$13::date)`,
+                        uom_id, reason_id, source_kind, source_id, occurred_at, business_date,
+                        cash_session_id)
+                     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'SALE',$11,$12,$13::date,$14)`,
                     [
                       tenantId,
                       deterministicUuid(key, 'stock_movement', String(l.lineNo)),
@@ -836,13 +990,17 @@ export const salesRouter = router({
                       reasonId,
                       saleId,
                       occurredAt,
-                      input.businessDate,
+                      businessDate,
+                      input.cashSessionId,
                     ],
                   );
                 }
               }
 
-              if (credit) {
+              // The CHARGE is EXACTLY the on-account tender — 0022 refuses the
+              // commit otherwise. A line the reconciliation took to zero raises
+              // no charge at all (a credit entry is never zero).
+              if (credit && onAccountMinor > 0n) {
                 await atx.query(
                   `insert into app.credit_entry
                      (tenant_id, id, write_id, hlc, account_id, kind, amount_minor,
@@ -854,12 +1012,95 @@ export const salesRouter = router({
                     key,
                     clock.next(),
                     credit.accountId,
-                    wire(total),
-                    input.businessDate,
+                    wire(onAccountMinor),
+                    businessDate,
                     credit.dueDate,
                     saleId,
                   ],
                 );
+              }
+
+              // The server rewrote how a device said money moved. Never
+              // silently (CLAUDE.md §2.2): both splits go to a person.
+              if (reconciliation.deltaMinor !== 0n) {
+                await openConflictReview(atx, {
+                  tenantId,
+                  writeId: key,
+                  hlc: clock.next(),
+                  reviewId: deterministicUuid(key, 'conflict_review', 'tender_reconciled'),
+                  conflictClass: TENDER_RECONCILED_CLASS,
+                  severity: SEVERITY_REVIEW,
+                  entityTable: 'app.sale',
+                  entityId: saleId,
+                  fieldPath: 'tenders',
+                  proposals: [
+                    {
+                      party: 'device',
+                      detail: 'how the till split ITS total — what the customer was told and paid',
+                      totalMinor: input.clientTotalMinor === undefined ? null : wire(input.clientTotalMinor),
+                      tenders: tenders.map((t) => ({
+                        seq: t.seq,
+                        methodId: t.methodId,
+                        // null: the balance line, which stated no amount.
+                        amountMinor: t.claimedMinor === null ? null : wire(t.claimedMinor),
+                      })),
+                    },
+                    {
+                      party: 'server',
+                      detail: 'the same split placed on the server’s repriced total, as recorded',
+                      totalMinor: wire(total),
+                      tenders: tenders.map((t) => ({
+                        seq: t.seq, methodId: t.methodId, amountMinor: wire(t.amountMinor),
+                      })),
+                    },
+                  ],
+                  pendingState: 'safe_default',
+                  pendingValue: {
+                    deltaMinor: wire(reconciliation.deltaMinor),
+                    note:
+                      'The till priced this sale differently from the server (usually a stale price ' +
+                      'list). The difference was placed on the on-account line first, then drawer ' +
+                      'cash, then the other methods. Check the customer’s account and the till count.',
+                  },
+                  requiredPermission: SEQUENCE_REVIEW_PERMISSION,
+                  locationIds: [input.locationId],
+                });
+              }
+
+              // A sale arriving for a till that is already CLOSED (a shared
+              // drawer another device closed, or a close that overtook it).
+              // The sale stands — the goods are gone — but the close froze an
+              // expected figure this sale is not in, so a person must look.
+              if (session.status !== 'OPEN') {
+                await openConflictReview(atx, {
+                  tenantId,
+                  writeId: key,
+                  hlc: clock.next(),
+                  reviewId: deterministicUuid(key, 'conflict_review', 'sale_after_till_closed'),
+                  conflictClass: SALE_AFTER_TILL_CLOSED_CLASS,
+                  severity: SEVERITY_REVIEW,
+                  entityTable: 'app.cash_session',
+                  entityId: session.id,
+                  fieldPath: 'expected_cash_minor',
+                  proposals: [
+                    {
+                      party: 'arriving',
+                      detail: 'a sale rung into this till that reached the server after its close',
+                      saleId,
+                      totalMinor: wire(total),
+                      drawerCashMinor: wire(
+                        tenders.filter((t) => t.role === 'TILL_CASH').reduce((a, t) => a + t.amountMinor, 0n),
+                      ),
+                    },
+                  ],
+                  pendingState: 'first_applied',
+                  pendingValue: {
+                    sessionStatus: session.status,
+                    note: 'The close’s expected cash and variance do not include this sale.',
+                  },
+                  requiredPermission: SEQUENCE_REVIEW_PERMISSION,
+                  locationIds: [input.locationId],
+                });
               }
 
               // The #14 review. Opened LAST, in the same transaction as the sale

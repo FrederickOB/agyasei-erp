@@ -241,7 +241,7 @@ async function createSale(
     reasonCode: 'OPENING',
     businessDate: DAY,
   });
-  const sale = await caller.sales.createSale({
+  const sale = await caller.sales.createSale(await h.legacySale({
     idempotencyKey: uuidv7(),
     locationId,
     priceListCode: 'WHOLESALE',
@@ -249,7 +249,7 @@ async function createSale(
     businessDate: DAY,
     tender: 'CASH',
     lines: [{ productId: product, qty: '5' }],
-  });
+  }));
   return sale.saleId;
 }
 

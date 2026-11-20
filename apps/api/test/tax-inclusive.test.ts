@@ -92,13 +92,13 @@ afterAll(async () => {
 
 type Line = { productId: string; qty: string; lineDiscountMinor?: string };
 
-function ring(
+async function ring(
   priceListCode: string,
   receiptNo: string,
   lines: Line[],
   businessDate = '2026-08-23',
 ) {
-  return caller.sales.createSale({
+  return caller.sales.createSale(await h.legacySale({
     idempotencyKey: uuidv7(),
     locationId: outletId,
     priceListCode,
@@ -106,7 +106,7 @@ function ring(
     businessDate,
     tender: 'CASH',
     lines,
-  });
+  }));
 }
 
 /** The header the DATABASE holds, not the one the response claimed. */

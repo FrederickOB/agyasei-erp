@@ -285,6 +285,8 @@ export const stockMovement = tenantTable(
     businessDate: date('business_date').notNull(),
     reversesId: uuid('reverses_id'),
     archivedAt: timestamp('archived_at', { withTimezone: true }),
+    /** The till a SALE movement was rung in (migration 0021). NULL otherwise. */
+    cashSessionId: uuid('cash_session_id'),
   },
   (t) => [
     index('stock_movement_replay_ix').on(t.tenantId, t.locationId, t.productId, t.hlc),
@@ -406,10 +408,14 @@ export const sale = tenantTable(
     discountMinor: bigint('discount_minor', { mode: 'bigint' }).notNull(),
     taxTotalMinor: bigint('tax_total_minor', { mode: 'bigint' }).notNull(),
     totalMinor: bigint('total_minor', { mode: 'bigint' }).notNull(),
+    /** The till this sale was rung in; business_date is the session's
+     *  (migration 0021). NULL only on sales written before tills existed. */
+    cashSessionId: uuid('cash_session_id'),
   },
   (t) => [
     uniqueIndex('sale_receipt_uq').on(t.tenantId, t.locationId, t.receiptNo),
     index('sale_day_ix').on(t.tenantId, t.locationId, t.businessDate),
+    index('sale_cash_session_ix').on(t.tenantId, t.cashSessionId),
   ],
 );
 
@@ -454,6 +460,95 @@ export const saleTaxLine = tenantTable(
     taxRateId: uuid('tax_rate_id').notNull(),
   },
   (t) => [uniqueIndex('sale_tax_line_uq').on(t.tenantId, t.saleLineId, t.seq)],
+);
+
+/**
+ * Tender methods — TENANT-DEFINED ways to settle a sale (migration 0020).
+ * `code` and `name` are the tenant's words and nothing on the platform reads
+ * them. `postingRole` is platform vocabulary; `isCash` and `isOnAccount` are
+ * GENERATED from it in the database and are the only properties code branches
+ * on (CLAUDE.md §2.9).
+ */
+export const tenderMethod = tenantTable(
+  'tender_method',
+  {
+    code: text('code').notNull(),
+    name: text('name').notNull(),
+    postingRole: text('posting_role').notNull(),
+    /** GENERATED: posting_role = 'TILL_CASH'. Read-only. */
+    isCash: boolean('is_cash').notNull(),
+    /** GENERATED: posting_role = 'AR_TRADE'. Read-only. */
+    isOnAccount: boolean('is_on_account').notNull(),
+    requiresReference: boolean('requires_reference').notNull(),
+    isActive: boolean('is_active').notNull(),
+    sortOrder: smallint('sort_order').notNull(),
+    originTemplateId: text('origin_template_id'),
+    originRef: text('origin_ref'),
+  },
+  (t) => [uniqueIndex('tender_method_code_uq').on(t.tenantId, t.code)],
+);
+
+/**
+ * One row per way a sale was paid (migration 0021). `amountMinor` is the
+ * SERVER's figure — Σ over a sale = its total, enforced at commit (0022).
+ * `claimedMinor` is what the device tendered, kept only when the server
+ * reconciled the split onto its own repriced total.
+ */
+export const saleTender = tenantTable(
+  'sale_tender',
+  {
+    saleId: uuid('sale_id').notNull(),
+    seq: smallint('seq').notNull(),
+    methodId: uuid('method_id').notNull(),
+    amountMinor: bigint('amount_minor', { mode: 'bigint' }).notNull(),
+    claimedMinor: bigint('claimed_minor', { mode: 'bigint' }),
+    reference: text('reference'),
+    tenderedAt: timestamp('tendered_at', { withTimezone: true }).notNull(),
+    locationId: uuid('location_id').notNull(),
+  },
+  (t) => [
+    uniqueIndex('sale_tender_uq').on(t.tenantId, t.saleId, t.seq),
+    index('sale_tender_location_ix').on(t.tenantId, t.locationId, t.methodId),
+  ],
+);
+
+/**
+ * A till opened for one trading day (migration 0020; 04 §4.8a). Opened once,
+ * closed once, then frozen by trigger. Every money figure is bigint minor
+ * units; `varianceMinor = countedMinor − expectedCashMinor` is a CHECK.
+ */
+export const cashSession = tenantTable(
+  'cash_session',
+  {
+    locationId: uuid('location_id').notNull(),
+    /** From the verified token. NULL = a shared drawer. */
+    deviceId: uuid('device_id'),
+    /** GENERATED: coalesce(device_id, nil uuid). Read-only. */
+    tillKey: uuid('till_key').notNull(),
+    businessDate: date('business_date').notNull(),
+    serverDateAtOpen: date('server_date_at_open').notNull(),
+    openedBy: uuid('opened_by').notNull(),
+    /** Device clock. UNTRUSTED — display only. */
+    openedAt: timestamp('opened_at', { withTimezone: true }).notNull(),
+    openedOffline: boolean('opened_offline').notNull(),
+    openingFloatMinor: bigint('opening_float_minor', { mode: 'bigint' }).notNull(),
+    status: text('status').notNull(),
+    closedBy: uuid('closed_by'),
+    closedAt: timestamp('closed_at', { withTimezone: true }),
+    autoClosed: boolean('auto_closed').notNull(),
+    countedMinor: bigint('counted_minor', { mode: 'bigint' }),
+    bankedMinor: bigint('banked_minor', { mode: 'bigint' }),
+    expectedCashMinor: bigint('expected_cash_minor', { mode: 'bigint' }),
+    varianceMinor: bigint('variance_minor', { mode: 'bigint' }),
+    clientExpectedMinor: bigint('client_expected_minor', { mode: 'bigint' }),
+    closeWriteId: uuid('close_write_id'),
+    /** Class #17: the session that claimed this till first. */
+    contestedSessionId: uuid('contested_session_id'),
+  },
+  (t) => [
+    index('cash_session_location_day_ix').on(t.tenantId, t.locationId, t.businessDate),
+    index('cash_session_status_ix').on(t.tenantId, t.locationId, t.status),
+  ],
 );
 
 /**
@@ -648,6 +743,10 @@ export const userAccount = tenantTable(
     displayName: text('display_name').notNull(),
     staffId: uuid('staff_id'),
     status: text('status').notNull(),
+    /** The IdP's `iss` for subject_ref (migration 0023). Never a tenant claim. */
+    subjectIssuer: text('subject_issuer'),
+    /** The IdP's `sub`. No password material in this schema, ever (02 §2.2). */
+    subjectRef: text('subject_ref'),
   },
   (t) => [index('user_account_staff_ix').on(t.tenantId, t.staffId)],
 );
@@ -1411,3 +1510,318 @@ export const reconciliationMatch = appSchema.table('reconciliation_match', {
   note: text('note'),
 });
 registerAppTable('reconciliation_match', reconciliationMatch);
+
+// ---------------------------------------------------------------------------
+// Migration 0023 — identity, devices, sessions (02-security §2.2, §2.5, §2.7).
+// ---------------------------------------------------------------------------
+
+const bytea = customType<{ data: Uint8Array }>({
+  dataType() {
+    return 'bytea';
+  },
+});
+
+/**
+ * The ONE device registry. A device IS its key: `jkt` (RFC 7638 thumbprint of
+ * `public_jwk`) is bound into every access token as `cnf.jkt`. `retired` is
+ * terminal; `retired_reason = 'stolen'` closes the drain window to zero.
+ * `form_factor` is descriptive only — nothing authorises on it.
+ */
+export const device = tenantTable(
+  'device',
+  {
+    label: text('label').notNull(),
+    formFactor: text('form_factor').notNull(),
+    publicJwk: jsonb('public_jwk').notNull(),
+    jkt: text('jkt').notNull(),
+    status: text('status').notNull(),
+    retiredReason: text('retired_reason'),
+    retiredBy: uuid('retired_by'),
+    retiredAt: timestamp('retired_at', { withTimezone: true }),
+    drainOpenedAt: timestamp('drain_opened_at', { withTimezone: true }),
+    enrolledBy: uuid('enrolled_by').notNull(),
+    enrolledAt: timestamp('enrolled_at', { withTimezone: true }).notNull(),
+    enrolmentCodeId: uuid('enrolment_code_id'),
+    lastAuthenticatedAt: timestamp('last_authenticated_at', { withTimezone: true }),
+    lastSeenAt: timestamp('last_seen_at', { withTimezone: true }),
+    appVersion: text('app_version'),
+  },
+  (t) => [index('device_status_ix').on(t.tenantId, t.status)],
+);
+
+/** The device CEILING (§2.5). Effective sync scope = user scope ∩ this. */
+export const deviceLocationScope = tenantTable(
+  'device_location_scope',
+  {
+    deviceId: uuid('device_id').notNull(),
+    locationId: uuid('location_id').notNull(),
+    addedBy: uuid('added_by').notNull(),
+    removedBy: uuid('removed_by'),
+  },
+  (t) => [index('device_location_scope_location_ix').on(t.tenantId, t.locationId)],
+);
+
+/** One-time enrolment code. The code is never stored — only its SHA-256. */
+export const deviceEnrolmentCode = tenantTable(
+  'device_enrolment_code',
+  {
+    codeHash: bytea('code_hash').notNull(),
+    locationId: uuid('location_id'),
+    label: text('label').notNull(),
+    formFactor: text('form_factor').notNull(),
+    issuedBy: uuid('issued_by').notNull(),
+    expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+    consumedAt: timestamp('consumed_at', { withTimezone: true }),
+    outcome: text('outcome'),
+    deviceId: uuid('device_id'),
+  },
+  (t) => [index('device_enrolment_code_issued_ix').on(t.tenantId, t.createdAt)],
+);
+
+/**
+ * Per USER per DEVICE session (`sid`). Server-authored security state with a
+ * rotating refresh credential — WRITE_ID_EXEMPT (see tenant-table.ts).
+ */
+export const deviceSession = appSchema.table('device_session', {
+  tenantId: uuid('tenant_id').notNull(),
+  id: uuid('id').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull(),
+  deviceId: uuid('device_id').notNull(),
+  userId: uuid('user_id').notNull(),
+  refreshHash: bytea('refresh_hash').notNull(),
+  refreshPrevHash: bytea('refresh_prev_hash'),
+  refreshCount: integer('refresh_count').notNull(),
+  lastRefreshedAt: timestamp('last_refreshed_at', { withTimezone: true }),
+  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+  revokedAt: timestamp('revoked_at', { withTimezone: true }),
+  revokedReason: text('revoked_reason'),
+});
+registerAppTable('device_session', deviceSession);
+
+/** Append-only audit of identity and device acts (a subset of §2.6's audit_event). */
+export const identityEvent = appSchema.table('identity_event', {
+  tenantId: uuid('tenant_id').notNull(),
+  id: uuid('id').notNull(),
+  writeId: uuid('write_id').notNull(),
+  hlc: text('hlc').notNull(),
+  eventClass: text('event_class').notNull(),
+  actorKind: text('actor_kind').notNull(),
+  actorUserId: uuid('actor_user_id'),
+  actorDeviceId: uuid('actor_device_id'),
+  action: text('action').notNull(),
+  permissionUsed: text('permission_used'),
+  subjectTable: text('subject_table').notNull(),
+  subjectId: uuid('subject_id'),
+  before: jsonb('before'),
+  after: jsonb('after'),
+  reasonCode: text('reason_code'),
+  reasonNote: text('reason_note'),
+  serverReceivedAt: timestamp('server_received_at', { withTimezone: true }).notNull(),
+});
+registerAppTable('identity_event', identityEvent);
+
+// ---------------------------------------------------------------------------
+// Migration 0024 — the device-keyed sync projections (02 §2.3 Contract 1).
+// Server-derived, like 0013's: WRITE_ID_EXEMPT.
+// ---------------------------------------------------------------------------
+
+/** (device, user) pairs that may sync at all. Tenant-keyed buckets read this. */
+export const deviceSyncGrant = appSchema.table('device_sync_grant', {
+  tenantId: uuid('tenant_id').notNull(),
+  id: uuid('id').notNull(),
+  deviceId: uuid('device_id').notNull(),
+  userId: uuid('user_id').notNull(),
+  jurisdictionCode: text('jurisdiction_code').notNull(),
+  creditBook: text('credit_book').notNull(),
+  refreshedAt: timestamp('refreshed_at', { withTimezone: true }).notNull(),
+});
+registerAppTable('device_sync_grant', deviceSyncGrant);
+
+/** user_location_scope ∩ device_location_scope. Location-keyed buckets read this. */
+export const deviceSyncLocationScope = appSchema.table('device_sync_location_scope', {
+  tenantId: uuid('tenant_id').notNull(),
+  id: uuid('id').notNull(),
+  deviceId: uuid('device_id').notNull(),
+  userId: uuid('user_id').notNull(),
+  locationId: uuid('location_id').notNull(),
+  creditAllowance: text('credit_allowance').notNull(),
+  refreshedAt: timestamp('refreshed_at', { withTimezone: true }).notNull(),
+});
+registerAppTable('device_sync_location_scope', deviceSyncLocationScope);
+
+// ---------------------------------------------------------------------------
+// OPERATIONS (migration 0029, docs/production-runbook.md)
+// ---------------------------------------------------------------------------
+
+/**
+ * Requirement 9.5-A's continuous digest: per tenant, per table, a row count
+ * and two order-independent digests, written by the scheduled digest job AS
+ * app_user inside the tenant's own RLS context. Server-derived and never
+ * synced, so it carries no write spine (WRITE_ID_EXEMPT).
+ */
+export const tableDigest = appSchema.table('table_digest', {
+  tenantId: uuid('tenant_id').notNull(),
+  id: uuid('id').notNull(),
+  asOf: timestamp('as_of', { withTimezone: true }).notNull(),
+  tableName: text('table_name').notNull(),
+  rowCount: bigint('row_count', { mode: 'bigint' }).notNull(),
+  pkDigest: text('pk_digest').notNull(),
+  rowDigest: text('row_digest').notNull(),
+  jobRunId: uuid('job_run_id'),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull(),
+});
+registerAppTable('table_digest', tableDigest);
+
+/** One row per scheduled-job attempt. Counts and tenant ids only. */
+export const jobRun = platformSchema.table('job_run', {
+  id: uuid('id').primaryKey(),
+  jobName: text('job_name').notNull(),
+  status: text('status').notNull(),
+  startedAt: timestamp('started_at', { withTimezone: true }).notNull(),
+  finishedAt: timestamp('finished_at', { withTimezone: true }),
+  durationMs: integer('duration_ms'),
+  runner: text('runner').notNull(),
+  build: text('build'),
+  summary: jsonb('summary').notNull(),
+  error: text('error'),
+});
+
+/** Alert lifecycle per key — page once, repeat on schedule, announce resolution. */
+export const opsAlert = platformSchema.table('ops_alert', {
+  key: text('key').primaryKey(),
+  sourceJob: text('source_job').notNull(),
+  kind: text('kind').notNull(),
+  severity: text('severity').notNull(),
+  subjectTenantId: uuid('subject_tenant_id'),
+  summary: text('summary').notNull(),
+  firstSeenAt: timestamp('first_seen_at', { withTimezone: true }).notNull(),
+  lastSeenAt: timestamp('last_seen_at', { withTimezone: true }).notNull(),
+  lastSentAt: timestamp('last_sent_at', { withTimezone: true }),
+  sendCount: integer('send_count').notNull(),
+  resolvedAt: timestamp('resolved_at', { withTimezone: true }),
+});
+
+// ---------------------------------------------------------------------------
+// Voids and returns (migration 0030) — a NEW document against a sale; the sale
+// is never touched. Every figure is a NON-NEGATIVE magnitude of what is
+// reversed; the direction is `kind`. Identities asserted at COMMIT.
+// ---------------------------------------------------------------------------
+
+export const saleReturn = tenantTable(
+  'sale_return',
+  {
+    /** 'VOID' (whole sale, same till) | 'RETURN' (some lines, any later till here). */
+    kind: text('kind').notNull(),
+    originalSaleId: uuid('original_sale_id').notNull(),
+    /** = the original's location: returns are taken where the sale was made. */
+    locationId: uuid('location_id').notNull(),
+    cashSessionId: uuid('cash_session_id').notNull(),
+    businessDate: date('business_date').notNull(),
+    occurredAt: timestamp('occurred_at', { withTimezone: true }).notNull(),
+    customerId: uuid('customer_id'),
+    returnNo: text('return_no').notNull(),
+    returnNoClaimed: text('return_no_claimed'),
+    reason: text('reason').notNull(),
+    currencyCode: char('currency_code', { length: 3 }).notNull(),
+    moneyScale: bigint('money_scale', { mode: 'bigint' }).notNull(),
+    subtotalNetMinor: bigint('subtotal_net_minor', { mode: 'bigint' }).notNull(),
+    discountMinor: bigint('discount_minor', { mode: 'bigint' }).notNull(),
+    taxTotalMinor: bigint('tax_total_minor', { mode: 'bigint' }).notNull(),
+    totalMinor: bigint('total_minor', { mode: 'bigint' }).notNull(),
+  },
+  (t) => [
+    uniqueIndex('sale_return_no_uq').on(t.tenantId, t.locationId, t.returnNo),
+    index('sale_return_original_ix').on(t.tenantId, t.originalSaleId),
+    index('sale_return_session_ix').on(t.tenantId, t.cashSessionId),
+    index('sale_return_day_ix').on(t.tenantId, t.locationId, t.businessDate),
+  ],
+);
+
+export const saleReturnLine = tenantTable(
+  'sale_return_line',
+  {
+    returnId: uuid('return_id').notNull(),
+    lineNo: smallint('line_no').notNull(),
+    originalSaleLineId: uuid('original_sale_line_id').notNull(),
+    productId: uuid('product_id').notNull(),
+    locationId: uuid('location_id').notNull(),
+    qtySell: bigint('qty_sell', { mode: 'bigint' }).notNull(),
+    qtySellScale: smallint('qty_sell_scale').notNull(),
+    unitPriceE4: bigint('unit_price_e4', { mode: 'bigint' }).notNull(),
+    stockingUomId: uuid('stocking_uom_id').notNull(),
+    qtyStock: bigint('qty_stock', { mode: 'bigint' }).notNull(),
+    qtyStockScale: smallint('qty_stock_scale').notNull(),
+    lineNetMinor: bigint('line_net_minor', { mode: 'bigint' }).notNull(),
+    lineDiscountMinor: bigint('line_discount_minor', { mode: 'bigint' }).notNull(),
+    taxMinor: bigint('tax_minor', { mode: 'bigint' }).notNull(),
+    /** 'RESTOCK' | 'DAMAGED' — platform vocabulary. */
+    disposition: text('disposition').notNull(),
+  },
+  (t) => [
+    uniqueIndex('sale_return_line_uq').on(t.tenantId, t.returnId, t.lineNo),
+    uniqueIndex('sale_return_line_original_uq').on(t.tenantId, t.returnId, t.originalSaleLineId),
+    index('sale_return_line_original_ix').on(t.tenantId, t.originalSaleLineId),
+    index('sale_return_line_location_ix').on(t.tenantId, t.locationId),
+  ],
+);
+
+export const saleReturnTaxLine = tenantTable(
+  'sale_return_tax_line',
+  {
+    returnId: uuid('return_id').notNull(),
+    returnLineId: uuid('return_line_id').notNull(),
+    originalTaxLineId: uuid('original_tax_line_id').notNull(),
+    locationId: uuid('location_id').notNull(),
+    seq: smallint('seq').notNull(),
+    taxCode: text('tax_code').notNull(),
+    rateBp: integer('rate_bp').notNull(),
+    baseMinor: bigint('base_minor', { mode: 'bigint' }).notNull(),
+    taxMinor: bigint('tax_minor', { mode: 'bigint' }).notNull(),
+    /** The ORIGINAL sale's effective-dated rate row (ADR-0002). */
+    taxRateId: uuid('tax_rate_id').notNull(),
+  },
+  (t) => [
+    uniqueIndex('sale_return_tax_line_uq').on(t.tenantId, t.returnLineId, t.seq),
+    index('sale_return_tax_line_return_ix').on(t.tenantId, t.returnId),
+    index('sale_return_tax_line_location_ix').on(t.tenantId, t.locationId),
+  ],
+);
+
+export const saleReturnRefund = tenantTable(
+  'sale_return_refund',
+  {
+    returnId: uuid('return_id').notNull(),
+    seq: smallint('seq').notNull(),
+    methodId: uuid('method_id').notNull(),
+    amountMinor: bigint('amount_minor', { mode: 'bigint' }).notNull(),
+    claimedMinor: bigint('claimed_minor', { mode: 'bigint' }),
+    reference: text('reference'),
+    refundedAt: timestamp('refunded_at', { withTimezone: true }).notNull(),
+    locationId: uuid('location_id').notNull(),
+  },
+  (t) => [
+    uniqueIndex('sale_return_refund_uq').on(t.tenantId, t.returnId, t.seq),
+    index('sale_return_refund_location_ix').on(t.tenantId, t.locationId, t.methodId),
+  ],
+);
+
+/**
+ * One bulk load of opening STOCK (migration 0031; open-questions Q20). Its
+ * rows are `stock_movement` OPENING rows with source_id = this id. Posts
+ * nothing to the GL. `contentSha256` is unique: the same file lands once.
+ */
+export const openingStockImport = tenantTable(
+  'opening_stock_import',
+  {
+    contentSha256: text('content_sha256').notNull(),
+    fileName: text('file_name'),
+    asOfDate: date('as_of_date').notNull(),
+    rowCount: integer('row_count').notNull(),
+    locationCount: integer('location_count').notNull(),
+    productCount: integer('product_count').notNull(),
+    importedBy: uuid('imported_by').notNull(),
+  },
+  (t) => [uniqueIndex('opening_stock_import_content_uq').on(t.tenantId, t.contentSha256)],
+);
