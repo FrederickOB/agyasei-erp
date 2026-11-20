@@ -1,8 +1,9 @@
 # Go-live runbook — the items between here and a trading pilot, in lead-time order
 
 **Owner: the founder.** Every item below starts with an act only you can perform; the engineering
-either exists or is explicitly out of reach until your act happens. Status is honest as of
-2026-08-24.
+either exists or is explicitly out of reach until your act happens. Items 1–5 date from
+2026-08-24; items 6–9 and the correction at the end were added on **2026-11-19**, when the
+go-live engineering landed (PRs #25–#30 and wave 2 — see `docs/go-live-status.md`).
 
 ## 1. Q8 — Ghana e-VAT clearance · LONGEST LEAD, NOT STARTED
 
@@ -36,10 +37,15 @@ database with two commands. What remains is their review of it, not the waiting.
 
 **Do:** choose and buy 1–2 candidate thermal printers. Selection criteria (not models — a model
 recommendation would be a guess): ESC/POS command set · Bluetooth Classic SPP **and** USB ·
-58 or 80mm · sourced locally enough that 25 outlets can be serviced. **Then** the spike is
-engineering: Web Bluetooth/USB from the PWA on the chosen Android hardware, receipt layout from
-the sale document, GRA-required fields per Q8's answer. The spike is deliberately not built
-against an imagined printer — that is how the wrong hardware gets bought.
+58 or 80mm · sourced locally enough that 25 outlets can be serviced. If an all-in-one Android
+POS terminal with a built-in printer is a candidate, buy one of those too.
+
+**Updated 2026-11-19 — the software side is built (PR #26).** Every route exists behind one
+interface: Bluetooth (BLE), USB, serial (laptops), an Android print-app hand-off (reaches Classic
+Bluetooth and built-in terminal printers), browser printing (A4 at a desk) and the on-screen
+receipt. What remains is the measurement: run `docs/printing-spike-protocol.md` with the printers
+you buy — the app's **Printer → spike mode** runs the receipts and shows the pass/fail numbers on
+screen. GRA-required fields still wait on Q8's answer.
 
 ## 4. Real Android field trial · DEVICE + SIM, THEN A PROTOCOL
 
@@ -61,8 +67,43 @@ Q8 stays prospective, so the practitioner advises on a design instead of assessi
 already incurred; and the dry run costs nothing but calendar. The launch date is restated to
 **1 January 2027** (`CLAUDE.md` §1).
 
+## 6. Production accounts · SUPABASE + FLY.IO (London) · NOT STARTED
+
+**Do:** follow `docs/production-runbook.md` §8 in order — create the Supabase project in London
+**with point-in-time recovery switched on**, apply the roles, create the three Fly.io apps, set the
+secrets, deploy, then run `ops verify` and record every MANUAL answer. Ask Supabase for its
+recovery-time objective **in writing**. Provisional on Q13 (data residency) — ask that question
+first; it is one conversation and it can move the whole hosting decision.
+
+## 7. The sign-in provider · ONE ACCOUNT, THEN CONFIGURATION · NOT STARTED
+
+**Do:** choose a managed OIDC provider hosted in the EU (Zitadel, Auth0 EU or a hosted Keycloak all
+fit `02-security` §2.2: OIDC with ES256 or EdDSA, per-user TOTP, an admin API). Create a **public
+client with PKCE** whose redirect is `https://<pwa>/auth/callback`, allow the PWA's origin on its
+token endpoint, require TOTP for Accounts and head-of-operations users, then set `OIDC_ISSUER` and
+`OIDC_CLIENT_ID`. Generate the two key rings with `infra/scripts/gen-identity-keys.mjs`. Production
+refuses to start without all of it — that is deliberate.
+
+## 8. Alerts that reach a phone · TWO SMALL CHOICES · NOT STARTED
+
+**Do:** choose where alerts go (a webhook into SMS, WhatsApp or e-mail) and a heartbeat service
+that pages when the scheduled jobs stop. Then trigger one test alert and confirm it arrives on the
+phone that will be with someone during trading hours. Stage 0 (§9.7.1) requires this.
+
+## 9. Dry run at Techiman, with the paper fallback · CALENDAR · NOT STARTED
+
+**Do:** once 6–8 are done and a tablet and printer are in hand: a dry run with the real staff,
+real catalogue and practice customers — open the till, sell (cash, mobile money, split, credit),
+return an item, cash up — plus one two-hour **paper** drill, because the paper fallback is a
+precondition (§9.7.1), not a contingency. Then the Phase 0 and Phase 1 sign-offs, which are yours.
+
 ---
-*Item 5 is answered. Items 1 and 2 are emails you could send today, both with their attachments
-already written — and item 2's month of statements is already produced, which was the one piece of
-the critical path that could be pulled forward. Item 1 is the pole. Items 3 and 4 are purchases
-plus protocols already written. None of what remains is code.*
+*Item 5 is answered. Items 1 and 2 are emails you could send today, with their attachments already
+written; item 1 is the pole. Items 3 and 4 are purchases plus protocols already written; 6–8 are
+accounts and configuration.*
+
+**Correction (2026-11-19).** This page used to end "None of what remains is code." That was wrong
+in August: there was no production environment, no real sign-in, no printing, no mobile-money or
+split payments, no till or cash-up, no returns and no CI. Most of that is now built and tested
+(`docs/go-live-status.md` lists what, with evidence, and what is still open). What is still not
+code is above — and the critical path is still items 1 and 2.
