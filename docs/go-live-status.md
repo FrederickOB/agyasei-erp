@@ -58,6 +58,7 @@ by merging and trusting green suites. Every one would have passed its own packag
 | Closed tills never reached the books: no job ran the till posting sweep | Till banking and cash-over/short never posted in production | #31 |
 | HQ reports were gross of voids and returns | The dashboard overstates revenue after any return | #31 |
 | `pnpm dev:token` failed on real Postgres (a parameter typed two ways) | The documented local flow, and drill D6, broken | live verification |
+| **No production path to a new tenant's first device.** Sign-in needs an enrolled device; a code is issued only by an administrator signed in on one; the dev stack hid it behind the HS256 path production refuses | Tenant #1 could not have brought its first tablet online in production | `poc/free-tier` — `bootstrapFirstAdmin` (`apps/api/src/identity/first-admin.ts`): first administrator + one 15-minute code, only while no device has enrolled; 8 tests incl. two-tenant isolation |
 
 ## 4. Phase 1 acceptance criteria — where each stands now
 

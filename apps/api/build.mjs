@@ -30,6 +30,9 @@ const result = await build({
     migrate: here('./src/cli/migrate.ts'),
     jobs: here('./src/cli/jobs.ts'),
     ops: here('./src/cli/ops.ts'),
+    // migrate → api + worker in one container, for hosts with no release step
+    // or separate worker on their free tier (docs/poc-runbook.md). Fly never runs it.
+    combined: here('./src/cli/combined.ts'),
   },
   outdir: here('./dist/bin'),
   bundle: true,

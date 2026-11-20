@@ -20,7 +20,8 @@
     "dev:web": "pnpm --filter @erp/web dev",
     "lint:payroll": "node tools/lint-payroll.mjs",
     "dev:post-settled": "tsx infra/scripts/dev-post-settled.ts",
-    "release:smoke": "pnpm --filter @erp/api build && infra/scripts/release-smoke.sh"
+    "release:smoke": "pnpm --filter @erp/api build && infra/scripts/release-smoke.sh",
+    "poc:setup": "tsx infra/scripts/poc-setup.ts"
   },
   "devDependencies": {
     "@erp/db": "workspace:*",

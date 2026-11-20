@@ -38,7 +38,7 @@ RUN --mount=type=cache,id=pnpm-store,target=/pnpm/store \
 COPY packages ./packages
 COPY apps/api ./apps/api
 # Workspace dependencies that compile (contracts, money, sequence), then the
-# bundle: dist/bin/{main,migrate,jobs,ops}.js + dist/migrations/.
+# bundle: dist/bin/{main,migrate,jobs,ops,combined}.js + dist/migrations/.
 RUN pnpm --filter "@erp/api^..." run --if-present build \
  && pnpm --filter @erp/api run build
 
