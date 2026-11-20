@@ -1,64 +1,176 @@
 /**
- * Cash tender. The amount received is parsed EXACTLY through @erp/money
- * parse() against the configured CurrencySpec — no float ever touches it —
- * and change is bigint subtraction rendered through the Money boundary.
+ * Taking payment — one or more TENDER LINES (04 §4.8).
  *
- * The layout answers the three questions in the order a cashier asks them:
- * what is owed, what was handed over, what goes back. Amount due is stated
- * once, prominently, and never has to be remembered; the shortcuts are the
- * round amounts people actually hand over (money/quick-cash.ts), because
- * typing an exact figure with a queue waiting is the slowest part of a cash
- * sale; and change appears the moment it can be computed, in the affirmative
- * colour, so the drawer opens on a number that is already on screen.
+ * The layout still answers the three questions in the order a cashier asks
+ * them: what is owed, how it is being paid, what goes back. Amount due is
+ * stated once, prominently, and never has to be remembered.
+ *
+ * HOW A SPLIT WORKS, because it is how a split is actually tendered:
+ * every line but the last carries the amount the customer said ("50 by mobile
+ * money"); the LAST line takes the rest. So a one-method sale is one line that
+ * takes everything, and nobody types the total twice. A momo, transfer or
+ * cheque line asks for its reference when the tenant's method requires one,
+ * and a cash line asks what was handed over and shows the change.
+ *
+ * The methods, their names and their order are the TENANT's rows
+ * (`tender_method`); this file renders them and reads only the platform flags
+ * the server derives — is it drawer cash, is it on account, does it need a
+ * reference. It never compares a method's code or name to anything (§8.9).
+ *
+ * Every figure is bigint minor units parsed through @erp/money against the
+ * configured CurrencySpec; the arithmetic that decides whether the sale can
+ * complete is `settleTenders`, the same function checkout runs, so the screen
+ * and the record cannot disagree about whether the payments add up.
  */
 import { useMemo, useState, type ReactNode } from 'react';
-import { compare, format, parse, sub } from '@erp/money';
+import { compare, format, sub } from '@erp/money';
+import { settleTenders, type TenderDraft } from '../../data/mutations/checkout';
 import type { CartPricing } from '../../data/pricing/cart-pricing';
+import type { CreditCustomer } from '../../data/queries/customers';
+import type { TenderMethod } from '../../data/queries/tender-methods';
 import { useCurrencySpec } from '../../money/CurrencyContext';
 import { Money } from '../../money/Money';
+import { parseMoneyOrNull } from '../../money/parse-input';
 import { suggestedTenders } from '../../money/quick-cash';
 import { Icon } from '../../ui/Icon';
 
+export interface TenderSubmission {
+  readonly tenders: readonly TenderDraft[];
+  readonly customerId?: string;
+}
+
+interface LineState {
+  readonly key: number;
+  readonly methodId: string;
+  /** What the customer said this line pays. Ignored on the last line. */
+  readonly amountText: string;
+  readonly reference: string;
+  /** Cash lines: what was handed over. */
+  readonly receivedText: string;
+}
+
+let lineKey = 0;
+function newLine(methodId: string): LineState {
+  lineKey += 1;
+  return { key: lineKey, methodId, amountText: '', reference: '', receivedText: '' };
+}
+
 export function TenderPanel({
   pricing,
+  methods,
+  customers,
+  canSellOnAccount,
+  onAccountCeilingMinor = null,
   onComplete,
   onBack,
 }: {
   /**
    * What the customer hands over, and the tax split when this device can state
    * one. The SAME object the cart footer rendered — the amount due is never
-   * recomputed here, because a tender screen that disagreed with the cart
-   * behind it is a disagreement nobody would notice until cash-up.
+   * recomputed here.
    */
   readonly pricing: CartPricing;
-  readonly onComplete: (tenderedMinor: bigint) => void;
+  /** The tenant's active tender methods, in the tenant's order. */
+  readonly methods: readonly TenderMethod[];
+  /** Customers who buy on account — offered only for an on-account line. */
+  readonly customers: readonly CreditCustomer[];
+  /** Whether this session may put a sale on account at all. A courtesy, not a control. */
+  readonly canSellOnAccount: boolean;
+  /**
+   * The most this session may put on account here, or null for no ceiling.
+   * The server measures the same bound against ITS figure regardless; this
+   * only stops a clerk queuing a sale the server will refuse.
+   */
+  readonly onAccountCeilingMinor?: bigint | null;
+  readonly onComplete: (submission: TenderSubmission) => void;
   readonly onBack: () => void;
 }): ReactNode {
   const spec = useCurrencySpec();
-  const [text, setText] = useState('');
   const totalMinor = pricing.grossMinor;
   const taxNoted =
     pricing.isTaxInclusive && pricing.breakdown !== null && pricing.breakdown.taxTotalMinor !== 0n
       ? pricing.breakdown.taxTotalMinor
       : null;
 
-  const tendered = useMemo<bigint | null>(() => {
-    const trimmed = text.trim();
-    if (trimmed.length === 0) return null;
-    try {
-      return parse(trimmed, spec);
-    } catch {
-      return null; // not a canonical amount yet — keep the button disabled
-    }
-  }, [text, spec]);
+  const offered = useMemo(
+    () => methods.filter((m) => canSellOnAccount || !m.isOnAccount),
+    [methods, canSellOnAccount],
+  );
+  const firstMethod = offered.find((m) => m.isCash) ?? offered[0];
+  const [lines, setLines] = useState<LineState[]>(() =>
+    firstMethod === undefined ? [] : [newLine(firstMethod.id)],
+  );
+  const [customerId, setCustomerId] = useState<string>('');
+  const byId = useMemo(() => new Map(offered.map((m) => [m.id, m])), [offered]);
 
-  const change =
-    tendered !== null && compare(tendered, totalMinor) >= 0 ? sub(tendered, totalMinor) : null;
-  const short = tendered !== null && change === null;
-  const quick = useMemo(() => suggestedTenders(totalMinor, spec.scale), [totalMinor, spec.scale]);
+  const update = (key: number, patch: Partial<LineState>): void =>
+    setLines((ls) => ls.map((l) => (l.key === key ? { ...l, ...patch } : l)));
+
+  // The drafts `settleTenders` judges — the same function checkout runs.
+  const drafts: TenderDraft[] = [];
+  let incomplete = false;
+  lines.forEach((l, i) => {
+    const method = byId.get(l.methodId);
+    if (method === undefined) {
+      incomplete = true;
+      return;
+    }
+    const last = i === lines.length - 1;
+    const amount = last ? null : parseMoneyOrNull(l.amountText, spec);
+    if (!last && amount === null) incomplete = true;
+    const received = method.isCash ? parseMoneyOrNull(l.receivedText, spec) : null;
+    // Cash is counted INTO the hand before the drawer opens: a cash line is
+    // not complete until somebody has said what was handed over ("Exact" is
+    // one tap). This is the behaviour the single-tender screen always had.
+    if (method.isCash && received === null) incomplete = true;
+    drafts.push({
+      method,
+      amountMinor: amount,
+      ...(l.reference.trim().length > 0 ? { reference: l.reference } : {}),
+      ...(received === null ? {} : { tenderedMinor: received }),
+    });
+  });
+  const statedMinor = drafts.reduce((a, d) => a + (d.amountMinor ?? 0n), 0n);
+  const restMinor = sub(totalMinor, statedMinor);
+  const needsCustomer = drafts.some((d) => d.method.isOnAccount);
+
+  let settled: ReturnType<typeof settleTenders> | null = null;
+  let problem: string | null = null;
+  if (!incomplete) {
+    try {
+      settled = settleTenders(drafts, totalMinor);
+    } catch (err) {
+      problem = err instanceof Error ? err.message : String(err);
+    }
+  }
+  if (settled !== null && onAccountCeilingMinor !== null) {
+    const onAccount = settled.lines
+      .filter((l) => l.method.isOnAccount)
+      .reduce((a, l) => a + l.appliedMinor, 0n);
+    if (onAccount > onAccountCeilingMinor) {
+      problem = `That is more than you may put on account here (${format(onAccountCeilingMinor, spec)}). Ask a manager, or take part of it another way.`;
+      settled = null;
+    }
+  }
+  const ready = settled !== null && (!needsCustomer || customerId.length > 0);
+
+  if (offered.length === 0) {
+    return (
+      <section className="tender-panel" aria-label="Payment">
+        <p className="sale-refused" role="alert">
+          <Icon name="alert" size={22} />
+          <span>This device has no payment methods yet — waiting for setup data to arrive.</span>
+        </p>
+        <button type="button" className="secondary-action pressable" onClick={onBack}>
+          <Icon name="back" size={20} />
+          Back to cart
+        </button>
+      </section>
+    );
+  }
 
   return (
-    <section className="tender-panel" aria-label="Cash payment">
+    <section className="tender-panel" aria-label="Payment">
       <div className="tender-due">
         <span className="total-label">Amount due</span>
         <Money amount={totalMinor} className="money total-value tender-total" />
@@ -71,58 +183,171 @@ export function TenderPanel({
         ) : null}
       </div>
 
-      <label className="tender-label" htmlFor="tender-input">
-        Cash received
-      </label>
-      <input
-        id="tender-input"
-        className="tender-input money"
-        type="text"
-        inputMode="decimal"
-        autoComplete="off"
-        placeholder={format(0n, spec)}
-        aria-describedby="tender-hint"
-        value={text}
-        onChange={(e) => setText(e.target.value)}
-      />
-      <p id="tender-hint" className="tender-hint">
-        {/* Helper text that persists, rather than a placeholder that vanishes
-            the moment it is needed (§ input-helper-text). */}
-        {short
-          ? 'That is less than the amount due. Add more, or go back and change the cart.'
-          : 'Tap an amount below, or type what the customer handed over.'}
-      </p>
+      {lines.map((l, i) => {
+        const method = byId.get(l.methodId);
+        const last = i === lines.length - 1;
+        const appliedMinor = last ? restMinor : (parseMoneyOrNull(l.amountText, spec) ?? 0n);
+        const received = method?.isCash === true ? parseMoneyOrNull(l.receivedText, spec) : null;
+        const change =
+          received !== null && compare(received, appliedMinor) >= 0 ? sub(received, appliedMinor) : null;
+        const quick = method?.isCash === true ? suggestedTenders(appliedMinor, spec.scale) : [];
+        const labelId = `tender-line-${l.key}`;
+        return (
+          <fieldset key={l.key} className="tender-line" aria-labelledby={labelId}>
+            <legend id={labelId} className="tender-label">
+              {lines.length === 1 ? 'Paying by' : `Payment ${String(i + 1)}`}
+            </legend>
+            <div className="chip-row tender-methods" role="group" aria-label="Payment method">
+              {offered.map((m) => (
+                <button
+                  key={m.id}
+                  type="button"
+                  className="chip pressable"
+                  aria-pressed={m.id === l.methodId}
+                  onClick={() => update(l.key, { methodId: m.id })}
+                >
+                  {m.name}
+                </button>
+              ))}
+            </div>
 
-      <div className="tender-quick" role="group" aria-label="Quick amounts">
+            {last ? (
+              <p className="tender-rest">
+                <span>{lines.length === 1 ? 'Amount' : 'Takes the rest'}</span>
+                <Money amount={restMinor < 0n ? 0n : restMinor} className="money" />
+              </p>
+            ) : (
+              <label className="tender-field">
+                <span>Amount</span>
+                <input
+                  className="tender-input money"
+                  type="text"
+                  inputMode="decimal"
+                  autoComplete="off"
+                  placeholder={format(0n, spec)}
+                  value={l.amountText}
+                  onChange={(e) => update(l.key, { amountText: e.target.value })}
+                />
+              </label>
+            )}
+
+            {method?.requiresReference === true ? (
+              <label className="tender-field">
+                <span>Reference (transaction id or cheque number)</span>
+                <input
+                  className="tender-reference"
+                  type="text"
+                  autoComplete="off"
+                  autoCapitalize="characters"
+                  maxLength={64}
+                  value={l.reference}
+                  onChange={(e) => update(l.key, { reference: e.target.value })}
+                />
+              </label>
+            ) : null}
+
+            {method?.isCash === true ? (
+              <>
+                <label className="tender-field">
+                  <span>Cash received</span>
+                  <input
+                    className="tender-input money"
+                    type="text"
+                    inputMode="decimal"
+                    autoComplete="off"
+                    placeholder={format(0n, spec)}
+                    value={l.receivedText}
+                    onChange={(e) => update(l.key, { receivedText: e.target.value })}
+                  />
+                </label>
+                <div className="tender-quick" role="group" aria-label="Quick amounts">
+                  <button
+                    type="button"
+                    className="chip pressable"
+                    onClick={() => update(l.key, { receivedText: format(appliedMinor < 0n ? 0n : appliedMinor, spec) })}
+                  >
+                    Exact
+                  </button>
+                  {quick.map((amount) => (
+                    <button
+                      key={amount.toString()}
+                      type="button"
+                      className="chip pressable money"
+                      onClick={() => update(l.key, { receivedText: format(amount, spec) })}
+                    >
+                      {format(amount, spec)}
+                    </button>
+                  ))}
+                </div>
+                <div className={`tender-change${change !== null ? ' ready' : ''}`}>
+                  <span className="total-label">Change</span>
+                  {change !== null ? (
+                    <Money amount={change} className="money total-value tender-change-value" />
+                  ) : (
+                    <span className="total-value tender-change-placeholder" aria-label="No change yet">
+                      —
+                    </span>
+                  )}
+                </div>
+              </>
+            ) : null}
+
+            {method?.isOnAccount === true ? (
+              <label className="tender-field">
+                <span>Customer</span>
+                <select
+                  className="tender-customer"
+                  value={customerId}
+                  onChange={(e) => setCustomerId(e.target.value)}
+                >
+                  <option value="">Choose the customer…</option>
+                  {customers.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            ) : null}
+
+            {lines.length > 1 ? (
+              <button
+                type="button"
+                className="secondary-action pressable tender-remove"
+                onClick={() => setLines((ls) => ls.filter((x) => x.key !== l.key))}
+              >
+                <Icon name="trash" size={18} />
+                Remove this payment
+              </button>
+            ) : null}
+          </fieldset>
+        );
+      })}
+
+      {firstMethod !== undefined ? (
         <button
           type="button"
-          className="chip pressable"
-          onClick={() => setText(format(totalMinor, spec))}
+          className="secondary-action pressable"
+          onClick={() => setLines((ls) => [...ls, newLine(firstMethod.id)])}
         >
-          Exact
+          <Icon name="plus" size={20} />
+          Split the payment
         </button>
-        {quick.map((amount) => (
-          <button
-            key={amount.toString()}
-            type="button"
-            className="chip pressable money"
-            onClick={() => setText(format(amount, spec))}
-          >
-            {format(amount, spec)}
-          </button>
-        ))}
-      </div>
+      ) : null}
 
-      <div className={`tender-change${change !== null ? ' ready' : ''}`}>
-        <span className="total-label">Change</span>
-        {change !== null ? (
-          <Money amount={change} className="money total-value tender-change-value" />
-        ) : (
-          <span className="total-value tender-change-placeholder" aria-label="No change yet">
-            —
-          </span>
-        )}
-      </div>
+      {/* Helper text that persists, rather than a placeholder that vanishes
+          the moment it is needed (§ input-helper-text). */}
+      <p className="tender-hint" role="status">
+        {problem !== null
+          ? problem
+          : needsCustomer && customerId.length === 0
+            ? 'Choose the customer this goes on account to.'
+            : incomplete
+              ? lines.length === 1
+                ? 'Tap an amount, or type what the customer handed over.'
+                : 'Enter an amount for each payment except the last, which takes the rest.'
+              : 'Ready when the payments cover the amount due.'}
+      </p>
 
       <div className="tender-actions">
         <button type="button" className="secondary-action pressable" onClick={onBack}>
@@ -132,9 +357,10 @@ export function TenderPanel({
         <button
           type="button"
           className="primary-action pressable"
-          disabled={change === null}
+          disabled={!ready}
           onClick={() => {
-            if (tendered !== null) onComplete(tendered);
+            if (!ready) return;
+            onComplete({ tenders: drafts, ...(needsCustomer ? { customerId } : {}) });
           }}
         >
           <Icon name="check" size={20} />

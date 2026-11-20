@@ -122,7 +122,7 @@ describe('route sweep: every query procedure has a registered two-tenant isolati
     expect(queries).toContain('catalogue.detail');
     expect(queries).toContain('reports.cashPosition');
     expect(queries).toContain('session.permissions');
-    expect(queries.length).toBeGreaterThanOrEqual(36);
+    expect(queries.length).toBeGreaterThanOrEqual(37);
     expect(repoTags().length).toBeGreaterThanOrEqual(queries.length);
   });
 

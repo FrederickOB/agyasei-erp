@@ -545,6 +545,23 @@ const probes: Record<string, () => Promise<void>> = {
   },
 
   // ── sales ────────────────────────────────────────────────────────────────
+  // ── tills (migration 0020) ───────────────────────────────────────────────
+  'cashSession.openCheck': async () => {
+    // Non-vacuity: A's own check answers with a real server date for its outlet.
+    const own = await A.owner.cashSession.openCheck({ locationId: A.outletId, businessDate: '2026-08-15' });
+    expect(own.serverDate).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    clean.assertClean('cashSession.openCheck', own);
+    // B's outlet exists and has had tills opened in it (the world's sales).
+    await bHolds('B outlet', `select count(*)::text as v from app.location where tenant_id = $1 and id = $2`, [B.outletId]);
+    await bHolds('B till', `select count(*)::text as v from app.cash_session where tenant_id = $1 and location_id = $2`, [
+      B.outletId,
+    ]);
+    // Naming B's outlet answers exactly as an outlet that exists nowhere.
+    await assertSameAsNonexistent('cashSession.openCheck', clean, B.outletId, (id) =>
+      A.owner.cashSession.openCheck({ locationId: id, businessDate: '2026-08-15' }),
+    );
+  },
+
   'sales.get': async () => {
     const own = await A.owner.sales.get({ saleId: A.creditSaleId });
     expect(JSON.stringify(own)).toContain(A.creditSaleId);
@@ -583,6 +600,8 @@ const probes: Record<string, () => Promise<void>> = {
 
 describe('every query procedure: tenant A sees none of tenant B, at every read path', () => {
   it('[isolation:catalogue.list] the whole catalogue, paged, is exactly A’s products', () => probes['catalogue.list']!());
+  it('[isolation:cashSession.openCheck] A’s outlet answers; B’s outlet, which holds tills, answers as a nonexistent one', () =>
+    probes['cashSession.openCheck']!());
   it('[isolation:catalogue.search] B’s marker product is unfindable; a wide search carries nothing of B’s', () =>
     probes['catalogue.search']!());
   it('[isolation:catalogue.detail] A’s product resolves (positive control); B’s answers as a nonexistent id', () =>
@@ -774,6 +793,7 @@ const DECISIVE_MUTATION: Record<string, Decisive> = {
   'reports.distributionCostRatio': 'held-by-app-predicate',
   'review.list': 'held-by-app-predicate',
   'review.get': 'rls-off',
+  'cashSession.openCheck': 'held-by-app-predicate',
   'sales.get': 'rls-off',
   'sales.recomputeCheck': 'rls-off',
   'session.permissions': 'held-by-app-predicate',

@@ -165,7 +165,9 @@ describe('inside the office', () => {
     const db = await till();
     renderShell(db, holding([CAPABILITY.reportLocation, CAPABILITY.conflictReview]));
     fireEvent.click(await screen.findByRole('button', { name: 'Open the office' }));
-    const sales = await screen.findByRole('region', { name: 'Sales' });
+    // The office is a LAZY chunk (Shell.tsx): under a loaded parallel test run
+    // its first import can take longer than the default second.
+    const sales = await screen.findByRole('region', { name: 'Sales' }, { timeout: 8000 });
     const taken = screen.getByRole('region', { name: 'Taken' });
     const decisions = screen.getByRole('region', { name: 'Decisions' });
     // Not held: no tile, rather than a tile of zeroes.
@@ -182,14 +184,14 @@ describe('inside the office', () => {
     const db = await till();
     renderShell(db, holding([CAPABILITY.reportLocation]));
     fireEvent.click(await screen.findByRole('button', { name: 'Open the office' }));
-    const rail = await screen.findByRole('navigation', { name: 'Office' });
+    const rail = await screen.findByRole('navigation', { name: 'Office' }, { timeout: 8000 });
     fireEvent.click(within(rail).getByRole('button', { name: 'Reports' }));
     expect(within(rail).getByRole('button', { name: 'Reports' }).getAttribute('aria-current')).toBe('page');
     await waitFor(() => expect(screen.queryByRole('region', { name: 'Sales' })).toBeNull());
     // The office's own reporting page, with its period control.
-    await screen.findByRole('heading', { name: 'Reports' });
+    await screen.findByRole('heading', { name: 'Reports' }, { timeout: 8000 });
     expect(screen.getByRole('group', { name: 'Period' })).toBeTruthy();
     fireEvent.click(within(rail).getByRole('button', { name: 'Dashboard' }));
-    await screen.findByRole('region', { name: 'Sales' });
+    await screen.findByRole('region', { name: 'Sales' }, { timeout: 8000 });
   });
 });

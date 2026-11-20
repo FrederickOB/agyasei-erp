@@ -50,17 +50,27 @@
  * DETECTOR: the server compares it against its own repriced total, records the
  * comparison, and writes its own figure regardless.
  *
- * Cash tendered and change stay DEVICE-LOCAL, in outbox columns. The contract
- * refuses them today because the server has nowhere to put them until
- * `app.cash_session` and `app.sale_tender` land, and a field the server
- * silently drops is worse than one it refuses.
+ * HOW THE CUSTOMER PAID is on the wire now, one tender line per method (04
+ * §4.8; migration 0021): part cash and part mobile money is two lines, a
+ * transfer or a cheque carries its reference, and an on-account line names
+ * the customer. The note handed over and the change stay DEVICE-LOCAL, in
+ * outbox columns, because they are receipt facts: the drawer keeps the
+ * APPLIED amount (`drawer_minor`), which is what cash-up adds up.
+ *
+ * THERE IS NO PATH TO A SALE WITHOUT AN OPEN TILL (08 §8.2a). The sale names
+ * it (`cashSessionId`) and its business date IS the till's — the device never
+ * asserts one of its own, and a till left open past local midnight refuses
+ * the sale until the counter has closed it and opened the new day's.
  *
  * Money: totals are computed in TypeScript over bigint via @erp/money — never
  * in SQL, where SUM() would come back as float64 (§8.3).
  */
-import { createSaleInput, type CreateSaleInput } from '@erp/contracts';
+import {
+  createSaleInput,
+  type CreateSaleInput,
+  type SaleTenderInput,
+} from '@erp/contracts';
 import { compare, serializeMoney, sub } from '@erp/money';
-import { assertBusinessDate, businessDateFor } from '../../lib/business-date';
 import { deviceNodeFromClaimedHlc, type ClaimedHlcClock } from '../../lib/hlc';
 import type { ReceiptNumberFormat } from '../../lib/receipt-number';
 import { uuidv7 } from '../../lib/uuidv7';
@@ -69,9 +79,11 @@ import { cartTotalMinor, UNTAXED_BASIS, type CartPricingBasis } from '../pricing
 import { readPricingBasis } from '../pricing/cart-basis';
 import { getCartLines, getOpenCart, type CartLineRow, type CartRow } from '../queries/cart';
 import { readDeviceLocation, readReceiptFormat } from '../queries/session';
+import { defaultCashMethod, type TenderMethod } from '../queries/tender-methods';
 import { resolveCartPriceList } from '../session/device-price-list';
 import { allocateReceiptNumber } from '../sequence';
 import { nextQueueSeq } from '../sync/queue-seq';
+import { readOpenTill, tillIsStale, type Till } from './till';
 
 export class EmptyCartError extends Error {
   constructor() {
@@ -88,23 +100,51 @@ export class DuplicateSaleError extends Error {
 }
 
 export class ShortTenderError extends Error {
-  constructor() {
-    super('cash received is less than the amount due');
+  constructor(message = 'cash received is less than the amount due') {
+    super(message);
     this.name = 'ShortTenderError';
   }
 }
 
 /**
- * The device cannot name where it is, what list it priced against, or who the
- * credit sale is for. Recording anyway would file the sale against the wrong
- * outlet or have the server reprice it from the wrong list — so the sale is
- * refused BEFORE the cart is cleared. The cart survives, in front of a human,
- * with a sentence a counter can act on.
+ * The device cannot name where it is, what list it priced against, which
+ * till it is ringing into, or who the credit sale is for. Recording anyway
+ * would file the sale against the wrong outlet, the wrong day or the wrong
+ * list — so the sale is refused BEFORE the cart is cleared. The cart
+ * survives, in front of a human, with a sentence a counter can act on.
  */
 export class SaleContextIncompleteError extends Error {
   constructor(readonly missing: string) {
     super(missing);
     this.name = 'SaleContextIncompleteError';
+  }
+}
+
+/** No till is open: the counter's answer is the open-till screen (§8.2a). */
+export class TillNotOpenError extends SaleContextIncompleteError {
+  constructor() {
+    super('No till is open. Open the till before taking a sale.');
+    this.name = 'TillNotOpenError';
+  }
+}
+
+/**
+ * The till belongs to an earlier day: local midnight has passed. The counter
+ * closes it (uncounted) and offers the new day's till — it never files today's
+ * sale under yesterday's date (§8.2a).
+ */
+export class TillClosedAtMidnightError extends SaleContextIncompleteError {
+  constructor(readonly businessDate: string) {
+    super(`The till for ${businessDate} closed at midnight. Open today's till to keep selling.`);
+    this.name = 'TillClosedAtMidnightError';
+  }
+}
+
+/** The tender lines do not settle the sale — too little, too much, or a missing reference. */
+export class TenderError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'TenderError';
   }
 }
 
@@ -136,8 +176,92 @@ export {
   type CartPricingBasis,
 } from '../pricing/cart-pricing';
 
-/** Cash or credit. The contract's enum, spelled once. */
-export type TenderKind = CreateSaleInput['tender'];
+/**
+ * One way the customer is paying, as the counter captured it.
+ *
+ * `amountMinor` null makes it the BALANCE line — "the rest" — which settles
+ * whatever the other lines do not. A single-method sale is one balance line;
+ * "50.00 by mobile money, the rest in cash" is a stated line and a balance
+ * line. On the wire the balance line carries no amount: it makes no claim, so
+ * the server giving it its own remainder overwrites nothing.
+ */
+export interface TenderDraft {
+  readonly method: TenderMethod;
+  readonly amountMinor: bigint | null;
+  /** A transaction id, a bank reference, a cheque number. */
+  readonly reference?: string;
+  /**
+   * CASH lines only: what the customer handed over, when more than the line
+   * applies. Change is the difference. Never on the wire.
+   */
+  readonly tenderedMinor?: bigint;
+}
+
+/** A tender line with its applied amount resolved against the device's total. */
+export interface AppliedTender {
+  readonly method: TenderMethod;
+  readonly appliedMinor: bigint;
+  /** True for the balance line: on the wire without an amount. */
+  readonly isBalance: boolean;
+  readonly reference?: string;
+}
+
+export interface SettledTenders {
+  readonly lines: readonly AppliedTender[];
+  /** Cash that goes IN THE DRAWER: Σ applied over cash lines. */
+  readonly drawerMinor: bigint;
+  /** Notes handed over for the cash lines (≥ drawerMinor). */
+  readonly cashTenderedMinor: bigint;
+  readonly changeMinor: bigint;
+}
+
+/**
+ * Resolve the counter's tender lines against the DEVICE's total, exactly, in
+ * bigint. Pure. Refuses rather than guesses:
+ *  - more than one balance line, or none and the lines do not sum to the total;
+ *  - stated lines that exceed the total;
+ *  - a method that needs a reference without one;
+ *  - cash handed over that does not cover the cash applied.
+ */
+export function settleTenders(drafts: readonly TenderDraft[], totalMinor: bigint): SettledTenders {
+  if (drafts.length === 0) throw new TenderError('Choose how the customer is paying.');
+  const balances = drafts.filter((d) => d.amountMinor === null);
+  if (balances.length > 1) throw new TenderError('Only one payment can take the rest of the amount.');
+  let stated = 0n;
+  for (const d of drafts) {
+    if (d.amountMinor !== null) {
+      if (d.amountMinor < 0n) throw new TenderError('A payment cannot be negative.');
+      stated += d.amountMinor;
+    }
+    if (d.method.requiresReference && (d.reference === undefined || d.reference.trim().length === 0)) {
+      throw new TenderError(`${d.method.name} needs a reference — a transaction id or cheque number.`);
+    }
+  }
+  const rest = totalMinor - stated;
+  if (balances.length === 0 && rest !== 0n) {
+    throw new TenderError(
+      rest > 0n ? 'The payments do not cover the amount due.' : 'The payments add up to more than the amount due.',
+    );
+  }
+  if (rest < 0n) throw new TenderError('The payments add up to more than the amount due.');
+
+  const lines: AppliedTender[] = drafts.map((d) => ({
+    method: d.method,
+    appliedMinor: d.amountMinor ?? rest,
+    isBalance: d.amountMinor === null,
+    ...(d.reference === undefined || d.reference.trim().length === 0 ? {} : { reference: d.reference.trim() }),
+  }));
+  let drawer = 0n;
+  let handed = 0n;
+  drafts.forEach((d, i) => {
+    if (!d.method.isCash) return;
+    const applied = lines[i]!.appliedMinor;
+    drawer += applied;
+    handed += d.tenderedMinor ?? applied;
+  });
+  if (compare(handed, drawer) < 0) throw new ShortTenderError();
+  return { lines, drawerMinor: drawer, cashTenderedMinor: handed, changeMinor: sub(handed, drawer) };
+}
 
 export interface SalePayloadInput {
   /** The cart id — the sale id AND the idempotency key (§8.2). */
@@ -147,21 +271,19 @@ export interface SalePayloadInput {
   readonly priceListCode: string;
   /** Device-allocated, per-location, minted offline (03 §3.7.5). */
   readonly receiptNo: string;
-  /** The trading day this sale reprices and taxes against. */
-  readonly businessDate: string;
-  readonly tender: TenderKind;
-  /** Required for a credit sale; absent for a walk-in. */
+  /** The till this sale is rung into. Its business date is the sale's. */
+  readonly cashSessionId: string;
+  readonly tenders: readonly TenderDraft[];
+  /** Required for an on-account line; optional for a known cash customer. */
   readonly customerId?: string | undefined;
   /** The device's untrusted clock assertion for this write. */
   readonly claimedHlc?: string | undefined;
   readonly createdAt: string;
   readonly lines: readonly CartLineRow[];
-  readonly tenderedMinor: bigint;
   /**
-   * The list's tax convention and the pack rows in force on `businessDate`.
+   * The list's tax convention and the pack rows in force on the TILL's date.
    * Omitted means the neutral basis — a tax-exclusive list with no pack rows,
-   * which is local-only mode and is the behaviour every caller had before an
-   * inclusive list could be rung.
+   * which is local-only mode.
    */
   readonly pricingBasis?: CartPricingBasis;
 }
@@ -172,7 +294,7 @@ export interface BuiltSalePayload {
   /** The same value, typed as the contract's input. */
   readonly payload: CreateSaleInput;
   readonly totalMinor: bigint;
-  readonly changeMinor: bigint;
+  readonly settled: SettledTenders;
 }
 
 /**
@@ -191,16 +313,18 @@ export function buildSalePayload(input: SalePayloadInput): BuiltSalePayload {
   if (input.lines.length === 0) throw new EmptyCartError();
 
   // WHAT THE CUSTOMER HANDS OVER — gross, under the list's own convention.
-  // On a tax-inclusive list that is the shelf price extended by the quantity;
-  // on a tax-exclusive one it is the extension plus the composed tax. Both
-  // come from the same module and the same pack data (../pricing/).
   const totalMinor = cartTotalMinor(input.lines, input.pricingBasis ?? UNTAXED_BASIS);
-  // Cash is counted against the LOCAL total: the customer is standing there
-  // and the server is not reachable. The server's repriced figure may differ,
-  // which is precisely what `clientTotalMinor` exists to surface.
-  const isCash = input.tender === 'CASH';
-  if (isCash && compare(input.tenderedMinor, totalMinor) < 0) throw new ShortTenderError();
-  const changeMinor = isCash ? sub(input.tenderedMinor, totalMinor) : 0n;
+  // Settled against the LOCAL total: the customer is standing there and the
+  // server is not reachable. The server's repriced figure may differ, which is
+  // precisely what `clientTotalMinor` exists to surface.
+  const settled = settleTenders(input.tenders, totalMinor);
+
+  const tenders: SaleTenderInput[] = settled.lines.map((t) => ({
+    methodId: t.method.id,
+    settlement: t.method.settlement,
+    ...(t.isBalance ? {} : { amountMinor: serializeMoney(t.appliedMinor) }),
+    ...(t.reference === undefined ? {} : { reference: t.reference }),
+  }));
 
   // TYPED AS THE CONTRACT. Add a key the API does not accept, or drop one it
   // requires, and this stops compiling — which is the entire point of the
@@ -210,11 +334,11 @@ export function buildSalePayload(input: SalePayloadInput): BuiltSalePayload {
     ...(input.claimedHlc !== undefined ? { claimedHlc: input.claimedHlc } : {}),
     clientWallAt: input.createdAt,
     locationId: input.locationId,
+    cashSessionId: input.cashSessionId,
     priceListCode: input.priceListCode,
     receiptNo: input.receiptNo,
-    businessDate: input.businessDate,
     occurredAt: input.createdAt,
-    tender: input.tender,
+    tenders,
     ...(input.customerId !== undefined && input.customerId !== null
       ? { customerId: input.customerId }
       : {}),
@@ -255,7 +379,7 @@ export function buildSalePayload(input: SalePayloadInput): BuiltSalePayload {
     );
   }
 
-  return { payloadJson, payload, totalMinor, changeMinor };
+  return { payloadJson, payload, totalMinor, settled };
 }
 
 // ---------------------------------------------------------------------------
@@ -266,14 +390,14 @@ export interface SaleContext {
   readonly locationId: string;
   readonly locationCode: string;
   readonly priceListCode: string;
+  /** The open till's — the only business date a sale is filed under. */
+  readonly till: Till;
   readonly businessDate: string;
   readonly receiptFormat: ReceiptNumberFormat;
   /**
-   * The list's convention and the pack rows in force ON THIS SALE'S BUSINESS
-   * DATE — resolved together, from the same day, so a sale filed under one
-   * date can never be taxed against the rows of another. A device that holds
-   * no pack rows yet still sells: the total is the list's own extension, the
-   * split is reported as unavailable, and the server reprices (§4.13 row 6).
+   * The list's convention and the pack rows in force ON THE TILL'S DATE —
+   * resolved together, from the same day, so a sale filed under one date can
+   * never be taxed against the rows of another.
    */
   readonly pricingBasis: CartPricingBasis;
 }
@@ -287,7 +411,6 @@ export async function loadSaleContext(
   tx: DbExecutor,
   cart: CartRow,
   occurredAt: string,
-  businessDateOverride?: string,
 ): Promise<SaleContext> {
   const location = await readDeviceLocation(tx);
   if (location === null) {
@@ -300,19 +423,14 @@ export async function loadSaleContext(
       'This location has no code yet — waiting for setup data to arrive.',
     );
   }
-  // The trading day is settled BEFORE the price list is judged, and then the
-  // list is judged against that same day. A sale filed under one date and
-  // priced against a list in force on another is exactly the disagreement the
-  // server resolves by refusing.
-  const businessDate =
-    businessDateOverride === undefined
-      ? businessDateFor(occurredAt, location.timeZone)
-      : assertBusinessDate(businessDateOverride);
+  // The TILL settles the trading day (§8.2a): no open till, no sale; a till
+  // from before local midnight, no sale until the new day's is open.
+  const till = await readOpenTill(tx);
+  if (till === null) throw new TillNotOpenError();
+  if (await tillIsStale(tx, till, occurredAt)) throw new TillClosedAtMidnightError(till.businessDate);
+  const businessDate = till.businessDate;
   // Not "does this id match a row" but "is this a list this counter may sell
-  // from today" (data/session/device-price-list.ts). A list that lapsed
-  // overnight resolves perfectly well and is then refused by the API hours
-  // later, after the customer has gone; this catches it here, with the cart
-  // still on the screen and the refusal still actionable.
+  // from on the till's day" (data/session/device-price-list.ts).
   const priceList = await resolveCartPriceList(tx, cart.priceListId, occurredAt, businessDate);
   if (priceList.code === null) {
     throw new SaleContextIncompleteError(
@@ -323,6 +441,7 @@ export async function loadSaleContext(
     locationId: location.id,
     locationCode: location.code,
     priceListCode: priceList.code,
+    till,
     businessDate,
     receiptFormat: await readReceiptFormat(tx),
     pricingBasis: await readPricingBasis(tx, priceList.isTaxInclusive, businessDate),
@@ -335,15 +454,18 @@ export async function loadSaleContext(
 
 export interface CheckoutInput {
   readonly cartId: string;
-  readonly tenderedMinor: bigint;
   readonly hlc: ClaimedHlcClock;
   readonly nowIso?: string;
-  /** Defaults to CASH — the walk-in counter's overwhelming case. */
-  readonly tender?: TenderKind;
-  /** Required for CREDIT; the customer the sale is billed to. */
+  /**
+   * How the customer paid. Omitted means ONE cash line taking the whole
+   * amount — the walk-in counter's overwhelming case — with `tenderedMinor`
+   * as the note handed over.
+   */
+  readonly tenders?: readonly TenderDraft[];
+  /** For the omitted-`tenders` case: the cash handed over. */
+  readonly tenderedMinor?: bigint;
+  /** Required for an on-account line; the customer the sale is charged to. */
   readonly customerId?: string;
-  /** An asserted trading day (a day-open control); derived from the location otherwise. */
-  readonly businessDate?: string;
   /** Id minter for a newly issued sequence block. Injected for deterministic tests. */
   readonly newId?: () => string;
 }
@@ -354,17 +476,14 @@ export interface CheckoutResult {
   readonly receiptNo: string;
   readonly totalMinor: bigint;
   readonly changeMinor: bigint;
+  readonly cashSessionId: string;
+  readonly businessDate: string;
 }
 
 export async function checkout(db: LocalDb, input: CheckoutInput): Promise<CheckoutResult> {
   const nowIso = input.nowIso ?? new Date().toISOString();
   const claimedHlc = input.hlc.next();
-  const tender: TenderKind = input.tender ?? 'CASH';
   const newId = input.newId ?? uuidv7;
-
-  if (tender === 'CREDIT' && input.customerId === undefined) {
-    throw new SaleContextIncompleteError('A credit sale needs a customer.');
-  }
 
   const result = await db.writeTransaction(async (tx: DbExecutor) => {
     const cart = await getOpenCart(tx);
@@ -382,7 +501,25 @@ export async function checkout(db: LocalDb, input: CheckoutInput): Promise<Check
     ]);
     if (duplicate.length > 0) throw new DuplicateSaleError(input.cartId);
 
-    const context = await loadSaleContext(tx, cart, nowIso, input.businessDate);
+    const context = await loadSaleContext(tx, cart, nowIso);
+
+    let tenders = input.tenders;
+    if (tenders === undefined) {
+      const cash = await defaultCashMethod(tx);
+      if (cash === null) {
+        throw new SaleContextIncompleteError(
+          'This device has no cash payment method yet — waiting for setup data to arrive.',
+        );
+      }
+      tenders = [{
+        method: cash,
+        amountMinor: null,
+        ...(input.tenderedMinor === undefined ? {} : { tenderedMinor: input.tenderedMinor }),
+      }];
+    }
+    if (tenders.some((t) => t.method.isOnAccount) && input.customerId === undefined) {
+      throw new SaleContextIncompleteError('A sale on account needs a customer.');
+    }
 
     // The number is drawn INSIDE this transaction: a checkout that rolls back
     // burns none, a checkout that commits can never re-issue one.
@@ -400,13 +537,12 @@ export async function checkout(db: LocalDb, input: CheckoutInput): Promise<Check
       locationId: context.locationId,
       priceListCode: context.priceListCode,
       receiptNo: receipt.receiptNo,
-      businessDate: context.businessDate,
-      tender,
+      cashSessionId: context.till.id,
+      tenders,
       customerId: input.customerId,
       claimedHlc,
       createdAt: nowIso,
       lines,
-      tenderedMinor: input.tenderedMinor,
       pricingBasis: context.pricingBasis,
     });
 
@@ -421,10 +557,10 @@ export async function checkout(db: LocalDb, input: CheckoutInput): Promise<Check
     await tx.execute(
       `INSERT INTO outbox
          (id, idempotency_key, claimed_hlc, kind, payload, total_minor, receipt_no,
-          tendered_minor, change_minor, created_at, queue_seq,
+          tendered_minor, change_minor, cash_session_id, drawer_minor, created_at, queue_seq,
           server_ack_at, rejected_at, reject_reason)
        VALUES (?, ?, ?, 'sale', ?, CAST(? AS INTEGER), ?,
-               CAST(? AS INTEGER), CAST(? AS INTEGER), ?, ?, NULL, NULL, NULL)`,
+               CAST(? AS INTEGER), CAST(? AS INTEGER), ?, CAST(? AS INTEGER), ?, ?, NULL, NULL, NULL)`,
       [
         input.cartId,
         input.cartId,
@@ -432,8 +568,10 @@ export async function checkout(db: LocalDb, input: CheckoutInput): Promise<Check
         built.payloadJson,
         built.totalMinor.toString(),
         receipt.receiptNo,
-        input.tenderedMinor.toString(),
-        built.changeMinor.toString(),
+        built.settled.cashTenderedMinor.toString(),
+        built.settled.changeMinor.toString(),
+        context.till.id,
+        built.settled.drawerMinor.toString(),
         nowIso,
         queueSeq,
       ],
@@ -445,7 +583,9 @@ export async function checkout(db: LocalDb, input: CheckoutInput): Promise<Check
       saleId: input.cartId,
       receiptNo: receipt.receiptNo,
       totalMinor: built.totalMinor,
-      changeMinor: built.changeMinor,
+      changeMinor: built.settled.changeMinor,
+      cashSessionId: context.till.id,
+      businessDate: context.businessDate,
     };
   });
 

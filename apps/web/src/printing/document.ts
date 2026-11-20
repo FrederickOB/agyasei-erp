@@ -241,36 +241,27 @@ export function buildReceiptDocument(input: ReceiptDocumentInput): ReceiptDocume
 // ---------------------------------------------------------------------------
 
 /**
- * Today a sale carries `tender: 'CASH' | 'CREDIT'` plus device-local tendered
- * and change figures. Another work package is replacing that with
- * tenant-defined `sale_tender` rows (method name, amount, reference). The
- * document already models a tenders ARRAY; this is the single adaptor from the
- * current shape, so that merge touches this function and nothing else.
+ * The receipt's "paid by" lines, from the sale's own tender lines (tenant-
+ * defined methods: cash, mobile money, bank transfer, cheque, on account …).
+ *
+ * The amounts are what each method SETTLED, so they always sum to the total —
+ * the identity the server enforces on `sale_tender`. Change is shown on its
+ * own line, never folded into a tender. The method's name is the tenant's own
+ * word and is rendered, never compared (CLAUDE.md §2.9).
  */
-export interface LegacyTenderShape {
-  readonly tender: 'CASH' | 'CREDIT';
-  readonly totalMinor: bigint;
-  readonly tenderedMinor: bigint | null;
-  readonly changeMinor: bigint | null;
+export interface RecordedReceiptTender {
+  readonly name: string;
+  readonly amountMinor: bigint;
+  readonly reference: string | null;
 }
 
-export function tendersFromLegacySale(
-  sale: LegacyTenderShape,
-  methodNames: { readonly cash: string; readonly onAccount: string } = {
-    cash: 'Cash',
-    onAccount: 'On account',
-  },
+export function receiptTenders(
+  recorded: readonly RecordedReceiptTender[],
+  changeMinor: bigint | null,
 ): { readonly tenders: readonly ReceiptTender[]; readonly changeMinor: bigint } {
-  if (sale.tender === 'CREDIT') {
-    return {
-      tenders: [{ method: methodNames.onAccount, amountMinor: sale.totalMinor, reference: null }],
-      changeMinor: 0n,
-    };
-  }
-  const handed = sale.tenderedMinor ?? sale.totalMinor;
   return {
-    tenders: [{ method: methodNames.cash, amountMinor: handed, reference: null }],
-    changeMinor: sale.changeMinor ?? 0n,
+    tenders: recorded.map((t) => ({ method: t.name, amountMinor: t.amountMinor, reference: t.reference })),
+    changeMinor: changeMinor !== null && changeMinor > 0n ? changeMinor : 0n,
   };
 }
 

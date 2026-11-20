@@ -12,7 +12,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { LocalDb } from '../src/data/db';
 import { addProductToCart, createCart } from '../src/data/mutations/cart';
-import { checkout } from '../src/data/mutations/checkout';
+import { checkout, type TenderDraft } from '../src/data/mutations/checkout';
 import { priceCart, UNTAXED_BASIS } from '../src/data/pricing/cart-pricing';
 import { getCartLines } from '../src/data/queries/cart';
 import { fromBase64, toHex } from '../src/printing/escpos';
@@ -20,7 +20,7 @@ import { enqueueReceipt, getQueueEntry, listPending, PRINT_QUEUE_TTL_MS, purgeEx
 import { PrintService } from '../src/printing/service';
 import { documentForCommittedSale, documentFromSyncedSale, readCommittedSale } from '../src/printing/sources';
 import type { PrintAttempt, PrintJob, ReceiptTransport, TransportId } from '../src/printing/transports/types';
-import { fixedHlc, provisionDevice, seedProduct } from './helpers/fixtures';
+import { fixedHlc, provisionDevice, seedProduct, seedTenderMethods } from './helpers/fixtures';
 import { openTestDb } from './helpers/node-db';
 import { TEST_CURRENCY } from './helpers/receipt-fixtures';
 
@@ -92,7 +92,9 @@ interface Rung {
 }
 
 async function ringSale(db: LocalDb, hlcMs = NOW): Promise<Rung> {
-  const device = await provisionDevice(db);
+  // A sale is filed under its till's business date (08 §8.2a): open the till
+  // for the day the sale is rung, not for whatever day the suite runs on.
+  const device = await provisionDevice(db, { till: new Date(hlcMs).toISOString().slice(0, 10) });
   const bags = await seedProduct(db, {
     code: 'BAG-1',
     name: 'Cement 50kg',
@@ -129,6 +131,74 @@ async function usable(db: LocalDb, svc: PrintService): Promise<void> {
 beforeEach(() => vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] }));
 afterEach(() => vi.useRealTimers());
 
+/**
+ * A sale paid by something other than cash prints as what it WAS paid by.
+ * Before tender lines reached the printer, every receipt fell back to "Cash"
+ * — a mobile-money or on-account customer's copy said they had paid cash.
+ */
+async function ringWithTenders(
+  db: LocalDb,
+  tenders: (m: Awaited<ReturnType<typeof seedTenderMethods>>) => readonly TenderDraft[],
+  customerId?: string,
+): Promise<Rung> {
+  const device = await provisionDevice(db, { till: new Date(NOW).toISOString().slice(0, 10) });
+  const methods = await seedTenderMethods(db);
+  const bags = await seedProduct(db, {
+    code: 'BAG-1',
+    name: 'Cement 50kg',
+    uomLabel: 'bag',
+    qtyScale: 0,
+    unitPriceE4: 620_000_000n,
+    priceListId: device.priceListId,
+  });
+  const cartId = await createCart(db, { nowIso: new Date(NOW).toISOString() });
+  for (let i = 0; i < 3; i++) await addProductToCart(db, cartId, bags);
+  const lines = await getCartLines(db, cartId);
+  const pricing = priceCart(lines, UNTAXED_BASIS); // 3 × 62,000 = 186,000
+  const result = await checkout(db, {
+    cartId,
+    tenders: tenders(methods),
+    ...(customerId === undefined ? {} : { customerId }),
+    hlc: fixedHlc(NOW),
+    nowIso: new Date(NOW).toISOString(),
+  });
+  return { saleId: result.saleId, cart: { lines, pricing, basis: UNTAXED_BASIS } };
+}
+
+describe('the receipt says how the sale was actually paid', () => {
+  it('a split prints each method by its own name, with the wallet reference, and change on its own line', async () => {
+    const db = openTestDb();
+    const { saleId, cart } = await ringWithTenders(db, (m) => [
+      { method: m.wallet, amountMinor: 120_000n, reference: 'MP2611181234' },
+      { method: m.cash, amountMinor: null, tenderedMinor: 100_000n },
+    ]);
+    const svc = services(db, fake('ble-escpos'));
+    await usable(db, svc);
+    expect((await svc.afterSale(saleId, cart, TEST_CURRENCY)).status).toBe('queued');
+    const doc = (await getQueueEntry(db, saleId))?.doc;
+    expect(doc?.tenders).toEqual([
+      { method: 'Phone wallet', amountMinor: 120_000n, reference: 'MP2611181234' },
+      { method: 'Notes and coins', amountMinor: 66_000n, reference: null },
+    ]);
+    expect(doc?.changeMinor).toBe(34_000n);
+    // The paid-by lines are the settlement: they sum to the total.
+    expect(doc!.tenders.reduce((a, t) => a + t.amountMinor, 0n)).toBe(doc!.totalMinor);
+  });
+
+  it('an on-account sale never prints as cash', async () => {
+    const db = openTestDb();
+    const customerId = '019b0000-0000-7000-8000-00000000c0de';
+    await db.execute(`INSERT INTO customer (id, name) VALUES (?, ?)`, [customerId, 'Site 4 contractor']);
+    const { saleId, cart } = await ringWithTenders(db, (m) => [{ method: m.account, amountMinor: null }], customerId);
+    const svc = services(db, fake('ble-escpos'));
+    await usable(db, svc);
+    expect((await svc.afterSale(saleId, cart, TEST_CURRENCY)).status).toBe('queued');
+    const doc = (await getQueueEntry(db, saleId))?.doc;
+    expect(doc?.tenders).toEqual([{ method: 'Tab', amountMinor: 186_000n, reference: null }]);
+    expect(doc?.changeMinor).toBe(0n);
+  });
+});
+
 describe('the sale comes first', () => {
   it('refuses to queue or print anything for a sale that is not committed on this device', async () => {
     const db = openTestDb();
@@ -153,7 +223,10 @@ describe('the sale comes first', () => {
     const entry = await getQueueEntry(db, saleId);
     expect(entry?.doc?.totalMinor).toBe(1_240_000n);
     expect(entry?.doc?.lines[0]?.qtyText).toBe('20');
-    expect(entry?.doc?.tenders[0]).toMatchObject({ method: 'Cash', amountMinor: 1_500_000n });
+    // The tenant's own name for the method, never a word in code; the amount
+    // the method SETTLED (tenders sum to the total), and the change on its own.
+    expect(entry?.doc?.tenders).toHaveLength(1);
+    expect(entry?.doc?.tenders[0]).toMatchObject({ method: 'Notes and coins', amountMinor: 1_240_000n });
     expect(entry?.doc?.changeMinor).toBe(260_000n);
   });
 

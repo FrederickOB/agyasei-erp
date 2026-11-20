@@ -78,14 +78,24 @@ async function main(): Promise<void> {
         and p.is_sellable
       order by p.sku_code limit 1`,
   );
+  // The tenant's own drawer-cash method — found by its PLATFORM property,
+  // never by a code or a name (CLAUDE.md §2.9).
+  const [cashRow] = psql(
+    `select id from app.tender_method
+      where tenant_id = '${tenantId}' and is_cash and is_active and deleted_at is null
+      order by sort_order limit 1`,
+  );
   const locationId = locationRow?.[0];
   const priceListCode = priceListRow?.[1];
   const productId = productRow?.[0];
-  if (locationId === undefined || priceListCode === undefined || productId === undefined) {
+  const cashMethodId = cashRow?.[0];
+  if (locationId === undefined || priceListCode === undefined || productId === undefined
+      || cashMethodId === undefined) {
     throw new Error('incomplete seed data — run pnpm stack:reset');
   }
 
   const saleId = uuidv7();
+  const tillId = uuidv7();
   const claimedHlc = `${String(Date.now()).padStart(13, '0')}-00000-${'ab'.repeat(16)}`;
   const nowIso = new Date().toISOString();
   const lines: CartLineRow[] = [
@@ -107,16 +117,37 @@ async function main(): Promise<void> {
     locationId,
     priceListCode,
     receiptNo: `SMOKE-${saleId.slice(-6).toUpperCase()}`,
-    businessDate: nowIso.slice(0, 10),
-    tender: 'CASH',
+    // A SHARED till opened for today by the op queued just ahead of the sale.
+    cashSessionId: tillId,
+    tenders: [{
+      method: { id: cashMethodId, name: 'cash', isCash: true, isOnAccount: false,
+                requiresReference: false, settlement: 'IMMEDIATE' },
+      amountMinor: null,
+      tenderedMinor: 1_000_000n,
+    }],
     claimedHlc,
     createdAt: nowIso,
     lines,
-    tenderedMinor: 1_000_000n,
+  });
+  const openPayload = JSON.stringify({
+    locationId,
+    businessDate: nowIso.slice(0, 10),
+    openingFloatMinor: '0',
+    openedAt: nowIso,
+    openedOffline: false,
+    drawer: 'SHARED',
   });
 
   const transport = httpUploadTransport({ apiUrl: API_URL, apiToken: devToken() });
   const result = await transport.send([
+    {
+      id: tillId,
+      idempotencyKey: tillId,
+      claimedHlc,
+      kind: 'cash_session_open',
+      payloadJson: openPayload,
+      createdAt: nowIso,
+    },
     {
       id: saleId,
       idempotencyKey: saleId,
@@ -129,7 +160,7 @@ async function main(): Promise<void> {
 
   console.log('payload:', built.payloadJson);
   console.log('result :', JSON.stringify(result, null, 2));
-  if (!result.ok || result.acks[0]?.status !== 'applied') {
+  if (!result.ok || result.acks.some((a) => a.status !== 'applied')) {
     throw new Error(`sale was NOT applied: ${JSON.stringify(result)}`);
   }
 

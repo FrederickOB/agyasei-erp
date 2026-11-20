@@ -1,9 +1,30 @@
 /**
- * The counter flow (§8.7): search or quick grid -> cart -> cash tender ->
- * receipt. Every step is local; nothing on this path can wait on a socket.
+ * The counter flow (§8.7): open the till -> search or quick grid -> cart ->
+ * tender (one method or several) -> receipt, and cash-up at the end of the
+ * day. Every step is local; nothing on this path can wait on a socket.
+ *
+ * THE TILL COMES FIRST (08 §8.2a). With no open till the counter IS the
+ * open-till screen; there is no other way into the cart. The till's date is
+ * the date every sale is filed under, its state sits in the counter's own
+ * chrome, and at local midnight it closes itself and the counter offers the
+ * new day's till with the drawer carried over — never extending the old one.
  */
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import type { ApiCallOptions } from '../../data/api/client';
+import {
+  holdsCapability,
+  onAccountCeiling,
+  type PermissionsState,
+} from '../../data/api/session';
 import type { LocalDb } from '../../data/db';
+import {
+  autoCloseStaleTill,
+  readLatestTill,
+  readOpenTill,
+  type ClosedTill,
+} from '../../data/mutations/till';
+import { loadCreditCustomers } from '../../data/queries/customers';
+import { loadTenderMethods } from '../../data/queries/tender-methods';
 import { createClaimedHlcClock, type ClaimedHlcClock } from '../../lib/hlc';
 import {
   addProductToCart,
@@ -23,6 +44,8 @@ import {
   DuplicateSaleError,
   SaleContextIncompleteError,
   SalePayloadInvalidError,
+  TenderError,
+  TillClosedAtMidnightError,
 } from '../../data/mutations/checkout';
 import { getCartLines, getOpenCart, type CartLineRow } from '../../data/queries/cart';
 import { getOrCreateDeviceNode } from '../../data/queries/config';
@@ -40,16 +63,22 @@ import { usePrintService } from '../printing/PrintingContext';
 import { Icon } from '../../ui/Icon';
 import { useMediaQuery, WIDE_LAYOUT } from '../../ui/use-media-query';
 import { CartPanel, type RemovedLine } from './CartPanel';
+import { CashUp } from './CashUp';
+import { longDate, OpenTill } from './OpenTill';
 import { ProductSearch } from './ProductSearch';
 import { ReceiptView } from './ReceiptView';
-import { TenderPanel } from './TenderPanel';
+import { TenderPanel, type TenderSubmission } from './TenderPanel';
 
 type CounterMode =
   | { readonly step: 'cart' }
   | { readonly step: 'tender' }
-  | { readonly step: 'receipt'; readonly saleId: string; readonly changeMinor: bigint | null };
+  | { readonly step: 'receipt'; readonly saleId: string; readonly changeMinor: bigint | null }
+  | { readonly step: 'cashup' }
+  | { readonly step: 'closed'; readonly closed: ClosedTill };
 
 const UNDO_MS = 5000;
+/** How often an idle counter checks whether local midnight has passed. */
+const MIDNIGHT_CHECK_MS = 30_000;
 
 /**
  * A refused sale is WORK, not a toast (§8.5, and the frontend brief: conflicts
@@ -59,6 +88,7 @@ const UNDO_MS = 5000;
  */
 function refusalMessage(err: unknown): string {
   if (err instanceof SaleContextIncompleteError) return err.message;
+  if (err instanceof TenderError) return err.message;
   if (err instanceof SalePayloadInvalidError) {
     // Caught HERE, at the counter, rather than as a silent rejection hours
     // later at sync. The detail is for whoever is called; the first line is
@@ -70,9 +100,19 @@ function refusalMessage(err: unknown): string {
 
 export function Counter({
   db,
+  permissions,
+  apiOptions,
+  nowIso,
   onOpenPrinterSettings,
 }: {
   readonly db: LocalDb;
+  /** What this session may do — offered or not offered, never the control. */
+  readonly permissions?: PermissionsState;
+  /** Test seam for the pre-open server check. */
+  readonly apiOptions?: ApiCallOptions;
+  /** Test seam for "now" (the midnight close, the proposed date). */
+  readonly nowIso?: () => string;
+  /** Opens this device's printer settings from the receipt step. */
   readonly onOpenPrinterSettings?: () => void;
 }): ReactNode {
   const [mode, setMode] = useState<CounterMode>({ step: 'cart' });
@@ -95,6 +135,51 @@ export function Counter({
       hlcRef.current = createClaimedHlcClock(node);
     });
   }, [db]);
+  const getHlc = useCallback(() => hlcRef.current, []);
+  const now = useMemo(() => nowIso ?? (() => new Date().toISOString()), [nowIso]);
+
+  // ── THE TILL ──────────────────────────────────────────────────────────────
+  // `undefined` while the local read resolves; `null` means no till is open,
+  // and the counter is then the open-till screen and nothing else.
+  const till = useLiveQuery(db, readOpenTill, []);
+  const latestTill = useLiveQuery(db, readLatestTill, []);
+  const methods = useLiveQuery(db, loadTenderMethods, []);
+  const creditCustomers = useLiveQuery(db, loadCreditCustomers, []);
+  const [carriedOver, setCarriedOver] = useState<ClosedTill | null>(null);
+
+  // Permissions HIDE, they do not authorise (Shell header rule 2). A build
+  // with no server at all is the local rehearsal, where the till must open.
+  const localOnly = permissions === undefined || permissions.status === 'no-session';
+  const canOpenTill = localOnly || holdsCapability(permissions, 'cash.session.open');
+  const canCloseTill = localOnly || holdsCapability(permissions, 'cash.session.close');
+  const ceiling =
+    permissions === undefined || till === undefined || till === null
+      ? null
+      : onAccountCeiling(permissions, till.locationId);
+  const canSellOnAccount = ceiling !== null && (ceiling === 'unbounded' || ceiling > 0n);
+
+  // THE MIDNIGHT CLOSE (§8.2a). Checked on arrival and every half minute while
+  // the counter is idle at the cart — never mid-tender, where a sale is in a
+  // person's hands. A till from an earlier day closes itself, uncounted, and
+  // the carry-over prompt opens the NEW day's till with its drawer.
+  const idle = mode.step === 'cart' || mode.step === 'receipt';
+  useEffect(() => {
+    if (!idle) return;
+    let cancelled = false;
+    const check = (): void => {
+      const clock = hlcRef.current;
+      if (clock === null) return;
+      void autoCloseStaleTill(db, { hlc: clock, nowIso: now() }).then((closed) => {
+        if (!cancelled && closed !== null) setCarriedOver(closed);
+      });
+    };
+    check();
+    const timer = setInterval(check, MIDNIGHT_CHECK_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [db, idle, now, till?.id]);
 
   // Deliberately NOT defaulted to []: `undefined` means the local read has not
   // resolved and the catalogue shows skeletons; [] means this counter really
@@ -231,11 +316,17 @@ export function Counter({
   const totalMinor = pricing.grossMinor;
 
   const onCompleteSale = useCallback(
-    (tenderedMinor: bigint) => {
+    (submission: TenderSubmission) => {
       const hlc = hlcRef.current;
       if (cartId === null || hlc === null) return;
       setRefusal(null);
-      void checkout(db, { cartId, tenderedMinor, hlc })
+      void checkout(db, {
+        cartId,
+        tenders: submission.tenders,
+        ...(submission.customerId === undefined ? {} : { customerId: submission.customerId }),
+        hlc,
+        nowIso: now(),
+      })
         .then((result) => {
           setMode({ step: 'receipt', saleId: result.saleId, changeMinor: result.changeMinor });
           // The sale is COMMITTED here. Only now is a receipt queued, and
@@ -258,13 +349,112 @@ export function Counter({
             setMode({ step: 'receipt', saleId: err.saleId, changeMinor: null });
             return;
           }
+          if (err instanceof TillClosedAtMidnightError) {
+            // Midnight passed during the sale. The cart survives; the old till
+            // closes now and the counter asks for the new day's (§8.2a).
+            void autoCloseStaleTill(db, { hlc, nowIso: now() }).then((closed) => {
+              if (closed !== null) setCarriedOver(closed);
+            });
+          }
           // Everything else stays on screen with the cart intact. A refusal
           // that vanished would leave a cashier believing a sale was taken.
           setRefusal(refusalMessage(err));
         });
     },
-    [db, cartId, printing, lines, pricing, basis, currency],
+    [db, cartId, now, printing, lines, pricing, basis, currency],
   );
+
+  // ── THE TILL GATES EVERYTHING BELOW ─────────────────────────────────────
+  if (mode.step === 'closed') {
+    const v = mode.closed.varianceMinor;
+    return (
+      <section className="tender-panel till-closed" aria-label="Till closed">
+        <h2 className="receipt-heading">Till closed for {longDate(mode.closed.till.businessDate)}</h2>
+        <div className="till-figures">
+          <div className="total-row">
+            <span className="total-label">Expected in the drawer</span>
+            <Money amount={mode.closed.expectedMinor} className="money" />
+          </div>
+          <div className="total-row">
+            <span className="total-label">Counted</span>
+            {mode.closed.till.countedMinor === null ? <span>—</span> : (
+              <Money amount={mode.closed.till.countedMinor} className="money" />
+            )}
+          </div>
+          <div className={`till-variance${v === null ? '' : v === 0n ? ' matched' : v < 0n ? ' short' : ' over'}`}>
+            <span className="total-label">
+              {v === null ? 'Not counted' : v === 0n ? 'Counted to the minor unit' : v < 0n ? 'Short' : 'Over'}
+            </span>
+            {v === null || v === 0n ? null : <Money amount={v < 0n ? -v : v} className="money total-value" />}
+          </div>
+        </div>
+        <p className="tender-hint">
+          The close is recorded on this device and is sent with the day’s sales.
+        </p>
+        <button type="button" className="primary-action pressable" onClick={() => setMode({ step: 'cart' })}>
+          <Icon name="check" size={20} />
+          Done
+        </button>
+      </section>
+    );
+  }
+
+  if (till === undefined) {
+    // The first frame, before the local read of the till resolves: the SHAPE
+    // of the counter, never a blank screen — and nothing tappable, because
+    // whether this device may sell is exactly what is not known yet.
+    return (
+      <div className="counter" aria-busy="true">
+        <ProductSearch products={undefined} onAdd={() => undefined} />
+      </div>
+    );
+  }
+  if (till === null) {
+    // After a midnight close, the drawer it left behind is the natural float.
+    const carry =
+      carriedOver !== null
+        ? { till: carriedOver.till, drawerMinor: carriedOver.expectedMinor }
+        : latestTill !== undefined && latestTill !== null && latestTill.autoClosed &&
+            latestTill.expectedMinor !== null
+          ? { till: latestTill, drawerMinor: latestTill.expectedMinor }
+          : null;
+    return (
+      <>
+        {refusal === null ? null : (
+          <p className="sale-refused" role="alert">
+            <Icon name="alert" size={22} />
+            <span>{refusal}</span>
+          </p>
+        )}
+        <OpenTill
+          db={db}
+          hlc={getHlc}
+          canOpen={canOpenTill}
+          carriedOver={carry}
+          nowIso={now}
+          {...(apiOptions === undefined ? {} : { apiOptions })}
+          onOpened={() => {
+            setCarriedOver(null);
+            setRefusal(null);
+            setMode({ step: 'cart' });
+          }}
+        />
+      </>
+    );
+  }
+
+  if (mode.step === 'cashup') {
+    return (
+      <CashUp
+        db={db}
+        till={till}
+        hlc={getHlc}
+        canClose={canCloseTill}
+        onBack={() => setMode({ step: 'cart' })}
+        onClosed={(closed) => setMode({ step: 'closed', closed })}
+      />
+    );
+  }
 
   if (mode.step === 'receipt') {
     return (
@@ -277,6 +467,24 @@ export function Counter({
       />
     );
   }
+
+  // The till's state, in the counter's own chrome — always in view while selling.
+  const tillBar = (
+    <div className="till-bar" role="status">
+      <Icon name="clock" size={18} />
+      <span className="till-bar-text">
+        Till open · <strong>{longDate(till.businessDate)}</strong>
+        {till.openedOffline ? <span className="till-bar-flag"> · opened offline</span> : null}
+      </span>
+      <button
+        type="button"
+        className="secondary-action pressable till-bar-action"
+        onClick={() => setMode({ step: 'cashup' })}
+      >
+        Cash up
+      </button>
+    </div>
+  );
 
   const refusalBanner =
     refusal === null ? null : (
@@ -341,6 +549,10 @@ export function Counter({
         {stuckBanner}
         <TenderPanel
           pricing={pricing}
+          methods={methods ?? []}
+          customers={creditCustomers ?? []}
+          canSellOnAccount={canSellOnAccount}
+          onAccountCeilingMinor={typeof ceiling === 'bigint' ? ceiling : null}
           onBack={() => setMode({ step: 'cart' })}
           onComplete={onCompleteSale}
         />
@@ -352,9 +564,14 @@ export function Counter({
 
   return (
     <div className="counter">
+      {tillBar}
       {refusalBanner}
       {stuckBanner}
-      <ProductSearch products={products} onAdd={onAdd} />
+      {/* A card is tappable only once there is a cart for the tap to land in.
+          In the instant before the effect above mints one, a card that looked
+          live would swallow the tap — and a dropped tap at a till is a
+          mis-ring. The skeleton is the honest frame for that instant. */}
+      <ProductSearch products={cartId === null ? undefined : products} onAdd={onAdd} />
 
       {wide ? (
         <div className="cart-dock">

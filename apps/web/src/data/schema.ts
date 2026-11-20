@@ -200,6 +200,45 @@ export const LOCAL_TABLES: readonly LocalTableDef[] = [
     localOnly: false,
     columns: [t('tenant_id'), t('code'), t('name'), t('hlc'), t('updated_at')],
   },
+  {
+    // HOW A CUSTOMER MAY PAY — the tenant's own rows (04 §4.8). `code` and
+    // `name` are the tenant's words: RENDERED, never branched on (§8.9). What
+    // the counter reads is `posting_role` and the two flags the server derives
+    // from it: whether the money is in the drawer (cash-up counts it) and
+    // whether it is the customer's debt (it needs a customer and
+    // `sale.record.credit`).
+    name: 'tender_method',
+    localOnly: false,
+    columns: [
+      t('tenant_id'),
+      t('code'),
+      t('name'),
+      t('posting_role'),
+      i('is_cash'),
+      i('is_on_account'),
+      i('requires_reference'),
+      i('is_active'),
+      i('sort_order'),
+      t('hlc'),
+      t('updated_at'),
+    ],
+  },
+  {
+    // The accounting calendar's STATE, so an offline till can refuse to open
+    // into a closed or locked period (08 §8.2a, §8.12). Dates and a status —
+    // no balance, no journal, nothing of the books themselves (05 §5.2.6).
+    name: 'accounting_period',
+    localOnly: false,
+    columns: [
+      t('tenant_id'),
+      t('fy_code'),
+      i('seq'),
+      t('starts_on'),
+      t('ends_on'),
+      t('status'),
+      t('updated_at'),
+    ],
+  },
   // -- bucket: jurisdiction_pack (platform rows; id = code / composite) --
   {
     name: 'jurisdiction',
@@ -438,9 +477,60 @@ export const LOCAL_TABLES: readonly LocalTableDef[] = [
       i('discount_minor'), // CAST AS TEXT on read
       i('tax_total_minor'), // CAST AS TEXT on read
       i('total_minor'), // CAST AS TEXT on read
+      t('cash_session_id'), // the till it was rung in (04 §4.8a)
       t('hlc'),
       t('created_at'),
       t('updated_at'),
+    ],
+  },
+  {
+    // The SERVER's record of every till at this location — this device's and
+    // the others'. Authoritative for what the server computed at close
+    // (expected, variance); the device's OWN open till lives in the local-only
+    // `till_session` below, because a till must be usable the instant it is
+    // opened, long before any of this has round-tripped.
+    name: 'cash_session',
+    localOnly: false,
+    columns: [
+      t('tenant_id'),
+      t('location_id'),
+      t('device_id'),
+      t('business_date'),
+      t('server_date_at_open'),
+      t('opened_by'),
+      t('opened_at'),
+      i('opened_offline'),
+      i('opening_float_minor'), // CAST AS TEXT on read
+      t('status'),
+      t('closed_by'),
+      t('closed_at'),
+      i('auto_closed'),
+      i('counted_minor'), // CAST AS TEXT on read
+      i('banked_minor'), // CAST AS TEXT on read
+      i('expected_cash_minor'), // CAST AS TEXT on read
+      i('variance_minor'), // SIGNED — CAST AS TEXT on read
+      i('client_expected_minor'), // CAST AS TEXT on read
+      t('contested_session_id'),
+      t('hlc'),
+      t('updated_at'),
+    ],
+  },
+  {
+    // How each sale at this location was paid, as the SERVER recorded it.
+    name: 'sale_tender',
+    localOnly: false,
+    columns: [
+      t('tenant_id'),
+      t('sale_id'),
+      i('seq'),
+      t('method_id'),
+      i('amount_minor'), // CAST AS TEXT on read
+      i('claimed_minor'), // CAST AS TEXT on read
+      t('reference'),
+      t('tendered_at'),
+      t('location_id'),
+      t('hlc'),
+      t('created_at'),
     ],
   },
   // -- bucket: tenant_sale_lines_interim (moves into location_ops when the
@@ -500,6 +590,30 @@ export const LOCAL_TABLES: readonly LocalTableDef[] = [
     columns: [t('key'), t('value')],
   },
   {
+    // THIS DEVICE's tills (08 §8.2a) — LOCAL-ONLY and authoritative here.
+    // The id IS the open op's idempotency key and the server's
+    // `cash_session.id`. A till is usable the moment this row commits, with
+    // the radio off; the open rides the outbox to the server behind it. The
+    // counter sells only into the one OPEN row, and its business date is the
+    // ONLY date a sale is filed under.
+    name: 'till_session',
+    localOnly: true,
+    columns: [
+      t('location_id'),
+      t('business_date'),
+      t('drawer'), // 'DEVICE' | 'SHARED' — platform enum, never a tenant word
+      i('opening_float_minor'), // CAST AS TEXT on read
+      t('opened_at'),
+      i('opened_offline'),
+      t('status'), // 'OPEN' | 'CLOSED'
+      t('closed_at'),
+      i('auto_closed'),
+      i('counted_minor'), // CAST AS TEXT on read; NULL on the midnight close
+      i('banked_minor'), // CAST AS TEXT on read
+      i('expected_minor'), // what THIS DEVICE computed at close — CAST AS TEXT
+    ],
+  },
+  {
     name: 'cart',
     localOnly: true,
     // id = UUIDv7 = the future sale id = the idempotency key (§8.2).
@@ -541,6 +655,12 @@ export const LOCAL_TABLES: readonly LocalTableDef[] = [
       // is worse than one it refuses. Cash-up reads these columns.
       i('tendered_minor'), // CAST AS TEXT on read
       i('change_minor'), // CAST AS TEXT on read
+      // The till a sale was rung into, and the cash it put IN THE DRAWER —
+      // the applied amount of its cash tender lines, never the note handed
+      // over. Cash-up's expected figure is the till's float plus the sum of
+      // this column over the till's sales (08 §8.2a), all on this device.
+      t('cash_session_id'),
+      i('drawer_minor'), // CAST AS TEXT on read
       t('created_at'),
       // THE QUEUE POSITION, and the only key the drain orders on. `created_at`
       // is millisecond-resolution and `id` is a uuidv7 with no intra-ms
@@ -704,6 +824,15 @@ export function localSchemaDdl(): string[] {
     'CREATE UNIQUE INDEX idx_credit_position_bucket_account ON credit_position_bucket (account_id, seq)',
   );
   stmts.push('CREATE INDEX idx_customer_account_customer ON customer_account (customer_id)');
+  // One OPEN till on this device at a time, and one till per business date
+  // per location (08 §8.2a) — unrepresentable rather than merely unlikely.
+  stmts.push(
+    "CREATE UNIQUE INDEX idx_till_session_open ON till_session (location_id) WHERE status = 'OPEN'",
+  );
+  stmts.push(
+    'CREATE UNIQUE INDEX idx_till_session_day ON till_session (location_id, business_date)',
+  );
+  stmts.push('CREATE INDEX idx_outbox_till ON outbox (cash_session_id)');
   stmts.push(
     'CREATE UNIQUE INDEX idx_credit_allowance_scope ON credit_allowance (location_id, customer_id)',
   );

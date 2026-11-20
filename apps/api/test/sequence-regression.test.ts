@@ -697,6 +697,9 @@ describe('receipt-number collision on upload (the till must not go dark)', () =>
   let deviceId: string;
   let bearer: string;
 
+  let tillId: string;
+  let cashMethodId: string;
+
   function saleOp(key: string): UploadOp {
     return {
       idempotency_key: key,
@@ -705,14 +708,17 @@ describe('receipt-number collision on upload (the till must not go dark)', () =>
         locationId: outletA.id,
         priceListCode: 'WHOLESALE',
         receiptNo,
-        businessDate: '2026-08-15',
-        tender: 'CASH',
+        cashSessionId: tillId,
+        tenders: [{ methodId: cashMethodId, settlement: 'IMMEDIATE' }],
         lines: [{ productId: productA, qty: '5' }],
       },
     };
   }
 
   it('the second sale LANDS — acked applied, never rejected, never lost', async () => {
+    // A SHARED drawer: the wiped device keeps ringing into the outlet's till.
+    tillId = await h.openTill(tenantA, outletA.id, '2026-08-15');
+    cashMethodId = (await h.tenderMethods(tenantA)).cash;
     deviceId = uuidv7();
     bearer = await tokenFor(tenantA, outletA.id, deviceId);
 

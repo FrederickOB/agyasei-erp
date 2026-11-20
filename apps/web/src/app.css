@@ -1124,6 +1124,131 @@ button {
   }
 }
 
+/* ─── TENDER LINES (split tender) ────────────────────────────────────────── */
+/* One fieldset per way the customer pays. On a 360px phone everything is one
+   column and every control is a full-width 48–56px target; on a tablet the
+   panel stays a centred column, because a cashier's eye travels down it in
+   the order they ask the questions. */
+.tender-line {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+  margin: 0;
+  padding: var(--s-4);
+  border: 1px solid var(--border);
+  border-radius: var(--r-2);
+  min-width: 0;
+}
+.tender-line legend {
+  padding: 0 var(--s-1);
+}
+.tender-methods {
+  margin-top: 0;
+}
+.tender-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-1);
+  font-weight: 650;
+}
+.tender-reference,
+.tender-customer {
+  min-height: var(--tap);
+  padding: 0 var(--s-4);
+  font-size: var(--t-lg);
+  border: 1px solid var(--control-border);
+  border-radius: var(--r-2);
+  background: var(--surface);
+}
+.tender-reference:focus,
+.tender-customer:focus {
+  border-color: var(--brand);
+}
+.tender-rest {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: var(--s-3);
+  margin: 0;
+  padding: var(--s-3) var(--s-4);
+  border-radius: var(--r-2);
+  background: var(--surface-2);
+  font-weight: 650;
+}
+.tender-remove {
+  min-height: var(--tap-min);
+  font-size: var(--t-sm);
+}
+
+/* ─── THE TILL ───────────────────────────────────────────────────────────── */
+/* The till's state lives in the counter's own chrome: always in view while
+   selling, one tap from cash-up, and loud only when it was opened offline. */
+.till-bar {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  padding: var(--s-2) var(--s-3);
+  border: 1px solid var(--border);
+  border-radius: var(--r-2);
+  background: var(--surface);
+  font-size: var(--t-sm);
+}
+.till-bar-text {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.till-bar-flag {
+  color: var(--wait-ink);
+  font-weight: 700;
+}
+.till-bar-action {
+  min-height: var(--tap-min);
+  flex: none;
+}
+.till-date {
+  font-size: var(--t-2xl);
+  font-weight: 800;
+  color: var(--text);
+  line-height: 1.2;
+}
+.till-carry {
+  display: flex;
+  gap: var(--s-2);
+  align-items: flex-start;
+  padding: var(--s-3) var(--s-4);
+  border-radius: var(--r-2);
+  background: var(--wait-tint);
+  color: var(--wait-ink);
+}
+.till-figures {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+}
+.till-variance {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: var(--s-3);
+  padding: var(--s-4);
+  border-radius: var(--r-2);
+  background: var(--surface-2);
+}
+.till-variance.matched {
+  background: var(--ok-tint);
+  color: var(--ok-ink);
+}
+.till-variance.short,
+.till-variance.over {
+  background: var(--attn-tint);
+  color: var(--attn-ink);
+}
+.receipt-tender-ref {
+  color: var(--text-muted);
+  font-weight: 500;
+}
+
 .receipt-crest {
   display: flex;
   align-items: center;

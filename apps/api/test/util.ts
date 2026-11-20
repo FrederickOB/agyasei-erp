@@ -5,6 +5,7 @@
  * here shortcuts RLS: every tenant-scoped statement runs as app_user with
  * the tenant GUC set by the harness's withTenant.
  */
+import type { CreateSaleInput } from '@erp/contracts';
 import { createHlcClock, hlcNodeFromName, uuidv7 } from '@erp/db';
 import { seedGhanaJurisdiction } from '@erp/db/seed';
 import { createTestDb, type Queryable, type TestDb } from '@erp/db/testing';
@@ -114,8 +115,42 @@ export interface ApiHarness {
     unitPriceE4: bigint,
     effectiveFrom?: string,
   ): Promise<void>;
+  /**
+   * The tenant's TEMPLATE tender methods, found by provenance (`origin_ref`) —
+   * never by code or name, which are the tenant's words (CLAUDE.md §2.9).
+   */
+  tenderMethods(tenantId: string): Promise<TemplateTenderIds>;
+  /**
+   * Open (once, then reuse) a SHARED-drawer till at `locationId` for
+   * `businessDate`, as the tenant's owner, through the real `cashSession.open`
+   * route. Returns the session id a sale names.
+   */
+  openTill(tenantId: string, locationId: string, businessDate: string): Promise<string>;
+  /**
+   * A sale payload in the shape most tests are ABOUT — a business date and a
+   * cash or credit tender — turned into the wire shape: the till for that day
+   * opened (shared drawer), and one BALANCE tender line on the template's cash
+   * or on-account method, so the line settles the server's own total and no
+   * reconciliation review is raised. Tests about tenders and tills build the
+   * wire shape themselves.
+   */
+  legacySale(payload: LegacySalePayload): Promise<CreateSaleInput>;
   close(): Promise<void>;
 }
+
+export interface TemplateTenderIds {
+  cash: string;
+  momo: string;
+  bankTransfer: string;
+  cheque: string;
+  onAccount: string;
+}
+
+/** The pre-tender test shape: a date and a CASH/CREDIT tender instead of a till and lines. */
+export type LegacySalePayload = Omit<CreateSaleInput, 'cashSessionId' | 'tenders'> & {
+  businessDate: string;
+  tender: 'CASH' | 'CREDIT';
+};
 
 export async function createApiHarness(): Promise<ApiHarness> {
   const db = await createTestDb();
@@ -489,6 +524,105 @@ export async function createApiHarness(): Promise<ApiHarness> {
     });
   }
 
+  // -------------------------------------------------------------------------
+  // Tills and tenders (migrations 0020–0022)
+  // -------------------------------------------------------------------------
+
+  const tenderCache = new Map<string, TemplateTenderIds>();
+  async function tenderMethods(tenantId: string): Promise<TemplateTenderIds> {
+    const hit = tenderCache.get(tenantId);
+    if (hit) return hit;
+    const ids = await db.withTenant(tenantId, async (tx) => {
+      const res = await tx.query<{ origin_ref: string; id: string }>(
+        `select origin_ref, id from app.tender_method
+          where origin_ref like 'tender:%' and deleted_at is null`,
+      );
+      const by = new Map(res.rows.map((r) => [r.origin_ref, r.id]));
+      const need = (ref: string): string => {
+        const id = by.get(`tender:${ref}`);
+        if (!id) throw new Error(`no template tender method ${ref} — was the template applied?`);
+        return id;
+      };
+      return {
+        cash: need('cash'),
+        momo: need('momo'),
+        bankTransfer: need('bank_transfer'),
+        cheque: need('cheque'),
+        onAccount: need('on_account'),
+      };
+    });
+    tenderCache.set(tenantId, ids);
+    return ids;
+  }
+
+  const tillCache = new Map<string, string>();
+  const tillOwners = new Map<string, VerifiedIdentity>();
+  async function openTill(tenantId: string, locationId: string, businessDate: string): Promise<string> {
+    const cacheKey = `${tenantId}|${locationId}|${businessDate}`;
+    const hit = tillCache.get(cacheKey);
+    if (hit) return hit;
+    // An existing uncontested SHARED till for that day is reused, so two
+    // harness callers never manufacture a class #17 race by accident.
+    const existing = await db.withTenant(tenantId, async (tx) => {
+      const r = await tx.query<{ id: string }>(
+        `select id from app.cash_session
+          where location_id = $1 and device_id is null and business_date = $2::date
+            and contested_session_id is null`,
+        [locationId, businessDate],
+      );
+      return r.rows[0]?.id ?? null;
+    });
+    if (existing) {
+      tillCache.set(cacheKey, existing);
+      return existing;
+    }
+    let owner = tillOwners.get(`${tenantId}|${locationId}`);
+    if (!owner) {
+      owner = await identityFor(tenantId, { locs: [locationId] });
+      tillOwners.set(`${tenantId}|${locationId}`, owner);
+    }
+    const id = uuidv7();
+    await callerFor(owner).cashSession.open({
+      idempotencyKey: id,
+      locationId,
+      businessDate,
+      openingFloatMinor: '0',
+      openedAt: `${businessDate}T07:00:00.000Z`,
+      openedOffline: false,
+      drawer: 'SHARED',
+    });
+    tillCache.set(cacheKey, id);
+    return id;
+  }
+
+  async function legacySale(payload: LegacySalePayload): Promise<CreateSaleInput> {
+    const { businessDate, tender, ...rest } = payload;
+    const settlement = tender === 'CREDIT' ? ('ON_ACCOUNT' as const) : ('IMMEDIATE' as const);
+    const tenantId = await db.asAdmin(async (tx) => {
+      const r = await tx.query<{ tenant_id: string }>(
+        `select tenant_id from app.location where id = $1`,
+        [payload.locationId],
+      );
+      return r.rows[0]?.tenant_id ?? null;
+    });
+    // A test ABOUT a refusal — an unknown location, a non-selling one, a
+    // tenant without the template — still has to reach the router to be
+    // refused there, so a till that cannot be opened becomes an id that names
+    // nothing, and the router answers for itself.
+    let cashSessionId = uuidv7();
+    let methodId = uuidv7();
+    if (tenantId !== null) {
+      try {
+        const methods = await tenderMethods(tenantId);
+        methodId = tender === 'CREDIT' ? methods.onAccount : methods.cash;
+        cashSessionId = await openTill(tenantId, payload.locationId, businessDate);
+      } catch {
+        // fall through with the placeholder ids
+      }
+    }
+    return { ...rest, cashSessionId, tenders: [{ methodId, settlement }] };
+  }
+
   return {
     db,
     deps,
@@ -509,6 +643,9 @@ export async function createApiHarness(): Promise<ApiHarness> {
     revokePermissionFromRole,
     locationByCode,
     outlets,
+    tenderMethods,
+    openTill,
+    legacySale,
     close: () => db.close(),
   };
 }

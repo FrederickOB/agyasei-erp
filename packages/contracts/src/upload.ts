@@ -44,6 +44,13 @@ export const DEVICE_OP_KINDS = [
   // A delivery status is updated by whoever hears from the driver, wherever
   // they are. Dispatched to logistics.updateStatus.
   'logistics.update_delivery_status',
+  // ── Go-live: the till (./cash-session.ts) ─────────────────────────────
+  // Opening and closing a till are TRADE: an outlet opens at 07:00 whether or
+  // not the tower is up, and every sale it rings names the session. They ride
+  // the same ORDERED outbox, so the open reaches the server before the sales
+  // that name it and the close after the last of them.
+  'cash_session.open',
+  'cash_session.close',
 ] as const;
 export type DeviceOpKind = (typeof DEVICE_OP_KINDS)[number];
 

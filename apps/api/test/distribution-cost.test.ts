@@ -191,7 +191,7 @@ async function sell(caller: Caller, locationId: string, receiptNo: string): Prom
     reasonCode: 'OPENING',
     businessDate: FROM,
   });
-  const sale = await caller.sales.createSale({
+  const sale = await caller.sales.createSale(await h.legacySale({
     idempotencyKey: uuidv7(),
     locationId,
     priceListCode: 'WHOLESALE',
@@ -199,7 +199,7 @@ async function sell(caller: Caller, locationId: string, receiptNo: string): Prom
     businessDate: TRADE_DAY,
     tender: 'CASH',
     lines: [{ productId, qty: '5' }],
-  });
+  }));
   return sale.saleId;
 }
 
@@ -279,7 +279,7 @@ beforeAll(async () => {
     reasonCode: 'OPENING',
     businessDate: FROM,
   });
-  await ownerB.sales.createSale({
+  await ownerB.sales.createSale(await h.legacySale({
     idempotencyKey: uuidv7(),
     locationId: bOutlet,
     priceListCode: 'WHOLESALE',
@@ -287,7 +287,7 @@ beforeAll(async () => {
     businessDate: TRADE_DAY,
     tender: 'CASH',
     lines: [{ productId: bProduct.id, qty: '5' }],
-  });
+  }));
   await haul(ownerB, bOutlet, {
     tenantId: tenantB,
     freightCostMinor: 777_777n,

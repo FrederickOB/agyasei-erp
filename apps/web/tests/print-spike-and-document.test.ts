@@ -10,7 +10,7 @@ import {
   formatIssuedAt,
   rateBpText,
   serializeDocument,
-  tendersFromLegacySale,
+  receiptTenders,
 } from '../src/printing/document';
 import { escapeHtml, renderReceiptHtml } from '../src/printing/html';
 import { DEFAULT_PRINTER_SETTINGS, sanitizeSettings } from '../src/printing/settings';
@@ -214,13 +214,26 @@ describe('the receipt document snapshot', () => {
     expect(rateBpText(null)).toBe('');
   });
 
-  it('turns the current CASH/CREDIT sale shape into a tenders array in one place', () => {
-    expect(tendersFromLegacySale({ tender: 'CASH', totalMinor: 100n, tenderedMinor: 150n, changeMinor: 50n })).toEqual({
-      tenders: [{ method: 'Cash', amountMinor: 150n, reference: null }],
-      changeMinor: 50n,
+  it("prints every tender line the sale recorded — the method's own name, its amount, its reference", () => {
+    // A split: part mobile money (with its transaction id), part cash with change.
+    expect(
+      receiptTenders(
+        [
+          { name: 'Mobile Money', amountMinor: 12_000n, reference: 'MP2611181234' },
+          { name: 'Cash', amountMinor: 6_000n, reference: null },
+        ],
+        4_000n,
+      ),
+    ).toEqual({
+      tenders: [
+        { method: 'Mobile Money', amountMinor: 12_000n, reference: 'MP2611181234' },
+        { method: 'Cash', amountMinor: 6_000n, reference: null },
+      ],
+      changeMinor: 4_000n,
     });
-    expect(tendersFromLegacySale({ tender: 'CREDIT', totalMinor: 100n, tenderedMinor: null, changeMinor: null })).toEqual({
-      tenders: [{ method: 'On account', amountMinor: 100n, reference: null }],
+    // On account: never "Cash", and no change.
+    expect(receiptTenders([{ name: 'On Account', amountMinor: 18_000n, reference: null }], null)).toEqual({
+      tenders: [{ method: 'On Account', amountMinor: 18_000n, reference: null }],
       changeMinor: 0n,
     });
   });

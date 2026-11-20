@@ -101,9 +101,9 @@ describe('ledger.posting_sweep, scheduled', () => {
   it('posts every settled sale once, as the system actor, and skips a tenant with no ledger', async () => {
     const ownerA = h.callerFor(await h.identityFor(tenantA, { locs: [outletA.id] }));
     const ownerB = h.callerFor(await h.identityFor(tenantB, { locs: [outletB.id] }));
-    await ownerA.sales.createSale(sale(outletA.id, productA, { qty: '3' }));
-    await ownerA.sales.createSale(sale(outletA.id, productA, { qty: '7' }));
-    await ownerB.sales.createSale(sale(outletB.id, productB, { qty: '2' }));
+    await ownerA.sales.createSale(await h.legacySale(sale(outletA.id, productA, { qty: '3' })));
+    await ownerA.sales.createSale(await h.legacySale(sale(outletA.id, productA, { qty: '7' })));
+    await ownerB.sales.createSale(await h.legacySale(sale(outletB.id, productB, { qty: '2' })));
 
     const out = await runJob(postingSweepJob(), deps);
     expect(out.status).toBe('succeeded');
@@ -180,8 +180,8 @@ describe('ops.lost_write_control (receipt-number continuity)', () => {
     const n = (k: bigint) => renderNumber(issued.format, start + k);
 
     // The device prints three receipts; only two sales reach the server.
-    await till.sales.createSale(sale(outletA.id, productA, { qty: '1', receiptNo: n(0n) }));
-    await till.sales.createSale(sale(outletA.id, productA, { qty: '1', receiptNo: n(2n) }));
+    await till.sales.createSale(await h.legacySale(sale(outletA.id, productA, { qty: '1', receiptNo: n(0n) })));
+    await till.sales.createSale(await h.legacySale(sale(outletA.id, productA, { qty: '1', receiptNo: n(2n) })));
     // ...and then reports, on the same ordered outbox, that it issued all three.
     await till.sequence.syncBlock({
       idempotencyKey: uuidv7(),
@@ -194,7 +194,7 @@ describe('ops.lost_write_control (receipt-number continuity)', () => {
     // Tenant B holds a sale carrying the very string A is missing — same
     // template, same location code, same format. It must not count for A.
     const ownerB = h.callerFor(await h.identityFor(tenantB, { locs: [outletB.id] }));
-    await ownerB.sales.createSale(sale(outletB.id, productB, { qty: '1', receiptNo: n(1n) }));
+    await ownerB.sales.createSale(await h.legacySale(sale(outletB.id, productB, { qty: '1', receiptNo: n(1n) })));
 
     const a = await h.db.withTenant(tenantA, (tx) => receiptContinuity(tx));
     expect(a.findings).toEqual([
@@ -226,7 +226,7 @@ describe('ops.lost_write_control (receipt-number continuity)', () => {
       wantBlock: true,
     })) as { block: { blockStart: string }; format: { format: string; prefix: string; locationCode: string } };
     const start = BigInt(issued.block.blockStart);
-    await till.sales.createSale(sale(outletA.id, productA, { qty: '1', receiptNo: renderNumber(issued.format, start) }));
+    await till.sales.createSale(await h.legacySale(sale(outletA.id, productA, { qty: '1', receiptNo: renderNumber(issued.format, start) })));
     await till.sequence.syncBlock({
       idempotencyKey: uuidv7(),
       locationId: outletA.id,

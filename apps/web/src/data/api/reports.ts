@@ -119,12 +119,38 @@ export interface SalesByDayReport {
   readonly total: SalesFigures;
 }
 
+/** One of the tenant's tender methods, totalled. The NAME is tenant data. */
+export interface CashPositionTender {
+  readonly methodId: string;
+  readonly name: string;
+  readonly isCash: boolean;
+  readonly isOnAccount: boolean;
+  readonly amountMinor: bigint;
+  readonly saleCount: bigint;
+}
+
+/** The cash-up view of one location's tills in the period (08 §8.2a). */
+export interface CashPositionTills {
+  readonly opened: bigint;
+  readonly closed: bigint;
+  readonly counted: bigint;
+  readonly autoClosed: bigint;
+  readonly openedOffline: bigint;
+  /** Σ (counted − expected). SIGNED: negative is short. */
+  readonly varianceMinor: bigint;
+  /** Tills whose count did not match to the minor unit. */
+  readonly offCount: bigint;
+  readonly bankedMinor: bigint;
+}
+
 export interface CashPositionLine extends LocationHeader {
   readonly immediateTenderMinor: bigint;
   readonly immediateSaleCount: bigint;
   readonly creditTenderMinor: bigint;
   readonly creditSaleCount: bigint;
   readonly billedTotalMinor: bigint;
+  readonly tenders: readonly CashPositionTender[];
+  readonly tills: CashPositionTills;
 }
 
 export interface CashPositionReport {
@@ -136,6 +162,7 @@ export interface CashPositionReport {
     readonly immediateTenderMinor: bigint;
     readonly creditTenderMinor: bigint;
     readonly billedTotalMinor: bigint;
+    readonly tenders: readonly CashPositionTender[];
   };
   /** Payments against credit accounts, tenant-wide — they have no location. */
   readonly unattributed: { readonly creditReceiptsMinor: bigint; readonly reason: string };
@@ -317,6 +344,36 @@ function mapSalesByDay(json: unknown): SalesByDayReport {
   };
 }
 
+function mapTenders(value: unknown, what: string): CashPositionTender[] {
+  return asArray(value, what).map((entry, i) => {
+    const w = `${what}[${String(i)}]`;
+    const t = asRecord(entry, w);
+    return {
+      methodId: asString(t['methodId'], `${w}.methodId`),
+      name: asString(t['name'], `${w}.name`),
+      isCash: asBoolean(t['isCash'], `${w}.isCash`),
+      isOnAccount: asBoolean(t['isOnAccount'], `${w}.isOnAccount`),
+      amountMinor: asScaled(t['amountMinor'], `${w}.amountMinor`),
+      saleCount: asScaled(t['saleCount'], `${w}.saleCount`),
+    };
+  });
+}
+
+function mapTills(value: unknown, what: string): CashPositionTills {
+  const t = asRecord(value, what);
+  const n = (k: string) => asScaled(t[k], `${what}.${k}`);
+  return {
+    opened: n('opened'),
+    closed: n('closed'),
+    counted: n('counted'),
+    autoClosed: n('autoClosed'),
+    openedOffline: n('openedOffline'),
+    varianceMinor: n('varianceMinor'),
+    offCount: n('offCount'),
+    bankedMinor: n('bankedMinor'),
+  };
+}
+
 function mapCashPosition(json: unknown): CashPositionReport {
   const root = asRecord(json, 'reports.cashPosition');
   const total = asRecord(root['total'], 'total');
@@ -335,12 +392,15 @@ function mapCashPosition(json: unknown): CashPositionReport {
         creditTenderMinor: asScaled(row['creditTenderMinor'], `${what}.creditTenderMinor`),
         creditSaleCount: asScaled(row['creditSaleCount'], `${what}.creditSaleCount`),
         billedTotalMinor: asScaled(row['billedTotalMinor'], `${what}.billedTotalMinor`),
+        tenders: mapTenders(row['tenders'], `${what}.tenders`),
+        tills: mapTills(row['tills'], `${what}.tills`),
       };
     }),
     total: {
       immediateTenderMinor: asScaled(total['immediateTenderMinor'], 'total.immediateTenderMinor'),
       creditTenderMinor: asScaled(total['creditTenderMinor'], 'total.creditTenderMinor'),
       billedTotalMinor: asScaled(total['billedTotalMinor'], 'total.billedTotalMinor'),
+      tenders: mapTenders(total['tenders'], 'total.tenders'),
     },
     unattributed: {
       creditReceiptsMinor: asScaled(

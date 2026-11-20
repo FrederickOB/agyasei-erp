@@ -209,7 +209,8 @@ async function buildLedger(h: ApiHarness, w: Omit<TenantWorld, 'reviewId'>): Pro
   const opts = { tenantId: t, postedBy: w.ownerIdentity.userId, postingRuleVersion: 1 };
   const docs = [
     saleEntry({
-      saleId: uuidv7(), locationId: w.outletId, businessDate: '2026-08-15', tender: 'CASH',
+      saleId: uuidv7(), locationId: w.outletId, businessDate: '2026-08-15',
+      tenders: [{ role: 'TILL_CASH', amountMinor: w.spec.glRevenueMinor + w.spec.glRevenueMinor / 5n }],
       revenueMinor: w.spec.glRevenueMinor, discountMinor: 0n,
       taxes: [{ taxCode: 'GH.VAT.STD', taxMinor: w.spec.glRevenueMinor / 5n }],
       costMinor: w.spec.glRevenueMinor / 2n,
@@ -228,7 +229,8 @@ async function buildLedger(h: ApiHarness, w: Omit<TenantWorld, 'reviewId'>): Pro
   const orphan = await postDocument(
     h.db,
     saleEntry({
-      saleId: uuidv7(), locationId: w.outletId, businessDate: '2027-12-01', tender: 'CASH',
+      saleId: uuidv7(), locationId: w.outletId, businessDate: '2027-12-01',
+      tenders: [{ role: 'TILL_CASH', amountMinor: 1_000n }],
       revenueMinor: 1_000n, discountMinor: 0n, taxes: [], costMinor: 0n,
     }),
     opts,
@@ -311,7 +313,7 @@ export async function buildTenantWorld(h: ApiHarness, spec: TenantSpec): Promise
     creditLimitMinor: '50000000',
   });
 
-  const cash = await owner.sales.createSale({
+  const cash = await owner.sales.createSale(await h.legacySale({
     idempotencyKey: uuidv7(),
     locationId: outletId,
     priceListCode: 'WHOLESALE',
@@ -319,8 +321,8 @@ export async function buildTenantWorld(h: ApiHarness, spec: TenantSpec): Promise
     businessDate: '2026-08-05',
     tender: 'CASH',
     lines: [{ productId: product.id, qty: spec.cashQty }],
-  });
-  const credit = await owner.sales.createSale({
+  }));
+  const credit = await owner.sales.createSale(await h.legacySale({
     idempotencyKey: uuidv7(),
     locationId: outletId,
     priceListCode: 'WHOLESALE',
@@ -329,7 +331,7 @@ export async function buildTenantWorld(h: ApiHarness, spec: TenantSpec): Promise
     tender: 'CREDIT',
     customerId: account.customerId,
     lines: [{ productId: product.id, qty: spec.creditQty }],
-  });
+  }));
   await owner.credit.recordEntry({
     idempotencyKey: uuidv7(),
     accountId: account.accountId,

@@ -39,7 +39,7 @@ jobs:
         run: node tools/lint-payroll.mjs
       # Concurrency capped at 2: each PGlite suite runs its own Postgres-in-wasm
       # and the hosted runner has 4 vCPUs. (The web UI flake that first motivated
-      # this is fixed at the source — apps/web/tests/setup-dom-timeouts.ts — so
+      # this is fixed at the source — apps/web/tests/setup/async-timeout.ts — so
       # the cap is now sizing, not a workaround.)
       - name: typecheck and test (the three mandatory categories run here)
         run: pnpm exec turbo run typecheck test --concurrency=2

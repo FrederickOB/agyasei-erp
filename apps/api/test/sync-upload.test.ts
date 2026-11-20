@@ -31,6 +31,9 @@ let tenantB: string;
 let outletId: string;
 let productId: string;
 let bearerA: string;
+/** The day's till and the template's cash method — opened in beforeAll. */
+let tillId: string;
+let cashMethodId: string;
 
 interface UploadOp {
   idempotency_key: string;
@@ -45,8 +48,8 @@ function salePayload(receiptNo: string, extra: Record<string, unknown> = {}): Re
     locationId: outletId,
     priceListCode: 'WHOLESALE',
     receiptNo,
-    businessDate: '2026-08-15',
-    tender: 'CASH',
+    cashSessionId: tillId,
+    tenders: [{ methodId: cashMethodId, settlement: 'IMMEDIATE' }],
     lines: [{ productId, qty: '5' }],
     ...extra,
   };
@@ -92,6 +95,8 @@ beforeAll(async () => {
   const product = await h.pickProduct(tenantA);
   productId = product.id;
   await h.seedWholesalePrice(tenantA, productId, 55_000_000n); // GH₵55.00/unit, e4
+  tillId = await h.openTill(tenantA, outletId, '2026-08-15');
+  cashMethodId = (await h.tenderMethods(tenantA)).cash;
 
   app = await buildServer({ deps: h.deps, jwtSecret: JWT_SECRET });
   // A PROVISIONED principal, not merely a signed token: every gated write

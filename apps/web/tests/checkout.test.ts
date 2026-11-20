@@ -30,13 +30,21 @@ import {
   SaleContextIncompleteError,
   SalePayloadInvalidError,
   ShortTenderError,
+  TenderError,
   cartTotalMinor,
+  type TenderDraft,
 } from '../src/data/mutations/checkout';
 import { getCartLines, getOpenCart } from '../src/data/queries/cart';
 import { getRecordedSale, readOutboxQueue, recentSales } from '../src/data/queries/sales';
 import { CONFIG_KEY_LOCATION_ID } from '../src/data/queries/session';
 import { openTestDb } from './helpers/node-db';
-import { fixedHlc, provisionDevice, seedProduct, type ProvisionedDevice } from './helpers/fixtures';
+import {
+  fixedHlc,
+  provisionDevice,
+  seedProduct,
+  seedTenderMethods,
+  type ProvisionedDevice,
+} from './helpers/fixtures';
 import type { LocalDb } from '../src/data/db';
 
 interface Fixture {
@@ -267,27 +275,82 @@ describe('checkout', () => {
     expect(await getCartLines(db, cartId)).toHaveLength(2);
   });
 
-  it('records a credit sale under the CREDIT tender and refuses one with no customer', async () => {
+  it('records an ON-ACCOUNT sale under the account method and refuses one with no customer', async () => {
     const db = openTestDb();
     const { cartId } = await cartWithTwoLines(db);
+    const tm = await seedTenderMethods(db);
+    const account = [{ method: tm.account, amountMinor: null }];
     await expect(
-      checkout(db, { cartId, tenderedMinor: 0n, hlc: fixedHlc(), tender: 'CREDIT' }),
+      checkout(db, { cartId, tenders: account, hlc: fixedHlc() }),
     ).rejects.toThrow(SaleContextIncompleteError);
 
     const customerId = '018f0c4c-0000-7000-8000-0000000000c1';
+    const result = await checkout(db, { cartId, tenders: account, hlc: fixedHlc(), customerId });
+    expect(result.changeMinor).toBe(0n); // no cash changes hands on account
+
+    const rows = await db.getAll('SELECT payload, CAST(drawer_minor AS TEXT) AS drawer FROM outbox');
+    const payload = createSaleInput.parse(JSON.parse(String(rows[0]!['payload'])));
+    // The BALANCE line carries no amount: it settles whatever the server says.
+    expect(payload.tenders).toEqual([{ methodId: tm.account.id, settlement: 'ON_ACCOUNT' }]);
+    expect(payload.customerId).toBe(customerId);
+    expect(rows[0]!['drawer']).toBe('0'); // nothing went in the drawer
+  });
+
+  it('SPLIT TENDER: part wallet with its reference, the rest in cash — the drawer gets only the cash', async () => {
+    const db = openTestDb();
+    const { cartId, device } = await cartWithTwoLines(db);
+    const tm = await seedTenderMethods(db);
     const result = await checkout(db, {
       cartId,
-      tenderedMinor: 0n, // no cash changes hands on credit
+      tenders: [
+        { method: tm.wallet, amountMinor: 1_000_000n, reference: '  TXN-4471  ' },
+        { method: tm.cash, amountMinor: null, tenderedMinor: 250_000n },
+      ],
       hlc: fixedHlc(),
-      tender: 'CREDIT',
-      customerId,
+      nowIso: '2026-08-21T09:05:00.000Z',
     });
-    expect(result.changeMinor).toBe(0n);
+    const cashPart = EXPECTED_TOTAL - 1_000_000n; // 242_438
+    expect(result.changeMinor).toBe(250_000n - cashPart);
+    expect(result.cashSessionId).toBe(device.tillId);
 
-    const rows = await db.getAll('SELECT payload FROM outbox');
+    const rows = await db.getAll(
+      `SELECT payload, cash_session_id, CAST(drawer_minor AS TEXT) AS drawer,
+              CAST(tendered_minor AS TEXT) AS tendered FROM outbox`,
+    );
     const payload = createSaleInput.parse(JSON.parse(String(rows[0]!['payload'])));
-    expect(payload.tender).toBe('CREDIT');
-    expect(payload.customerId).toBe(customerId);
+    expect(payload.tenders).toEqual([
+      { methodId: tm.wallet.id, settlement: 'IMMEDIATE', amountMinor: 1_000_000n, reference: 'TXN-4471' },
+      { methodId: tm.cash.id, settlement: 'IMMEDIATE' },
+    ]);
+    expect(rows[0]!['cash_session_id']).toBe(device.tillId);
+    expect(BigInt(String(rows[0]!['drawer']))).toBe(cashPart);
+    expect(BigInt(String(rows[0]!['tendered']))).toBe(250_000n);
+  });
+
+  it('refuses a split that over-pays, a wallet line with no reference, and short cash — recording nothing', async () => {
+    const db = openTestDb();
+    const { cartId } = await cartWithTwoLines(db);
+    const tm = await seedTenderMethods(db);
+    const attempts: TenderDraft[][] = [
+      // Stated lines alone exceed the total.
+      [{ method: tm.wallet, amountMinor: EXPECTED_TOTAL + 1n, reference: 'R' }, { method: tm.cash, amountMinor: null }],
+      // The tenant requires a reference for this method.
+      [{ method: tm.wallet, amountMinor: null }],
+      // No balance line, and the stated lines fall short.
+      [{ method: tm.wallet, amountMinor: 1n, reference: 'R' }],
+    ];
+    for (const tenders of attempts) {
+      await expect(checkout(db, { cartId, tenders, hlc: fixedHlc() })).rejects.toThrow(TenderError);
+    }
+    await expect(
+      checkout(db, { cartId, tenders: [{ method: tm.cash, amountMinor: null, tenderedMinor: EXPECTED_TOTAL - 1n }], hlc: fixedHlc() }),
+    ).rejects.toThrow(ShortTenderError);
+    expect(await db.getAll('SELECT id FROM outbox')).toHaveLength(0);
+    expect(await getCartLines(db, cartId)).toHaveLength(2);
+    // …and the positive control: the same cart, paid exactly, records.
+    await expect(
+      checkout(db, { cartId, tenders: [{ method: tm.cash, amountMinor: null, tenderedMinor: EXPECTED_TOTAL }], hlc: fixedHlc() }),
+    ).resolves.toMatchObject({ changeMinor: 0n });
   });
 });
 
@@ -315,8 +378,9 @@ describe('buildSalePayload — the wire contract, not a shape of our own', () =>
 
     expect(parsed.locationId).toBe(device.locationId);
     expect(parsed.priceListCode).toBe(device.priceListCode);
-    expect(parsed.businessDate).toBe('2026-08-21');
-    expect(parsed.tender).toBe('CASH');
+    expect(parsed.cashSessionId).toBe(device.tillId);
+    expect(parsed.tenders).toHaveLength(1);
+    expect(parsed.tenders[0]!.settlement).toBe('IMMEDIATE');
     expect(parsed.receiptNo.length).toBeGreaterThan(0);
     expect(parsed.lines).toHaveLength(2);
     // Money and quantity arrive as bigint on the far side of the transform —
@@ -426,6 +490,8 @@ describe('buildSalePayload — the wire contract, not a shape of our own', () =>
     const db = openTestDb();
     const { cartId, device } = await cartWithTwoLines(db);
     const lines = await getCartLines(db, cartId);
+    const tm = await seedTenderMethods(db);
+    const cash = [{ method: tm.cash, amountMinor: null, tenderedMinor: 1_300_000n }];
 
     // A location id that is not a UUID is exactly the class of defect that
     // used to travel silently to the server and come back a BAD_REQUEST hours
@@ -436,27 +502,25 @@ describe('buildSalePayload — the wire contract, not a shape of our own', () =>
         locationId: 'not-a-uuid',
         priceListCode: device.priceListCode,
         receiptNo: 'LOC1-000001',
-        businessDate: '2026-08-21',
-        tender: 'CASH',
+        cashSessionId: device.tillId!,
+        tenders: cash,
         createdAt: '2026-08-21T09:05:00.000Z',
         lines,
-        tenderedMinor: 1_300_000n,
       }),
     ).toThrow(SalePayloadInvalidError);
 
-    // And a business date that is not a calendar date (30 February parses in
-    // V8 and rolls over) is caught here rather than at Postgres.
+    // And a till id that is not a UUID — the till is what dates the sale now,
+    // so a malformed one is caught here rather than at the server.
     expect(() =>
       buildSalePayload({
         saleId: cartId,
         locationId: device.locationId,
         priceListCode: device.priceListCode,
         receiptNo: 'LOC1-000001',
-        businessDate: '2026-02-30',
-        tender: 'CASH',
+        cashSessionId: 'not-a-till',
+        tenders: cash,
         createdAt: '2026-08-21T09:05:00.000Z',
         lines,
-        tenderedMinor: 1_300_000n,
       }),
     ).toThrow(SalePayloadInvalidError);
 
@@ -467,21 +531,22 @@ describe('buildSalePayload — the wire contract, not a shape of our own', () =>
     const db = openTestDb();
     const { cartId } = await cartWithTwoLines(db);
     const lines = await getCartLines(db, cartId);
+    const tm = await seedTenderMethods(db);
     const built = buildSalePayload({
       saleId: cartId,
       locationId: '018f0c4c-0000-7000-8000-0000000000aa',
       priceListCode: 'DEFAULT',
       receiptNo: 'LOC1-000001',
-      businessDate: '2026-08-21',
-      tender: 'CASH',
+      cashSessionId: '018f0c4c-0000-7000-8000-0000000000ab',
+      tenders: [{ method: tm.cash, amountMinor: null, tenderedMinor: 1_300_000n }],
       createdAt: '2026-08-21T09:05:00.000Z',
       lines,
-      tenderedMinor: 1_300_000n,
     });
     // Same arithmetic as before the contract landed: the wire changed, the
     // counter's own figure did not.
     expect(built.totalMinor).toBe(EXPECTED_TOTAL);
-    expect(built.changeMinor).toBe(1_300_000n - EXPECTED_TOTAL);
+    expect(built.settled.changeMinor).toBe(1_300_000n - EXPECTED_TOTAL);
+    expect(built.settled.drawerMinor).toBe(EXPECTED_TOTAL);
     expect(built.totalMinor).toBe(cartTotalMinor(lines));
   });
 });

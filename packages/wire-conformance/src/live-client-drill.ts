@@ -38,13 +38,19 @@ import { fileURLToPath } from 'node:url';
 import pg from 'pg';
 
 import { checkout } from '../../../apps/web/src/data/mutations/checkout';
+import { openTill } from '../../../apps/web/src/data/mutations/till';
 import { addProductToCart, createCart } from '../../../apps/web/src/data/mutations/cart';
 import { httpUploadTransport } from '../../../apps/web/src/data/sync/transport';
 import { readPendingOps } from '../../../apps/web/src/data/sync/upload';
 import type { FetchLike, HttpResponseLike } from '../../../apps/web/src/data/sync/credentials';
 import type { LocalDb } from '../../../apps/web/src/data/db';
 import { openTestDb } from '../../../apps/web/tests/helpers/node-db';
-import { fixedHlc, provisionDevice, seedProduct } from '../../../apps/web/tests/helpers/fixtures';
+import {
+  fixedHlc,
+  provisionDevice,
+  replaceTenderMethods,
+  seedProduct,
+} from '../../../apps/web/tests/helpers/fixtures';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const API_URL = process.env['API_URL'] ?? 'http://localhost:3001';
@@ -189,6 +195,30 @@ async function main(): Promise<void> {
       locationId,
       locationCode: loc.code,
       priceListCode: list.code,
+      till: false,
+    });
+    // The tenant's REAL tender methods (the reference bucket's rows), and a
+    // till opened through the PWA's own path: no sale without one (08 §8.2a).
+    // SHARED, so a re-run on the same day lands as a #17 contested claim
+    // rather than failing — the drill is about the sale, not the till.
+    const methods = await scoped<{
+      id: string; name: string; posting_role: string; is_cash: boolean;
+      is_on_account: boolean; requires_reference: boolean; sort_order: number;
+    }>(
+      `select id, name, posting_role, is_cash, is_on_account, requires_reference, sort_order
+         from app.tender_method where is_active and deleted_at is null`,
+    );
+    await replaceTenderMethods(db, methods.map((m) => ({
+      id: m.id, name: m.name, postingRole: m.posting_role, isCash: m.is_cash,
+      isOnAccount: m.is_on_account, requiresReference: m.requires_reference, sortOrder: m.sort_order,
+    })));
+    await openTill(db, {
+      openingFloatMinor: 0n,
+      businessDate: nowIso.slice(0, 10),
+      openedOffline: false,
+      drawer: 'SHARED',
+      hlc: fixedHlc(Date.parse(nowIso) - 1_000, deviceNode),
+      nowIso,
     });
     const product = await seedProduct(db, {
       id: prod.id,

@@ -30,6 +30,7 @@ import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import pg from 'pg';
+import { LiveTills, liveTenderIds, tenderLines } from './live-tills.js';
 
 import type { ApiCallOptions, ApiFetch } from '../../../apps/web/src/data/api/client';
 import {
@@ -352,10 +353,23 @@ export default async function main(): Promise<void> {
   check('C0 a priced, sellable product exists for the positive control',
     productId !== undefined, productId ?? 'NONE — the control below cannot be trusted');
 
+  // Since 0020 a sale names its till (whose date is the sale's) and the
+  // tenant's own tender methods. One shared till for today, opened by the
+  // manager through the real route.
+  const tenderIds = await liveTenderIds(
+    async (q, params) => (await sql.query(q, params)).rows as never[],
+    claims.tid,
+  );
+  const tills = new LiveTills(async (input) => {
+    const o = await rawMutate('cashSession.open', input, managerToken);
+    return { ok: o.status === 200, detail: `HTTP ${String(o.status)} ${JSON.stringify(o.body).slice(0, 160)}` };
+  });
+  const tillId = await tills.till(location, TODAY);
   const creditSale = (receiptNo: string) => ({
     idempotencyKey: key(), clientWallAt: new Date().toISOString(),
-    locationId: location, priceListCode: 'WHOLESALE', receiptNo, businessDate: TODAY,
-    tender: 'CREDIT' as const, customerId, lines: [{ productId: productId ?? '', qty: '1' }],
+    locationId: location, cashSessionId: tillId, priceListCode: 'WHOLESALE', receiptNo,
+    tenders: tenderLines('CREDIT', tenderIds), customerId,
+    lines: [{ productId: productId ?? '', qty: '1' }],
   });
 
   // Positive control FIRST, while the account is ACTIVE.
@@ -383,7 +397,7 @@ export default async function main(): Promise<void> {
     refused.status === 412 && refusedText.includes('SUSPENDED'),
     `HTTP ${String(refused.status)} — ${refusedText.slice(0, 160)}`);
 
-  const cashSale = { ...creditSale(`OFF-C-${stamp}`), tender: 'CASH' as const };
+  const cashSale = { ...creditSale(`OFF-C-${stamp}`), tenders: tenderLines('CASH', tenderIds) };
   const cashOk = await rawMutate('sales.createSale', cashSale, managerToken);
   check('C5 suspending CREDIT does not stop the customer buying for CASH (plan R4)',
     cashOk.status === 200, `HTTP ${String(cashOk.status)}`);

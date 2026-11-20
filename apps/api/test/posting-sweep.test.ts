@@ -77,11 +77,11 @@ afterAll(async () => {
 
 describe('settled sales reach the books, and the books tie to the sales', () => {
   it('sweeps a cash sale, a credit sale, and a KNOWN-CUSTOMER cash sale correctly', async () => {
-    await owner.sales.createSale(sale({ qty: '3' })); // anonymous cash
-    await owner.sales.createSale(sale({ qty: '5', credit: true })); // credit
+    await owner.sales.createSale(await h.legacySale(sale({ qty: '3' }))); // anonymous cash
+    await owner.sales.createSale(await h.legacySale(sale({ qty: '5', credit: true }))); // credit
     // The trap: cash tender, but the customer is named on the sale. Inferring
     // tender from customer_id would debit AR for money already in the till.
-    await owner.sales.createSale(sale({ qty: '2', knownCustomer: true }));
+    await owner.sales.createSale(await h.legacySale(sale({ qty: '2', knownCustomer: true })));
 
     const result = await SWEEP();
     expect(result.examined).toBe(3);
@@ -135,7 +135,7 @@ describe('settled sales reach the books, and the books tie to the sales', () => 
   });
 
   it('a discounted sale posts revenue GROSS with the discount as contra', async () => {
-    const priced = await owner.sales.createSale(sale({ qty: '4', discount: 5_000n }));
+    const priced = await owner.sales.createSale(await h.legacySale(sale({ qty: '4', discount: 5_000n })));
     const result = await SWEEP();
     expect(result.posted).toBe(1);
 
@@ -161,10 +161,11 @@ describe('settled sales reach the books, and the books tie to the sales', () => 
         `insert into app.sale (tenant_id, id, write_id, hlc, location_id, price_list_id,
                                receipt_no, business_date, occurred_at, currency_code, money_scale,
                                subtotal_net_minor, discount_minor, tax_total_minor, total_minor,
-                               voids_sale_id)
+                               voids_sale_id, cash_session_id)
          select tenant_id, $1::uuid, write_id, hlc, location_id, price_list_id,
                 'SW-VOID-1', business_date, occurred_at, currency_code, money_scale,
-                subtotal_net_minor, discount_minor, tax_total_minor, total_minor, $2::uuid
+                subtotal_net_minor, discount_minor, tax_total_minor, total_minor, $2::uuid,
+                cash_session_id
            from app.sale where id = $2::uuid`,
         [uuidv7(), target.rows[0]!.id],
       );
@@ -190,7 +191,7 @@ describe('a failed posting opens an exception and touches nothing', () => {
     await h.db.withTenant(tenantId, (tx) =>
       tx.query(`update app.gl_account_mapping set effective_to = '2026-08-02'
                  where posting_role = 'SALES_REVENUE'`));
-    await owner.sales.createSale(sale({ qty: '1' }));
+    await owner.sales.createSale(await h.legacySale(sale({ qty: '1' })));
 
     const result = await SWEEP();
     expect(result.exceptions).toBe(1);

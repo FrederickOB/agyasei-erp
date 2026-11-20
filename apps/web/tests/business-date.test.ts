@@ -10,7 +10,8 @@
 import { createSaleInput } from '@erp/contracts';
 import { describe, expect, it } from 'vitest';
 import { addProductToCart, createCart } from '../src/data/mutations/cart';
-import { checkout } from '../src/data/mutations/checkout';
+import { checkout, TillClosedAtMidnightError } from '../src/data/mutations/checkout';
+import { autoCloseStaleTill, openTill, readLatestTill } from '../src/data/mutations/till';
 import { assertBusinessDate, businessDateFor, BusinessDateError } from '../src/lib/business-date';
 import { openTestDb } from './helpers/node-db';
 import { fixedHlc, provisionDevice, seedProduct } from './helpers/fixtures';
@@ -46,46 +47,75 @@ describe('businessDateFor', () => {
   });
 });
 
-describe('the business date a sale actually carries', () => {
-  async function saleAt(db: LocalDb, timeZone: string, nowIso: string, businessDate?: string) {
-    const device = await provisionDevice(db, { timeZone });
+/**
+ * Since migration 0020 a sale's trading day is its TILL's (08 §8.2a; 03
+ * §3.4.2): asserted by a person when the till opened, never by the tablet's
+ * clock at the moment of the sale. The location's zone still matters — it is
+ * what decides when local midnight has passed and the till must close.
+ */
+describe('the business date a sale actually carries is its TILL’s', () => {
+  async function ring(db: LocalDb, opts: { timeZone: string; till: string | false; nowIso: string }) {
+    const device = await provisionDevice(db, { timeZone: opts.timeZone, till: opts.till });
     const product = await seedProduct(db, {
       code: 'P1',
       name: 'Thing',
       unitPriceE4: 50_000_000n,
       priceListId: device.priceListId,
     });
-    const cartId = await createCart(db, { nowIso });
+    const cartId = await createCart(db, { nowIso: opts.nowIso });
     await addProductToCart(db, cartId, product);
-    await checkout(db, {
-      cartId,
-      tenderedMinor: 10_000n,
-      hlc: fixedHlc(),
-      nowIso,
-      ...(businessDate === undefined ? {} : { businessDate }),
-    });
-    const rows = await db.getAll('SELECT payload FROM outbox');
-    return createSaleInput.parse(JSON.parse(String(rows[0]!['payload'])));
+    return { device, cartId };
   }
 
-  it('derives it from the location timezone at the moment of the sale', async () => {
-    const late = await saleAt(openTestDb(), 'Africa/Lagos', '2026-08-21T23:30:00.000Z');
-    expect(late.businessDate).toBe('2026-08-22');
-
-    const same = await saleAt(openTestDb(), 'UTC', '2026-08-21T23:30:00.000Z');
-    expect(same.businessDate).toBe('2026-08-21');
+  it('the sale names its till, and carries no date of its own', async () => {
+    const db = openTestDb();
+    const { device, cartId } = await ring(db, { timeZone: 'UTC', till: '2026-08-21', nowIso: '2026-08-21T14:00:00.000Z' });
+    const result = await checkout(db, { cartId, tenderedMinor: 10_000n, hlc: fixedHlc(), nowIso: '2026-08-21T14:00:00.000Z' });
+    expect(result.businessDate).toBe('2026-08-21');
+    expect(result.cashSessionId).toBe(device.tillId);
+    const rows = await db.getAll('SELECT payload FROM outbox');
+    const payload = createSaleInput.parse(JSON.parse(String(rows[0]!['payload'])));
+    expect(payload.cashSessionId).toBe(device.tillId);
+    expect('businessDate' in payload).toBe(false);
+    // occurredAt is the device instant, separate from the trading day.
+    expect(payload.occurredAt).toBe('2026-08-21T14:00:00.000Z');
   });
 
-  it('accepts an asserted trading day, for the day-open control that will own it', async () => {
-    // §3.4.2 makes business_date human-asserted under an open cash session.
-    // The session does not exist yet; the seam does, and it is honoured.
-    const sale = await saleAt(openTestDb(), 'UTC', '2026-08-22T01:00:00.000Z', '2026-08-21');
-    expect(sale.businessDate).toBe('2026-08-21');
+  it('no till, no sale — and the cart survives the refusal', async () => {
+    const db = openTestDb();
+    const { cartId } = await ring(db, { timeZone: 'UTC', till: false, nowIso: '2026-08-21T14:00:00.000Z' });
+    await expect(
+      checkout(db, { cartId, tenderedMinor: 10_000n, hlc: fixedHlc(), nowIso: '2026-08-21T14:00:00.000Z' }),
+    ).rejects.toThrow(/No till is open/);
+    expect(await db.getAll('SELECT 1 FROM cart_line')).toHaveLength(1);
+    expect(await db.getAll('SELECT 1 FROM outbox')).toHaveLength(0);
   });
 
-  it('records occurredAt as the device instant, separate from the trading day', async () => {
-    const sale = await saleAt(openTestDb(), 'Africa/Lagos', '2026-08-21T23:30:00.000Z');
-    expect(sale.occurredAt).toBe('2026-08-21T23:30:00.000Z');
-    expect(sale.businessDate).toBe('2026-08-22');
+  it('past LOCAL midnight the old till refuses the sale; the midnight close and a new till let it through', async () => {
+    const db = openTestDb();
+    // 23:30 UTC on the 21st is already the 22nd in Lagos (UTC+1).
+    const late = '2026-08-21T23:30:00.000Z';
+    const { cartId } = await ring(db, { timeZone: 'Africa/Lagos', till: '2026-08-21', nowIso: late });
+    await expect(
+      checkout(db, { cartId, tenderedMinor: 10_000n, hlc: fixedHlc(), nowIso: late }),
+    ).rejects.toBeInstanceOf(TillClosedAtMidnightError);
+
+    const closed = await autoCloseStaleTill(db, { hlc: fixedHlc(), nowIso: late });
+    expect(closed?.till).toMatchObject({ businessDate: '2026-08-21', autoClosed: true, countedMinor: null });
+    // A NEW till for the new day — never the old one extended.
+    await openTill(db, { openingFloatMinor: 0n, businessDate: '2026-08-22', openedOffline: true, hlc: fixedHlc(), nowIso: late });
+    const result = await checkout(db, { cartId, tenderedMinor: 10_000n, hlc: fixedHlc(), nowIso: late });
+    expect(result.businessDate).toBe('2026-08-22');
+    expect((await readLatestTill(db))?.businessDate).toBe('2026-08-22');
+  });
+
+  it('…and the SAME instant in a zone where it is still the 21st does not close the till', async () => {
+    const db = openTestDb();
+    const late = '2026-08-21T23:30:00.000Z';
+    const { cartId } = await ring(db, { timeZone: 'UTC', till: '2026-08-21', nowIso: late });
+    expect(await autoCloseStaleTill(db, { hlc: fixedHlc(), nowIso: late })).toBeNull();
+    const result = await checkout(db, { cartId, tenderedMinor: 10_000n, hlc: fixedHlc(), nowIso: late });
+    expect(result.businessDate).toBe('2026-08-21');
   });
 });
+

@@ -19,18 +19,21 @@
  *     the sale was actually taxed with — never today's rates (ADR-0002) and
  *     never the live pack's scale (§8.3).
  *
- * The tenders array is produced by exactly one function
- * (`tendersFromLegacySale` in document.ts) so the move to tenant-defined tender
- * lines touches one place.
+ * The "paid by" lines are the sale's own tender lines (tenant-defined methods,
+ * `receiptTenders` in document.ts): the server's `sale_tender` rows once they
+ * have synced, the queued payload's tender lines before that. The business
+ * date is the TILL's (08 §8.2a), never the device clock.
  */
 import type { CurrencySpec } from '@erp/money';
 import type { DbExecutor, LocalDb } from '../data/db';
+import { getRecordedSaleTenders } from '../data/queries/sales';
 import { readDeviceLocation } from '../data/queries/session';
 import { lineTotalMinor, type CartPricing, type CartPricingBasis } from '../data/pricing/cart-pricing';
 import type { CartLineRow } from '../data/queries/cart';
 import {
   buildReceiptDocument,
-  tendersFromLegacySale,
+  receiptTenders,
+  type RecordedReceiptTender,
   UNCONFIGURED_PACK_SLOT,
   type ReceiptDocument,
   type ReceiptLabels,
@@ -149,15 +152,31 @@ export interface CommittedSaleFacts {
   readonly totalMinor: bigint;
   readonly tenderedMinor: bigint | null;
   readonly changeMinor: bigint | null;
-  readonly tender: 'CASH' | 'CREDIT';
   readonly customerId: string | null;
+  /** The till's business date — the only date a sale is filed under. */
   readonly businessDate: string;
+}
+
+/**
+ * The till a sale was rung in decides its business date (08 §8.2a). The
+ * device's own till row first (it exists the moment the till opens), then the
+ * synced server row; the device clock's date only for a sale that predates
+ * tills on this device.
+ */
+async function tillBusinessDate(db: DbExecutor, cashSessionId: string | null): Promise<string | null> {
+  if (cashSessionId === null) return null;
+  for (const table of ['till_session', 'cash_session'] as const) {
+    const rows = await db.getAll(`SELECT business_date FROM ${table} WHERE id = ? LIMIT 1`, [cashSessionId]);
+    const d = rows[0]?.['business_date'];
+    if (typeof d === 'string' && d.length > 0) return d;
+  }
+  return null;
 }
 
 /** The outbox row for this sale, or null if no such sale has been committed on this device. */
 export async function readCommittedSale(db: DbExecutor, saleId: string): Promise<CommittedSaleFacts | null> {
   const rows = await db.getAll(
-    `SELECT id, receipt_no, created_at, payload,
+    `SELECT id, receipt_no, created_at, payload, cash_session_id,
             CAST(total_minor AS TEXT) AS total_minor,
             CAST(tendered_minor AS TEXT) AS tendered_minor,
             CAST(change_minor AS TEXT) AS change_minor
@@ -180,9 +199,16 @@ export async function readCommittedSale(db: DbExecutor, saleId: string): Promise
     totalMinor: BigInt(String(row['total_minor'])),
     tenderedMinor: opt(row['tendered_minor']),
     changeMinor: opt(row['change_minor']),
-    tender: payload['tender'] === 'CREDIT' ? 'CREDIT' : 'CASH',
     customerId: typeof payload['customerId'] === 'string' ? payload['customerId'] : null,
-    businessDate: typeof payload['businessDate'] === 'string' ? payload['businessDate'] : row['created_at'] === null ? '' : String(row['created_at']).slice(0, 10),
+    businessDate:
+      (await tillBusinessDate(
+        db,
+        typeof row['cash_session_id'] === 'string'
+          ? row['cash_session_id']
+          : typeof payload['cashSessionId'] === 'string'
+            ? payload['cashSessionId']
+            : null,
+      )) ?? (row['created_at'] === null ? '' : String(row['created_at']).slice(0, 10)),
   };
 }
 
@@ -240,12 +266,7 @@ export async function documentForCommittedSale(
     unitPriceE4: l.unitPriceE4,
     amountMinor: lineTotalMinor(l),
   }));
-  const tenders = tendersFromLegacySale({
-    tender: facts.tender,
-    totalMinor: facts.totalMinor,
-    tenderedMinor: facts.tenderedMinor,
-    changeMinor: facts.changeMinor,
-  });
+  const tenders = receiptTenders(await getRecordedSaleTenders(db, facts.saleId), facts.changeMinor);
   return buildReceiptDocument({
     saleId: facts.saleId,
     receiptNo: facts.receiptNo,
@@ -361,12 +382,24 @@ export async function documentFromSyncedSale(db: LocalDb, saleId: string): Promi
   ]);
   const symbol = typeof jur[0]?.['currency_symbol'] === 'string' ? jur[0]['currency_symbol'] : String(sale['currency_code']);
   const ctx = await readReceiptContext(db);
-  const tenders = tendersFromLegacySale({
-    tender: facts.tender,
-    totalMinor: big(sale['total']),
-    tenderedMinor: facts.tenderedMinor,
-    changeMinor: facts.changeMinor,
-  });
+  // The SERVER's tender rows for this sale (with the tenant's method names);
+  // until they stream back, the lines the device queued.
+  const tenderRows = await db.getAll(
+    `SELECT COALESCE(m.name, 'Payment') AS name, CAST(st.amount_minor AS TEXT) AS amount, st.reference
+       FROM sale_tender st
+       LEFT JOIN tender_method m ON m.id = st.method_id
+      WHERE st.sale_id = ? ORDER BY st.seq ASC`,
+    [String(sale['id'])],
+  );
+  const synced: RecordedReceiptTender[] = tenderRows.map((r) => ({
+    name: String(r['name']),
+    amountMinor: big(r['amount']),
+    reference: typeof r['reference'] === 'string' ? r['reference'] : null,
+  }));
+  const tenders = receiptTenders(
+    synced.length > 0 ? synced : await getRecordedSaleTenders(db, saleId),
+    facts.changeMinor,
+  );
   return buildReceiptDocument({
     saleId,
     receiptNo: facts.receiptNo,

@@ -145,6 +145,20 @@ export const CAPABILITY = {
 export interface CapabilityGrant {
   readonly code: string;
   readonly locationId: string;
+  /**
+   * The grant's `max_order_value_minor` bound, when it has one — a DECIMAL
+   * STRING of minor units, kept as text so the cached snapshot round-trips
+   * through JSON without ever becoming a float (ADR-0004). Read through
+   * `onAccountCeiling`; the server enforces the bound regardless.
+   */
+  readonly maxOrderValueMinor?: string;
+}
+
+/** The bound member the sale path measures (02 §2.4), if it is a decimal string. */
+function maxOrderValueOf(bound: unknown): string | undefined {
+  if (typeof bound !== 'object' || bound === null) return undefined;
+  const raw = (bound as Record<string, unknown>)['max_order_value_minor'];
+  return typeof raw === 'string' && /^\d+$/.test(raw) ? raw : undefined;
 }
 
 export interface PermissionSnapshot {
@@ -244,6 +258,32 @@ export function holdsCapabilityAt(
   }
 }
 
+/**
+ * How much this session may put ON ACCOUNT at `locationId` — the counter's
+ * courtesy, so a clerk whose `sale.record.credit` is bounded at zero is not
+ * offered a tender the server will refuse after the customer has gone.
+ *
+ * `null` — not offered: the capability is not held there, or the answer is
+ * not known. Unknown is NOT generous here, for the reason
+ * `holdsCapabilityForQueuedWrite` gives: the sale is a queued write, and a
+ * FORBIDDEN on an ordered queue retries rather than dead-letters.
+ * `'unbounded'` — held with no ceiling. Otherwise the ceiling, in minor units.
+ *
+ * The server measures the same bound against its own figure for the
+ * on-account line regardless (apps/api/src/routers/sales.ts).
+ */
+export function onAccountCeiling(
+  state: PermissionsState,
+  locationId: string,
+): bigint | 'unbounded' | null {
+  if (state.status !== 'remembered' && state.status !== 'live') return null;
+  const grant = state.snapshot.grants.find(
+    (g) => g.code === 'sale.record.credit' && g.locationId === locationId,
+  );
+  if (grant === undefined) return null;
+  return grant.maxOrderValueMinor === undefined ? 'unbounded' : BigInt(grant.maxOrderValueMinor);
+}
+
 /** The snapshot behind a state, or null when there is none. */
 export function snapshotOf(state: PermissionsState): PermissionSnapshot | null {
   return state.status === 'remembered' || state.status === 'live' ? state.snapshot : null;
@@ -259,9 +299,11 @@ function mapPermissions(json: unknown): PermissionSnapshot {
   const grants: CapabilityGrant[] = asArray(root['grants'], 'session.permissions.grants').map(
     (entry, i) => {
       const g = asRecord(entry, `session.permissions.grants[${String(i)}]`);
+      const max = maxOrderValueOf(g['bound']);
       return {
         code: asString(g['code'], `grants[${String(i)}].code`),
         locationId: asString(g['locationId'], `grants[${String(i)}].locationId`),
+        ...(max === undefined ? {} : { maxOrderValueMinor: max }),
       };
     },
   );
@@ -297,9 +339,11 @@ async function readCache(db: DbExecutor): Promise<CachedPermissions | null> {
     const root = asRecord(parsed, 'cached permissions');
     const grants = asArray(root['grants'], 'cached grants').map((e, i) => {
       const g = asRecord(e, `cached grants[${String(i)}]`);
+      const max = g['maxOrderValueMinor'];
       return {
         code: asString(g['code'], 'cached grant code'),
         locationId: asString(g['locationId'], 'cached grant locationId'),
+        ...(typeof max === 'string' && /^\d+$/.test(max) ? { maxOrderValueMinor: max } : {}),
       };
     });
     const asOfMs = root['asOfMs'];

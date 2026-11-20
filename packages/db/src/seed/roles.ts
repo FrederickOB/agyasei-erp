@@ -122,6 +122,11 @@ const COUNTER_STAFF: TemplateRole = {
     // it. Reading a delivery's status exposes no commercial terms — unlike
     // supplier.view, which carries payment terms and is deliberately absent.
     { code: 'logistics.delivery.view' },
+    // The till: whoever stands at the counter opens it for the day and counts
+    // it at the end. A tenant that wants a supervisor to count removes the
+    // close row here and grants it a level up — data, not a patch.
+    { code: 'cash.session.open' },
+    { code: 'cash.session.close' },
     // DELIBERATELY ABSENT: sale.override_price, credit.limit.change.
   ],
 };
@@ -164,6 +169,8 @@ const OUTLET_MANAGER: TemplateRole = {
     { code: 'goods.receive' },
     { code: 'logistics.delivery.view' },
     { code: 'logistics.dispatch.manage' },
+    { code: 'cash.session.open' },
+    { code: 'cash.session.close' },
     // DELIBERATELY ABSENT: credit.view — see THE RESIDENCY RULE in the header.
     // The manager sells on credit up to the bound above; they do not hold the
     // book. Also absent: credit.limit.change (the brief), sale.override_price,
