@@ -48,6 +48,7 @@ import { DeviceLocationGate } from './features/setup/DeviceLocationGate';
 import { DevicePriceListGate } from './features/setup/DevicePriceListGate';
 import { applyUpdateIfSanctioned } from './sw/register';
 import { useSyncStatus } from './state/use-sync-status';
+import { applyLease, useLeaseGate } from './features/auth/lease-gate';
 
 export interface AppProps {
   readonly db: LocalDb;
@@ -93,6 +94,11 @@ export function App({ db, deviceLocation, devicePriceList }: AppProps): ReactNod
   // and every write at ingest, and a hidden tab is never a boundary
   // (CLAUDE.md §2.6, data/api/session.ts).
   const permissions = usePermissions(db, bearerToken);
+  // The offline lease narrows what the screens OFFER (02 §2.7): restricted
+  // keeps cash and lookups, sealed keeps nothing. On the dev and local-only
+  // paths there is no lease and this is the identity.
+  const lease = useLeaseGate();
+  const offered = applyLease(permissions.state, lease, location.locationId === null ? [] : [location.locationId]);
 
   const onApplyUpdate = useCallback(() => {
     void (async () => {
@@ -164,7 +170,7 @@ export function App({ db, deviceLocation, devicePriceList }: AppProps): ReactNod
       <PrintingProvider db={db}>
       <Shell
         db={db}
-        permissions={permissions.state}
+        permissions={offered}
         status={
           <StatusBar
             state={syncState}

@@ -65,7 +65,7 @@ export { runJob, runLoop, dueJobs, urlHeartbeat, FAILURE_RETRY_SECONDS, type Run
 export {
   builtinJobs,
   postingSweepJob,
-  creditSyncScopeJob,
+  syncScopeRefreshJob,
   tableDigestJob,
   lostWriteControlJob,
   syncHealthJob,

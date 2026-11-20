@@ -179,27 +179,24 @@ Multi-line PEM: either import it, or replace newlines with `\n` (the apps restor
 | `JOBS_DATABASE_URL` | api | `erp_jobs` | 90 days |
 | `OPERATOR_DATABASE_URL` | api | `erp_operator` — **only while provisioning** | unset after use |
 | `DATABASE_CA_CERT` | api | Supabase CA (PEM) | when Supabase rotates it |
-| `AUTH_JWT_SECRET` | api | **interim** HS256 session key, ≥ 32 chars | replaced by identity package |
-| `POWERSYNC_JWT_SECRET` | api | HS256 key for sync tokens; **differs** from `AUTH_JWT_SECRET` | with `PS_JWT_K` |
+| `ERP_TOKEN_ISSUER` | api | our token `iss`, e.g. `https://<api app>.fly.dev/` (exact match) | — |
+| `ERP_PUBLIC_URL` | api | the API's public base URL (DPoP `htu`); required behind Fly's proxy | — |
+| `ERP_SIGNING_JWKS` | api | PRIVATE ES256 JWKS for access and sync tokens: `node infra/scripts/gen-identity-keys.mjs signing-YYYY-MM`. First key signs, all verify; public halves served at `/.well-known/jwks.json` | new key first, old key kept until its tokens expire (15 min) |
+| `ERP_LEASE_JWKS` | api | PRIVATE ES256 JWKS for the offline lease — a **separate** ring (refused if it shares a kid) | annually, two-key overlap (02 §2.7) |
+| `OIDC_ISSUER`, `OIDC_CLIENT_ID` | api | the managed OIDC provider (ADR-0003 A4): public client, PKCE, redirect `https://<pwa>/auth/callback`, CORS allowed on its token endpoint | with the provider |
 | `ALERT_WEBHOOK_URL` | api | alert sink | as the provider requires |
 | `JOBS_HEARTBEAT_URL` | api | dead-man's switch | — |
 | `PS_DATA_SOURCE_URI` | powersync | `powersync_repl`, **direct** | 90 days |
 | `PS_STORAGE_URI` | powersync | `powersync_storage`, direct | 90 days |
 | `PS_PG_CA_CERT` | powersync | Supabase CA (PEM) | — |
-| `PS_JWT_K` | powersync | `base64url(POWERSYNC_JWT_SECRET)` — derive, never retype: `printf %s "$SECRET" \| base64 \| tr '+/' '-_' \| tr -d '='` | with the secret |
+| `PS_JWKS_URI` | powersync | `https://<api app>.fly.dev/.well-known/jwks.json` — the PUBLIC URL (`block_local_jwks` stays on, so a Fly-private address is refused) | — |
 | `PS_ADMIN_API_TOKEN` | powersync | diagnostics API token, ≥ 32 random chars | 90 days |
 
-**Placeholders — the identity work package (parallel) fills these in; names are theirs to fix:**
-
-| Secret (placeholder) | App | What |
-|---|---|---|
-| `IDENTITY_SIGNING_KEYS` | api | asymmetric token-signing keys, two active during rotation (Rule 9.9-A) |
-| `DEVICE_LEASE_KEY` | api | device lease / enrolment signing |
-| `OIDC_ISSUER`, `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET`, `OIDC_REDIRECT_URI` | api | managed OIDC provider (ADR-0003 A4) |
-| `PS_JWKS_URI` | powersync | replaces `PS_JWT_K` once the API publishes its keys |
-
-When they land, `AUTH_JWT_SECRET` and `PS_JWT_K` retire, and the rate-limited paths
-(`RATE_LIMIT_PATHS`) should list the real sign-in and enrolment routes.
+**There is no shared secret in production.** The HS256 dev path (`DEV_JWT_SECRET`, the static
+`VITE_API_TOKEN`) exists only outside `NODE_ENV=production`; with it set, the API refuses to start,
+and without the four identity values above it refuses too — the release smoke checks both.
+`RATE_LIMIT_PATHS` defaults to `/sync/token,/auth,/enrol`, which covers sign-in, refresh and
+enrolment. Scope refresh runs every 60 s (`sync.scope_refresh`).
 
 **Never in the repository, never in CI.** CI holds no production secret and deploys nothing; a
 stolen CI token is worth nothing against production.
@@ -282,7 +279,7 @@ the fix ships through the normal sequence.
 | Job | Every | Does | Alerts |
 |---|---|---|---|
 | `ledger.posting_sweep` | 1 h | settled sales → journal entries, as a fixed system actor; tenants with no ledger calendar skipped | failures via `job_failed`; open exceptions via `sync_health` |
-| `credit.sync_scope_refresh` | 1 h | recomputes the credit sync scope per tenant, so a grant that lapsed with no DML leaves the device's book (phase2-gate §5.2 D8) | `job_failed` |
+| `sync.scope_refresh` | 60 s | recomputes the credit and device sync-scope projections per tenant, so a grant that lapsed with no DML — or a retired device — leaves the sync gate within a minute (02 §2.5; phase2-gate §5.2 D8) | `job_failed` |
 | `ops.table_digest` | 1 h | §9.5-A digests of money/credit tables into `app.table_digest` (35-day retention) | `job_failed` |
 | `ops.table_digest_full` | 1 day | §9.5-A digests of every tenant table | `job_failed` |
 | `ops.lost_write_control` | 1 day | every receipt number a device reports issuing must be on a sale the server holds | **page** `lost_writes` |

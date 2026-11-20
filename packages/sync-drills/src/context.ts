@@ -166,6 +166,18 @@ export async function createContext(): Promise<DrillContext> {
     server.provisionDevicePrincipal(tenants.tenantA.id, a3.userId, a3.name),
     server.provisionDevicePrincipal(tenants.tenantB.id, b1.userId, b1.name),
   ]);
+  // ...and every device must be an ENROLLED, ACTIVE device with its outlet as
+  // its ceiling: since migration 0024 the sync rules key every bucket on the
+  // token's did + sub through app.device_sync_*, so an unenrolled device
+  // downloads nothing at all.
+  for (const [tid, dev] of [
+    [tenants.tenantA.id, a1],
+    [tenants.tenantA.id, a2],
+    [tenants.tenantA.id, a3],
+    [tenants.tenantB.id, b1],
+  ] as const) {
+    await server.enrolDevice(tid, dev);
+  }
 
   return { tenants, server, businessDate, runId, productA, productB, locA1, locA3, locB, a1, a2, a3, b1 };
 }

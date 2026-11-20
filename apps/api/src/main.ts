@@ -6,8 +6,11 @@
  *   1. configuration (zod) — names the bad variable, never prints a value;
  *   2. pools — erp_api through the transaction pooler; the operator plane
  *      only if OPERATOR_DATABASE_URL is set;
- *   3. the migration list this build expects (for /readyz);
- *   4. listen.
+ *   3. identity — ES256 signing and lease keys, the OIDC provider
+ *      (identity/config.ts); production refuses to start without them and
+ *      refuses the HS256 dev secret outright;
+ *   4. the migration list this build expects (for /readyz);
+ *   5. listen.
  *
  * Shutdown (SIGTERM from Fly on deploy/scale): stop accepting, let in-flight
  * requests finish within SHUTDOWN_GRACE_MS, close the pools, exit 0. An
@@ -19,6 +22,7 @@ import { createHlcClock, MIGRATIONS_DIR, randomHlcNode } from '@erp/db';
 import { ConfigError, listMigrationFiles, pgPoolConfig } from '@erp/ops';
 import { loadApiConfig } from './config.js';
 import { createMemoryPolicyStore } from './credit-policy.js';
+import { identityFromEnv, type IdentityEnvResult } from './identity/config.js';
 import { productionLoggerOptions } from './logging.js';
 import { createPgRunners } from './pg-runner.js';
 import { readinessCheck } from './readiness.js';
@@ -56,6 +60,17 @@ const runners = createPgRunners(cfg.DATABASE_URL, {
     : 'disabled',
 });
 
+// A fresh HLC node per process: two machines never share a node id.
+const clock = createHlcClock(randomHlcNode());
+
+let auth: IdentityEnvResult;
+try {
+  auth = await identityFromEnv(process.env, { runner: runners.runner, preTenant: runners.preTenant, clock });
+} catch (err) {
+  // The messages name variables, never values (identity/config.ts).
+  fail(`identity configuration: ${err instanceof Error ? err.message : 'invalid'}`);
+}
+
 // Bundled: dist/bin/main.js → dist/migrations (MIGRATIONS_DIR resolves there
 // by itself). From source: packages/db/migrations.
 const migrationsDir = cfg.MIGRATIONS_DIR ?? MIGRATIONS_DIR;
@@ -66,19 +81,20 @@ const app = await buildServer({
   deps: {
     runner: runners.runner,
     admin: runners.admin,
-    // A fresh HLC node per process: two machines never share a node id.
-    clock: createHlcClock(randomHlcNode()),
+    clock,
     // Q4 seam, unchanged from dev: default UNCONFIRMED → fee accrual fails closed.
     policyStore: createMemoryPolicyStore(),
   },
-  jwtSecret: cfg.AUTH_JWT_SECRET,
+  identity: auth.identity,
+  publicUrl: auth.publicUrl,
+  // Undefined whenever NODE_ENV=production: the HS256 dev path does not exist there.
+  jwtSecret: auth.devJwtSecret,
   logger: productionLoggerOptions(cfg.LOG_LEVEL),
   bodyLimit: cfg.BODY_LIMIT_BYTES,
   trustProxy: cfg.TRUST_PROXY,
   corsOrigins: cfg.CORS_ORIGINS,
   sync: {
     powersyncUrl: cfg.POWERSYNC_URL,
-    powersyncSecret: cfg.POWERSYNC_JWT_SECRET,
     tokenTtlSeconds: cfg.POWERSYNC_TOKEN_TTL_SECONDS,
     uploadBodyLimit: cfg.UPLOAD_BODY_LIMIT_BYTES,
   },
@@ -120,6 +136,9 @@ app.log.info(
     build: cfg.ERP_BUILD,
     migrations_expected: expected.length,
     operator_plane: runners.admin !== undefined,
+    token_issuer: auth.issuer,
+    oidc: auth.oidcConfigured,
+    dev_bearer: auth.devJwtSecret !== undefined,
     tls: cfg.sslMode,
   },
   '@erp/api listening',

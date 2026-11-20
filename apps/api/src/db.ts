@@ -34,3 +34,22 @@ export function adminRunnerFrom(db: {
 }): AdminRunner {
   return { run: (fn) => db.asAdmin(fn) };
 }
+
+/**
+ * The ONE path that runs as app_user with NO tenant context (02-security §2.2;
+ * migration 0023). It exists for exactly two lookups that happen before any
+ * token exists — an enrolment code, and a device key — and it can reach
+ * nothing else: with no `app.tenant_id` GUC every RLS predicate is NULL, and
+ * the two route tables are reachable only through their SECURITY DEFINER
+ * functions. Never use it to touch an `app` table.
+ */
+export interface PreTenantRunner {
+  withoutTenant<T>(fn: (tx: Queryable) => Promise<T>): Promise<T>;
+}
+
+/** Adapt the @erp/db test harness to PreTenantRunner. */
+export function preTenantRunnerFrom(db: {
+  asAppUserWithoutTenant<T>(fn: (tx: Queryable) => Promise<T>): Promise<T>;
+}): PreTenantRunner {
+  return { withoutTenant: (fn) => db.asAppUserWithoutTenant(fn) };
+}

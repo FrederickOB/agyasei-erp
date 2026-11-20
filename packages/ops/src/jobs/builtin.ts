@@ -3,7 +3,7 @@
  * under that tenant's RLS, and reports counts and ids.
  *
  *   ledger.posting_sweep         hourly   settled sales → journal entries
- *   credit.sync_scope_refresh    hourly   lapse effective-dated credit grants off devices
+ *   sync.scope_refresh           60 s     lapse effective-dated grants and retired devices out of the sync gate
  *   ops.table_digest             hourly   §9.5-A digests, money and credit path
  *   ops.table_digest_full        daily    §9.5-A digests, every table
  *   ops.lost_write_control       daily    receipt-number continuity (§9.4's nearest equivalent)
@@ -82,30 +82,53 @@ export function postingSweepJob(): JobDefinition {
   });
 }
 
-export function creditSyncScopeJob(): JobDefinition {
+/**
+ * THE SYNC GATE'S RECONCILER — 02 §2.5's 60-second sweep.
+ *
+ * Every bucket's parameter query reads a device-keyed projection (migration
+ * 0024), and the device projection is derived from the credit projections
+ * (0013). A grant whose `effective_to` passes, or a device that is retired,
+ * changes nothing a trigger can see — time passed, no row was written — so
+ * without this job a lapsed grant's data stays on the device until the next
+ * unrelated write. The staleness bound §2.2 promises (60 s) is this job's
+ * cadence.
+ *
+ * Per tenant, inside the tenant's own context as app_user (RLS on): credit
+ * first, then devices, because the device projection reads the credit one.
+ */
+export function syncScopeRefreshJob(): JobDefinition {
   return defineJob({
-    name: 'credit.sync_scope_refresh',
+    name: 'sync.scope_refresh',
     description:
-      "Recompute the credit sync-scope projections, so a grant whose effective_to has passed leaves the device's book (phase2-gate §5.2 D8).",
-    intervalSeconds: 3600,
+      "Recompute the credit and device sync-scope projections, so a lapsed grant or a retired device leaves the sync gate within a minute (02 §2.5; phase2-gate §5.2 D8).",
+    intervalSeconds: 60,
     async run(ctx) {
       const perTenant: Record<string, SummaryValue> = {};
       const { failed } = await forEachTenant(ctx, async (tenantId) => {
-        // app.refresh_credit_sync_scope_all() loops over every tenant and so
-        // needs a role that bypasses RLS. The per-tenant function, run inside
-        // the tenant's own context as app_user, is the same work with RLS on.
         const counts = await ctx.runner.withTenant(tenantId, async (tx) => {
           const count = async () =>
             (
-              await tx.query<{ book: number; loc: number }>(
+              await tx.query<{ book: number; loc: number; grants: number; dloc: number }>(
                 `select (select count(*) from app.credit_sync_book_scope)::int as book,
-                        (select count(*) from app.credit_sync_location_scope)::int as loc`,
+                        (select count(*) from app.credit_sync_location_scope)::int as loc,
+                        (select count(*) from app.device_sync_grant)::int as grants,
+                        (select count(*) from app.device_sync_location_scope)::int as dloc`,
               )
             ).rows[0]!;
           const before = await count();
           await tx.query(`select app.refresh_credit_sync_scope($1::uuid)`, [tenantId]);
+          await tx.query(`select app.refresh_device_sync_scope($1::uuid)`, [tenantId]);
           const after = await count();
-          return { book_before: before.book, book_after: after.book, location_before: before.loc, location_after: after.loc };
+          return {
+            book_before: before.book,
+            book_after: after.book,
+            location_before: before.loc,
+            location_after: after.loc,
+            device_grants_before: before.grants,
+            device_grants_after: after.grants,
+            device_locations_before: before.dloc,
+            device_locations_after: after.dloc,
+          };
         });
         perTenant[tenantId] = counts;
       });
@@ -253,7 +276,7 @@ export interface BuiltinJobsConfig {
 export function builtinJobs(cfg: BuiltinJobsConfig): JobDefinition[] {
   return [
     postingSweepJob(),
-    creditSyncScopeJob(),
+    syncScopeRefreshJob(),
     tableDigestJob({ name: 'ops.table_digest', scope: 'money', intervalSeconds: 3600, retentionDays: cfg.digestRetentionDays }),
     tableDigestJob({ name: 'ops.table_digest_full', scope: 'all', intervalSeconds: 86_400, retentionDays: cfg.digestRetentionDays }),
     lostWriteControlJob({ lookbackDays: cfg.lostWriteLookbackDays }),

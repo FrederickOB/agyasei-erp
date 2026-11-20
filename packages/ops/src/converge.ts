@@ -59,11 +59,13 @@ export const POWERSYNC_PUBLICATION_TABLES: readonly string[] = [
   'app.cash_session',
   'app.sale_tender',
   'app.customer',
-  // Credit (migration 0013). The two *_scope tables are PARAMETER-query
-  // sources — the gate itself — and must replicate or every credit bucket
-  // fails closed to zero rows. The rest are the data queries.
-  'app.credit_sync_book_scope',
-  'app.credit_sync_location_scope',
+  // THE GATE (migration 0024). Every bucket's PARAMETER query reads one of
+  // these two device-keyed projections; if they do not replicate, every
+  // bucket fails closed to zero rows. (0013's credit_sync_* projections are
+  // their inputs now, not parameter sources, so they no longer replicate.)
+  'app.device_sync_grant',
+  'app.device_sync_location_scope',
+  // Credit (migration 0013) — the data queries.
   'app.customer_account',
   'app.credit_limit_version',
   'app.credit_entry',
@@ -74,7 +76,8 @@ export const POWERSYNC_PUBLICATION_TABLES: readonly string[] = [
   'app.sale',
   'app.sale_line',
   'app.sale_tax_line',
-  'platform.tenant',
+  // platform.tenant is no longer read: jurisdiction_pack keys on the device
+  // grant's jurisdiction_code (0024).
   'platform.jurisdiction',
   'platform.tax_code',
   'platform.tax_rate',

@@ -15,7 +15,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { seedDevLedger, trialBalance, uuidv7 } from '@erp/db';
 import {
-  creditSyncScopeJob,
+  syncScopeRefreshJob,
   POSTING_SWEEP_ACTOR,
   postingSweepJob,
   receiptContinuity,
@@ -240,7 +240,7 @@ describe('ops.lost_write_control (receipt-number continuity)', () => {
   });
 });
 
-describe('credit.sync_scope_refresh, scheduled', () => {
+describe('sync.scope_refresh, scheduled', () => {
   it("removes a grant that lapsed with no DML from the credit book's sync scope", async () => {
     const root = await h.locationByCode(tenantA, 'ROOT');
     const uid = uuidv7();
@@ -263,8 +263,76 @@ describe('credit.sync_scope_refresh, scheduled', () => {
     await new Promise((r) => setTimeout(r, 1500));
     expect(await inScope()).toBe(1); // still on the device
 
-    const out = await runJob(creditSyncScopeJob(), deps);
+    const out = await runJob(syncScopeRefreshJob(), deps);
     expect(out.status).toBe('succeeded');
     expect(await inScope()).toBe(0); // off the device on its next sync
+  });
+
+  it('drops a lapsed grant from the DEVICE projection too — the gate every bucket reads (0024)', async () => {
+    const root = await h.locationByCode(tenantA, 'ROOT');
+    // A role with NO credit capability (a yard hand who looks stock up). Every
+    // template role can sell on credit, and a credit grant's lapse cascades to
+    // the device projection by trigger — which would hide whether the job
+    // itself refreshes devices. This one has nothing to cascade from.
+    const owner = h.callerFor(await h.identityFor(tenantA, { locs: [root] }));
+    const { roleId } = await owner.admin.roles.create({
+      idempotencyKey: uuidv7(),
+      name: 'Stock lookup only',
+      permissions: [{ code: 'stock.view' }],
+    });
+    await h.db.asAdmin((tx) =>
+      tx.query(`update app.role set origin_ref = 'role:test_stock_lookup' where tenant_id = $1 and id = $2`, [tenantA, roleId]),
+    );
+    const uid = uuidv7();
+    await h.grantRole(tenantA, uid, 'test_stock_lookup', root);
+    // An active device scoped at the root, enrolled by that user.
+    const deviceId = uuidv7();
+    await h.db.asAdmin(async (tx) => {
+      const w = uuidv7();
+      await tx.query(
+        `insert into app.write_log
+           (tenant_id, id, origin, hlc, claimed_hlc, device_id, user_id, location_id, op, schema_version, request_hash)
+         values ($1, $2, 'SERVER', $3, $4, null, $5, null, 'test.device', 1, decode(md5($6) || md5($6), 'hex'))`,
+        [tenantA, w, h.deps.clock.next(), h.deps.clock.next(), uid, `device-fixture-${w}`],
+      );
+      await tx.query(
+        `insert into app.device (tenant_id, id, write_id, hlc, label, form_factor, public_jwk, jkt, status, enrolled_by)
+         values ($1, $2, $3, $4, 'Scope test tablet', 'tablet', '{"kty":"EC"}'::jsonb, $5, 'active', $6)`,
+        [tenantA, deviceId, w, h.deps.clock.next(), `jkt-${deviceId}`.padEnd(43, 'x'), uid],
+      );
+      await tx.query(
+        `insert into app.device_location_scope (tenant_id, id, write_id, hlc, device_id, location_id, added_by)
+         values ($1, $2, $3, $4, $5, $6, $7)`,
+        [tenantA, uuidv7(), w, h.deps.clock.next(), deviceId, root, uid],
+      );
+    });
+    const onDevice = () =>
+      h.db.withTenant(tenantA, async (tx) =>
+        (
+          await tx.query<{ n: number }>(
+            `select count(*)::int as n from app.device_sync_location_scope where device_id = $1 and user_id = $2`,
+            [deviceId, uid],
+          )
+        ).rows[0]!.n,
+      );
+    expect((await runJob(syncScopeRefreshJob(), deps)).status).toBe('succeeded');
+    expect(await onDevice()).toBeGreaterThan(0); // non-vacuity: the gate admits this user on this device
+
+    await h.db.withTenant(tenantA, (tx) =>
+      tx.query(
+        `update app.user_role_assignment set effective_to = clock_timestamp() + interval '1 second'
+          where user_id = $1`,
+        [uid],
+      ),
+    );
+    await new Promise((r) => setTimeout(r, 1500));
+    expect(await onDevice()).toBeGreaterThan(0); // time passed, no row was written: still in the gate
+
+    expect((await runJob(syncScopeRefreshJob(), deps)).status).toBe('succeeded');
+    expect(await onDevice()).toBe(0); // out of every bucket on the device's next checkpoint
+  });
+
+  it('runs every minute — the staleness bound §2.2 promises is this cadence', () => {
+    expect(syncScopeRefreshJob().intervalSeconds).toBe(60);
   });
 });

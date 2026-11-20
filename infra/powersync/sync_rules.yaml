@@ -19,42 +19,46 @@
 # write goes through the API's idempotent pipeline over app.write_log
 # (server-stamped HLC). The client uploadData() posts to the API, never here.
 #
-# Token contract (fixed): HS256 with DEV_JWT_SECRET, aud "powersync",
-#   claim "tid"  = tenant uuid                (REQUIRED — no tid, no data)
-#   claim "location_id" = location uuid       (INTERIM, see note below)
+# Token contract (02-security §2.2; migration 0024):
+#   PRODUCTION  ES256, aud "erp-sync", 5-minute life, minted by the API's
+#               GET /sync/token for an enrolled device's DPoP-bound session and
+#               verified here against the API's JWKS (config.yaml client_auth).
+#   DEV ONLY    HS256 with DEV_JWT_SECRET, aud "powersync" — the drills and
+#               `pnpm dev:token`. Same claims.
+#   claim "tid" = tenant uuid       (REQUIRED — no tid, no data)
+#   claim "sub" = user uuid         (request.user_id())
+#   claim "did" = device uuid       (REQUIRED — no ENROLLED, ACTIVE device, no data)
 #
-# INTERIM MECHANISMS — honest deviations from §3.2.3, each fails CLOSED:
-#   a. §3.2.3 scopes location by the server-side user_location_scope table and
-#      permissions by user_effective_permission. Neither table exists yet
-#      (phase1-status: RBAC matrix not implemented). Until they land, location
-#      scope is the signed "location_id" claim — set SERVER-SIDE by the API
-#      from the user's assignment when it mints the (short-lived) PowerSync
-#      token. It is a token claim, not a client parameter. No claim → NULL
-#      bucket key → zero rows. When user_location_scope lands, swap the
-#      parameter queries here for the table-driven ones in §3.2.3.
-#   b. RESOLVED by migration 0013 — the credit buckets exist and are gated on
-#      the DATABASE, not on a claim. This note is kept because the shape of the
-#      fix is the record. It used to read: *"the credit book and the
-#      credit_allowance projection are NOT SYNCED AT ALL: the permission tables
-#      that §3.2.2 gates them on do not exist, so the fail-closed choice is no
-#      bucket, not an ungated one."* Those tables landed in 0005 — as VIEWS,
-#      and a view cannot be published to logical replication, so it cannot be
-#      a parameter query's source however much we would like it to be.
-#      0013 therefore adds two narrow, trigger-maintained PROJECTIONS of those
-#      views — app.credit_sync_book_scope (credit.view, per tenant) and
-#      app.credit_sync_location_scope (sale.record.credit ∩ location scope) —
-#      and the two buckets below read those. A grant that is revoked empties
-#      the device on the next sync, which is the property a token claim can
-#      never have and the reason note (a)'s mechanism was not reused here.
-#      The one residual: a grant whose effective_to is a FUTURE instant lapses
-#      with no DML to fire a trigger, so it is swept by
-#      app.refresh_credit_sync_scope_all() on the nightly job. Stated in 0013.
+# EVERY PARAMETER QUERY READS A TABLE, NEVER A CLAIM'S SCOPE (D7, CLOSED BY 0024)
+#   The bucket keys come from two trigger-maintained projections, filtered on
+#   all three claims at once:
+#     app.device_sync_grant           one row per (device, user) that may sync
+#                                     at all: device ACTIVE, user ACTIVE with a
+#                                     live assignment, and a NON-EMPTY
+#                                     intersection of user scope and device
+#                                     ceiling. Carries jurisdiction_code and
+#                                     credit_book ('book'|'none').
+#     app.device_sync_location_scope  the intersection itself, one row per
+#                                     syncable location (OUTLET, WAREHOUSE,
+#                                     TRANSIT), plus credit_allowance.
+#   This IS §2.3 Contract 1 — the device-liveness join on every parameter
+#   query — done server-side, because a PowerSync parameter query reads ONE
+#   table (no joins, no aliases) and logical replication cannot publish a view.
+#   Retire or suspend the device, disable the user, end the assignment, or
+#   narrow the device's scope, and the rows go in the same transaction: zero
+#   rows → no buckets → the stream carries nothing (§2.7 mechanism 1), without
+#   the sync service knowing what revocation is.
+#
+#   The `location_id` claim the dev path still mints is VESTIGIAL: no rule
+#   reads it. A future-dated lapse (an assignment whose effective_to passes
+#   with no DML) is swept by app.refresh_sync_scope_all() — schedule it.
+#
+# STILL INTERIM, and still failing closed:
 #   c. sale_line / sale_tax_line do not yet carry the denormalised
 #      location_id that §3.11.10 requires precisely so they can join the
 #      location_ops bucket (a data query reads ONE table, no joins). Until
-#      that migration lands they sync in a TENANT-scoped bucket below —
-#      tenant isolation fully intact, location narrowing not yet. See
-#      tenant_sale_lines_interim.
+#      that migration lands they sync in a TENANT-scoped bucket below — but
+#      its GATE is now the table-driven device grant, not the bare tid claim.
 #   d. app.sequence_block, app.sequence_counter and app.conflict_review are
 #      NOT SYNCED, and this one is a DELIBERATE DEVIATION from §3.2.2's
 #      location_ops list rather than an unfinished piece. §3.7.5 makes
@@ -64,10 +68,7 @@
 #      resync it and believe it, which is exactly the stale-counter defect
 #      04 §4.7 deleted `document_number_range` for. The device learns its block
 #      from the allocation response (POST /sync/upload → sequence.sync_block),
-#      a far narrower channel than a bucket. conflict_review's own product
-#      surface (the badge, the queue screen) is §3.6.2 work and lands with the
-#      tenant_reviews bucket and the permission tables it depends on; until
-#      then reviews are read online, which fails closed.
+#      a far narrower channel than a bucket. Reviews are read online.
 # ============================================================================
 
 bucket_definitions:
@@ -76,7 +77,12 @@ bucket_definitions:
   # tenant, shared by every device of that tenant. 219 SKUs is small; splitting
   # per location would multiply buckets for no benefit.
   tenant_reference:
-    parameters: SELECT request.jwt() ->> 'tid' AS tenant_id
+    parameters: |
+      SELECT tenant_id
+        FROM "app"."device_sync_grant"
+       WHERE device_id = (request.jwt() ->> 'did')
+         AND user_id   = request.user_id()
+         AND tenant_id = (request.jwt() ->> 'tid')
     data:
       - SELECT * FROM "app"."location"         WHERE tenant_id = bucket.tenant_id AND deleted_at IS NULL
       - SELECT * FROM "app"."location_type"    WHERE tenant_id = bucket.tenant_id AND deleted_at IS NULL
@@ -105,10 +111,16 @@ bucket_definitions:
   # ---- Jurisdiction pack (tax rows the counter needs) ----------------------
   # platform.* rows are platform-wide reference data keyed by jurisdiction,
   # not tenant-owned rows (they have no tenant_id — rule 2 applies to
-  # tenant-owned tables). The bucket key is still DERIVED FROM THE TOKEN:
-  # tid → platform.tenant → jurisdiction_code, all server-side.
+  # tenant-owned tables). The bucket key is DERIVED SERVER-SIDE: the device
+  # grant carries the tenant's jurisdiction_code (immutable after
+  # provisioning), so even this bucket stops for a revoked device.
   jurisdiction_pack:
-    parameters: SELECT jurisdiction_code FROM "platform"."tenant" WHERE id = (request.jwt() ->> 'tid')
+    parameters: |
+      SELECT jurisdiction_code
+        FROM "app"."device_sync_grant"
+       WHERE device_id = (request.jwt() ->> 'did')
+         AND user_id   = request.user_id()
+         AND tenant_id = (request.jwt() ->> 'tid')
     data:
       - SELECT code AS id, code, name, currency_code, currency_symbol,
                minor_units_per_major, cash_rounding_unit_minor
@@ -130,21 +142,32 @@ bucket_definitions:
   # `credit.view` audience, through `tenant_credit` below. Every POS user gets
   # this bucket; almost none of them get that one.
   tenant_customers:
-    parameters: SELECT request.jwt() ->> 'tid' AS tenant_id
+    parameters: |
+      SELECT tenant_id
+        FROM "app"."device_sync_grant"
+       WHERE device_id = (request.jwt() ->> 'did')
+         AND user_id   = request.user_id()
+         AND tenant_id = (request.jwt() ->> 'tid')
     data:
       - SELECT id, tenant_id, code, name, phone, is_credit_customer, hlc, updated_at
           FROM "app"."customer"
          WHERE tenant_id = bucket.tenant_id AND deleted_at IS NULL
 
   # ---- Per-location operational data (§3.2.2 location_ops) -----------------
-  # Location comes from the SIGNED token (interim note a), never from
-  # request.parameters(). Both keys repeated in every data query (rule 2).
-  # stock_movement is windowed per row via archived_at (§3.2.4): a row leaving
-  # the window leaves the bucket without the bucket key ever changing.
+  # One bucket per location in user_location_scope ∩ device_location_scope —
+  # from the TABLE (0024), never from a claim and never from
+  # request.parameters(). A regional manager on a counter tablet gets that
+  # outlet's bucket and no other (§2.5's device ceiling). Both keys repeated
+  # in every data query (rule 2). stock_movement is windowed per row via
+  # archived_at (§3.2.4): a row leaving the window leaves the bucket without
+  # the bucket key ever changing.
   location_ops:
     parameters: |
-      SELECT request.jwt() ->> 'tid' AS tenant_id,
-             request.jwt() ->> 'location_id' AS location_id
+      SELECT tenant_id, location_id
+        FROM "app"."device_sync_location_scope"
+       WHERE device_id = (request.jwt() ->> 'did')
+         AND user_id   = request.user_id()
+         AND tenant_id = (request.jwt() ->> 'tid')
     data:
       - SELECT * FROM "app"."stock_movement"
          WHERE tenant_id = bucket.tenant_id
@@ -173,11 +196,11 @@ bucket_definitions:
            AND location_id = bucket.location_id
 
   # ---- The credit BOOK, for accounts/HQ (§3.2.2 tenant_credit) -------------
-  # THE GATE IS THE PARAMETER QUERY. No `credit.view` grant → no row in
-  # app.credit_sync_book_scope → no bucket → zero rows. The projection is
-  # maintained by triggers on every table app.effective_permission reads, so a
-  # REVOKED grant empties the device on the next sync; a token claim could not
-  # do that, which is why note (a)'s interim mechanism is NOT reused here.
+  # THE GATE IS THE PARAMETER QUERY. No root `credit.view` grant → no row in
+  # app.credit_sync_book_scope (0013) → credit_book = 'none' on the device
+  # grant (0024) → no bucket → zero rows. And no ACTIVE device with a
+  # non-empty ceiling → no grant row at all. A REVOKED grant or a revoked
+  # device empties the device on the next sync.
   #
   # The key is (tenant_id) and not (tenant_id, location_id) because
   # app.customer_account HAS NO location_id and app.credit_entry has no
@@ -196,9 +219,11 @@ bucket_definitions:
   tenant_credit:
     parameters: |
       SELECT tenant_id
-      FROM "app"."credit_sync_book_scope"
-      WHERE user_id   = request.user_id()
-        AND tenant_id = (request.jwt() ->> 'tid')
+        FROM "app"."device_sync_grant"
+       WHERE device_id   = (request.jwt() ->> 'did')
+         AND user_id     = request.user_id()
+         AND tenant_id   = (request.jwt() ->> 'tid')
+         AND credit_book = 'book'
     data:
       - SELECT id, tenant_id, customer_id, credit_limit_minor, terms_days,
                facility_fee_bp_per_month, status, hlc, created_at, updated_at
@@ -234,8 +259,9 @@ bucket_definitions:
          WHERE tenant_id = bucket.tenant_id
 
   # ---- Per-location credit ALLOWANCE — not the account (§3.2.2, 06 §6.5) ---
-  # Gated on `sale.record.credit` AT THAT LOCATION, intersected with the user's
-  # location scope, both read from the database. A till learns what it may lend
+  # Gated on `sale.record.credit` AT THAT LOCATION (0013's projection),
+  # intersected with the user's scope AND this device's ceiling (0024), all
+  # read from the database. A till learns what it may lend
   # HERE TODAY; it never learns the limit, the balance, the ageing or the
   # history, and it learns nothing at all about customers who trade elsewhere.
   #
@@ -249,9 +275,11 @@ bucket_definitions:
   location_credit_allowance:
     parameters: |
       SELECT tenant_id, location_id
-      FROM "app"."credit_sync_location_scope"
-      WHERE user_id   = request.user_id()
-        AND tenant_id = (request.jwt() ->> 'tid')
+        FROM "app"."device_sync_location_scope"
+       WHERE device_id        = (request.jwt() ->> 'did')
+         AND user_id          = request.user_id()
+         AND tenant_id        = (request.jwt() ->> 'tid')
+         AND credit_allowance = 'allowance'
     data:
       - SELECT id, tenant_id, location_id, customer_id, cap_minor,
                headroom_minor, offline_ceiling_minor, credit_hold,
@@ -263,11 +291,16 @@ bucket_definitions:
   # ---- INTERIM: sale lines, tenant-scoped (see note c) ---------------------
   # MUST move into location_ops as soon as the migration adding denormalised
   # (tenant_id, location_id) to sale_line and sale_tax_line lands (§3.11.10).
-  # Isolation: the tenant predicate is present and token-derived; what this
-  # bucket lacks is the NARROWER location cut, acceptable only while the
+  # Isolation: the gate is the device grant (table-driven, device-live); what
+  # this bucket lacks is the NARROWER location cut, acceptable only while the
   # pilot runs a single live location.
   tenant_sale_lines_interim:
-    parameters: SELECT request.jwt() ->> 'tid' AS tenant_id
+    parameters: |
+      SELECT tenant_id
+        FROM "app"."device_sync_grant"
+       WHERE device_id = (request.jwt() ->> 'did')
+         AND user_id   = request.user_id()
+         AND tenant_id = (request.jwt() ->> 'tid')
     data:
       - SELECT * FROM "app"."sale_line"     WHERE tenant_id = bucket.tenant_id
       - SELECT * FROM "app"."sale_tax_line" WHERE tenant_id = bucket.tenant_id

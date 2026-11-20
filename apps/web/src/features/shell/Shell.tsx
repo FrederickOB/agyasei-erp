@@ -92,7 +92,7 @@ const VIEWS: readonly ViewDef[] = [
   // Local data, so it works offline and needs no capability: these are this
   // device's own sales, which it already holds.
   { id: 'sales', label: 'Sales', icon: 'receipt', requires: null },
-  ...DESTINATIONS.map((d) => ({ id: d.id, label: d.label, icon: d.icon, requires: d.requires })),
+  ...DESTINATIONS.filter((d) => d.officeOnly !== true).map((d) => ({ id: d.id, label: d.label, icon: d.icon, requires: d.requires })),
 ];
 
 export interface ShellProps {

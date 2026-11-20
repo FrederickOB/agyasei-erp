@@ -125,6 +125,10 @@ const PLATFORM_TABLES: Record<
   tax_rate: { class: 'global' },
   permission: { class: 'global' },
   posting_role_catalog: { class: 'global' },
+  // Identity routing (0023, RLS 0025): code hash / key thumbprint -> tenant,
+  // reachable only through SECURITY DEFINER functions; app_user holds nothing.
+  enrolment_code_route: { class: 'tenant-keyed', keyColumn: 'tenant_id', appUserSelect: false },
+  device_key_route: { class: 'tenant-keyed', keyColumn: 'tenant_id', appUserSelect: false },
   job_run: { class: 'operator-only' },
   ops_alert: { class: 'operator-only' },
   restore_drill: { class: 'operator-only' },

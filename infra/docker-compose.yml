@@ -51,7 +51,12 @@ services:
       PS_STORAGE_URI: postgresql://powersync_storage:${POWERSYNC_STORAGE_PASSWORD:-powersync_dev}@postgres:5432/powersync_storage
       # base64url(DEV_JWT_SECRET) — derived by infra/scripts/stack.mjs, never hand-typed.
       PS_JWT_K: ${PS_JWT_K:?run via pnpm stack:up / stack:reset so PS_JWT_K is derived from DEV_JWT_SECRET}
+      # The API's JWKS — production sync tokens (ES256, aud erp-sync) verify
+      # against it. The API runs on the HOST in dev.
+      PS_JWKS_URI: ${PS_JWKS_URI:-http://host.docker.internal:3001/.well-known/jwks.json}
       NODE_OPTIONS: --max-old-space-size=1000
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "8080:8080"
     healthcheck:

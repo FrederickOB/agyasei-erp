@@ -87,6 +87,10 @@ export const PERMISSION_CODES = [
   'admin.device.enrol',
   'admin.device.revoke',
   'admin.template.apply',
+  // Migration 0023 (02 §2.4): the device ceiling, and assignment as its own
+  // capability so a user-manager cannot hand themselves the owner role.
+  'admin.device.scope.manage',
+  'admin.assignment.manage',
 
   'sync.conflict.review',
 

@@ -47,8 +47,9 @@ const apiEnvSchema = z.object({
   // role's own default (infra/supabase/roles.sql: erp_api 30s), applied by
   // the server whatever sits in between.
 
-  AUTH_JWT_SECRET: secret,
-  POWERSYNC_JWT_SECRET: secret,
+  // Identity (ES256 signing and lease keys, the OIDC provider) is validated
+  // separately by identity/config.ts `identityFromEnv`, which refuses to start
+  // in production without every one of them and refuses DEV_JWT_SECRET.
   POWERSYNC_URL: z.string().url(),
   POWERSYNC_TOKEN_TTL_SECONDS: z.coerce.number().int().min(60).max(3600).default(300),
 
@@ -82,9 +83,6 @@ export function loadApiConfig(env: NodeJS.ProcessEnv): ApiConfig {
   const problems: string[] = [];
   const prod = cfg.NODE_ENV === 'production';
 
-  if (cfg.AUTH_JWT_SECRET === cfg.POWERSYNC_JWT_SECRET) {
-    problems.push('POWERSYNC_JWT_SECRET: must differ from AUTH_JWT_SECRET (a sync token must not verify as an API session)');
-  }
   for (const origin of cfg.CORS_ORIGINS) {
     let u: URL;
     try {

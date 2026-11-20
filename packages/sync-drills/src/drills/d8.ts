@@ -157,6 +157,18 @@ export async function runD8(cx: DrillContext): Promise<DrillResult> {
   await cx.server.provisionRoledPrincipal(tenantA, tillA3.userId, tillA3.name, 'counter_staff', cx.locA3);
   await cx.server.provisionRoledPrincipal(tenantA, mgrA.userId, mgrA.name, 'outlet_manager');
   await cx.server.provisionRoledPrincipal(tenantB, acctB.userId, acctB.name, 'accounts');
+  // Each is an ENROLLED device at its till's outlet (migration 0024: no
+  // device row, no buckets). The accounts devices sit at an outlet too — the
+  // book follows the USER's root credit.view, the ceiling decides residency.
+  for (const [tid, dev] of [
+    [tenantA, acctA],
+    [tenantA, tillA1],
+    [tenantA, tillA3],
+    [tenantA, mgrA],
+    [tenantB, acctB],
+  ] as const) {
+    await cx.server.enrolDevice(tid, dev);
+  }
   await cx.server.refreshCreditScope(tenantA);
   await cx.server.refreshCreditScope(tenantB);
 
@@ -435,7 +447,10 @@ async function runD8Transitions(
   // tables on BOTH, so the pair does not exist and every credit bucket is
   // empty. The API cannot produce this token; that is why it is minted here.
   const forger = new DrillDevice('d8-forged-claim', tenantB, cx.locB);
-  forger.syncTokenOverride = () => forgedSyncToken(dev.acctB.userId, tenantA, cx.locA1);
+  // The forger even carries acctB's REAL enrolled did: the lookup is keyed on
+  // (did, sub, tid) together, so the honest device + user under a forged tid
+  // still match no row in app.device_sync_grant (migration 0024).
+  forger.syncTokenOverride = () => forgedSyncToken(dev.acctB.userId, tenantA, cx.locA1, dev.acctB.deviceId);
   await bringUp(forger);
   // Give the stream real time to deliver anything it was going to deliver.
   await new Promise((res) => setTimeout(res, 4000));

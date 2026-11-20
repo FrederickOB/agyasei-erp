@@ -14,11 +14,12 @@
   "dependencies": {
     "@erp/contracts": "workspace:*",
     "@erp/money": "workspace:*",
+    "@erp/sequence": "workspace:*",
     "@powersync/common": "^1.57.3",
     "@powersync/web": "^1.14.0",
+    "hash-wasm": "^4.12.0",
     "react": "^18.3.1",
-    "react-dom": "^18.3.1",
-    "@erp/sequence": "workspace:*"
+    "react-dom": "^18.3.1"
   },
   "devDependencies": {
     "@testing-library/dom": "^10.4.0",

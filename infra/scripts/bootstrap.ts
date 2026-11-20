@@ -54,6 +54,9 @@ import { applyDevPurchaseUnits } from './dev-purchase-units.js';
 const DATABASE_URL =
   process.env.DATABASE_URL ?? 'postgresql://erp:erp_dev@localhost:5433/erp';
 
+/** The dev IdP's issuer (infra/dev-idp/server.mjs; `pnpm dev:idp`). */
+const DEV_IDP_ISSUER = process.env.OIDC_ISSUER ?? 'http://localhost:9400';
+
 /** Fixed dev tenant ids (uuidv7-shaped, obviously synthetic) so every reset
  *  produces the same ids and infra/dev-tenants.json stays stable. */
 const TENANT_A = {
@@ -292,6 +295,15 @@ async function main(): Promise<void> {
             roleRef: p.roleRef,
             ...(scopeLocationId ? { scopeLocationId } : {}),
           });
+          // Linked to the DEV IdP (infra/dev-idp) as subject `dev-<roleRef>`,
+          // so a dev tablet can sign in through the real OIDC flow. The same
+          // subject in both tenants is deliberate: the TENANT comes from the
+          // enrolled device, never from the IdP (02 §2.2).
+          await tx.query(
+            `update app.user_account set subject_issuer = $2, subject_ref = $3
+              where id = $1 and subject_ref is null`,
+            [userId, DEV_IDP_ISSUER, `dev-${p.roleRef}`],
+          );
           names.push(p.roleRef);
         }
         return names;

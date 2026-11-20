@@ -15,7 +15,11 @@
 #   2. infra/supabase/roles.sql, twice (it must be idempotent);
 #   3. migrate.js again (grants converge onto the roles that now exist);
 #   4. ops.js verify with every credential — must report no FAIL;
-#   5. main.js — /healthz and /readyz must answer 200;
+#   5. main.js with REAL ES256 signing and lease keys — /healthz and /readyz
+#      must answer 200, and /.well-known/jwks.json must publish the public
+#      signing key and nothing private;
+#   5b. main.js with NODE_ENV=production and no identity configuration must
+#      REFUSE to start (no HS256 fallback, no generated keys);
 #   6. jobs.js run <every job> — none may fail.
 #
 # It never touches the shared dev stack: its own container, its own port,
@@ -90,11 +94,13 @@ POWERSYNC_REPLICATION_URL="postgresql://powersync_repl:repl-smoke@127.0.0.1:$PG_
 POWERSYNC_STORAGE_URL="postgresql://powersync_storage:stor-smoke@127.0.0.1:$PG_PORT/powersync_storage" \
   node "$DIST/ops.js" verify
 
-step "5. the API serves and is ready"
+step "5. the API serves and is ready (real ES256 identity keys)"
+SIGNING_JWKS="$(node "$ROOT/infra/scripts/gen-identity-keys.mjs" smoke-signing-1)"
+LEASE_JWKS="$(node "$ROOT/infra/scripts/gen-identity-keys.mjs" smoke-lease-1)"
 NODE_ENV=development PORT="$API_PORT" HOST=127.0.0.1 \
 DATABASE_URL="postgresql://erp_api:api-smoke@127.0.0.1:$PG_PORT/erp" \
-AUTH_JWT_SECRET="smoke-auth-secret-0123456789abcdefghijkl" \
-POWERSYNC_JWT_SECRET="smoke-sync-secret-0123456789abcdefghijkl" \
+ERP_TOKEN_ISSUER="http://127.0.0.1:$API_PORT" \
+ERP_SIGNING_JWKS="$SIGNING_JWKS" ERP_LEASE_JWKS="$LEASE_JWKS" \
 POWERSYNC_URL="http://127.0.0.1:8080" CORS_ORIGINS="http://localhost:5173" \
   node "$DIST/main.js" > "$API_LOG" 2>&1 &
 API_PID=$!
@@ -107,10 +113,40 @@ if ! curl -fsS "http://127.0.0.1:$API_PORT/readyz"; then
   echo; echo "readyz failed; API log:" >&2; tail -20 "$API_LOG" >&2; exit 1
 fi
 echo
+# The key set PowerSync will verify sync tokens against: the signing key's
+# PUBLIC half only. A private parameter ("d") here would publish the key.
+JWKS="$(curl -fsS "http://127.0.0.1:$API_PORT/.well-known/jwks.json")"
+echo "$JWKS" | node -e '
+  let s = ""; process.stdin.on("data", (d) => (s += d)).on("end", () => {
+    const keys = JSON.parse(s).keys ?? [];
+    if (!keys.some((k) => k.kid === "smoke-signing-1")) { console.error("jwks: signing key missing"); process.exit(1); }
+    if (keys.some((k) => k.kid === "smoke-lease-1")) { console.error("jwks: LEASE key published"); process.exit(1); }
+    if (keys.some((k) => "d" in k)) { console.error("jwks: PRIVATE key material published"); process.exit(1); }
+    console.log(`jwks: ${keys.length} public key(s), no private material`);
+  });'
+
+step "5b. production refuses to start without identity configuration"
+set +e
+# DATABASE_SSL_MODE=disable (exported for the steps above) is itself refused in
+# production, so unset it here: this step must get past configuration and be
+# refused by IDENTITY, which is what it is checking.
+env -u DATABASE_SSL_MODE NODE_ENV=production PORT="$((API_PORT + 1))" HOST=127.0.0.1 \
+DATABASE_URL="postgresql://erp_api:api-smoke@127.0.0.1:$PG_PORT/erp" \
+POWERSYNC_URL="https://sync.smoke.invalid" CORS_ORIGINS="https://app.smoke.invalid" \
+  node "$DIST/main.js" > "$API_LOG.prod" 2>&1 &
+PROD_PID=$!
+for _ in $(seq 1 15); do kill -0 "$PROD_PID" 2>/dev/null || break; sleep 1; done
+if kill -0 "$PROD_PID" 2>/dev/null; then
+  kill "$PROD_PID"; echo "production STARTED with no identity configuration" >&2; exit 1
+fi
+wait "$PROD_PID"; PROD_EXIT=$?
+set -e
+grep -q '"identity configuration' "$API_LOG.prod" || { echo "refusal did not name identity:" >&2; cat "$API_LOG.prod" >&2; exit 1; }
+echo "refused (exit $PROD_EXIT): $(grep -o 'identity configuration[^"]*' "$API_LOG.prod")"
 
 step "6. every scheduled job runs"
 JOBS_DATABASE_URL="postgresql://erp_jobs:jobs-smoke@127.0.0.1:$PG_PORT/erp" \
-  node "$DIST/jobs.js" run ledger.posting_sweep credit.sync_scope_refresh ops.table_digest \
+  node "$DIST/jobs.js" run ledger.posting_sweep sync.scope_refresh ops.table_digest \
     ops.table_digest_full ops.lost_write_control ops.sync_health 2>/dev/null
 
 step "release path OK"

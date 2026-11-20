@@ -12,23 +12,91 @@ import { pathOnly, productionLoggerOptions } from '../src/logging.js';
 import { matchPrefix } from '../src/rate-limit.js';
 import { readinessCheck } from '../src/readiness.js';
 import { buildServer } from '../src/server.js';
+import { identityFromEnv } from '../src/identity/config.js';
+import { generatePrivateJwk } from '../src/identity/keys.js';
+import { createHlcClock, randomHlcNode } from '@erp/db';
 import { createApiHarness, JWT_SECRET, type ApiHarness } from './util.js';
 
 const AUTH = 'a'.repeat(40);
-const SYNC = 'b'.repeat(40);
 
 function env(over: Record<string, string | undefined> = {}): NodeJS.ProcessEnv {
   return {
     NODE_ENV: 'production',
     DATABASE_URL: 'postgresql://erp_api:pw@pooler.example:6543/postgres',
     DATABASE_CA_CERT: '-----BEGIN CERTIFICATE-----\\nMIIB\\n-----END CERTIFICATE-----',
-    AUTH_JWT_SECRET: AUTH,
-    POWERSYNC_JWT_SECRET: SYNC,
     POWERSYNC_URL: 'https://sync.example',
     CORS_ORIGINS: 'https://app.example',
     ...over,
   };
 }
+
+/**
+ * Identity configuration is the one gate between production and the HS256
+ * dev path (identity/config.ts; main.ts step 3). With NODE_ENV=production it
+ * must refuse to start without every key and the OIDC provider, refuse the
+ * dev secret outright, never generate a fallback key — and name variables,
+ * never values. Construction touches no database, so the runners are inert.
+ */
+describe('identityFromEnv in production', () => {
+  const inert = {
+    runner: { withTenant: () => Promise.reject(new Error('no database in this test')) },
+    preTenant: { withoutTenant: () => Promise.reject(new Error('no database in this test')) },
+    clock: createHlcClock(randomHlcNode()),
+  } as unknown as Parameters<typeof identityFromEnv>[1];
+  const jwks = async (kid: string) => JSON.stringify({ keys: [await generatePrivateJwk(kid)] });
+  async function full(): Promise<Record<string, string>> {
+    return {
+      NODE_ENV: 'production',
+      ERP_TOKEN_ISSUER: 'https://api.example/',
+      ERP_SIGNING_JWKS: await jwks('signing-1'),
+      ERP_LEASE_JWKS: await jwks('lease-1'),
+      OIDC_ISSUER: 'https://idp.example/',
+      OIDC_CLIENT_ID: 'erp-pwa',
+    };
+  }
+  async function refusal(env: Record<string, string | undefined>): Promise<string> {
+    try {
+      await identityFromEnv(env, inert);
+    } catch (err) {
+      return (err as Error).message;
+    }
+    return '(started)';
+  }
+
+  it('starts with the full set: ES256 rings, an OIDC provider, and NO dev bearer', async () => {
+    const r = await identityFromEnv(await full(), inert);
+    expect(r.devJwtSecret).toBeUndefined();
+    expect(r.oidcConfigured).toBe(true);
+    expect(r.issuer).toBe('https://api.example/');
+  });
+
+  it.each([
+    ['the HS256 dev secret', { DEV_JWT_SECRET: 'a-dev-secret-value-xyz' }, 'DEV_JWT_SECRET'],
+    ['no token issuer', { ERP_TOKEN_ISSUER: undefined }, 'ERP_TOKEN_ISSUER'],
+    ['no signing keys', { ERP_SIGNING_JWKS: undefined }, 'ERP_SIGNING_JWKS'],
+    ['no lease keys', { ERP_LEASE_JWKS: undefined }, 'ERP_LEASE_JWKS'],
+    ['signing keys that are not JSON', { ERP_SIGNING_JWKS: 'not-json-secret-material' }, 'ERP_SIGNING_JWKS'],
+    ['no OIDC provider', { OIDC_ISSUER: undefined }, 'OIDC_ISSUER'],
+    ['no OIDC client', { OIDC_CLIENT_ID: undefined }, 'OIDC_CLIENT_ID'],
+  ])('refuses %s, naming the variable and never the value', async (_label, over, variable) => {
+    const message = await refusal({ ...(await full()), ...over });
+    expect(message).not.toBe('(started)');
+    expect(message).toContain(variable);
+    expect(message).not.toContain('a-dev-secret-value-xyz');
+    expect(message).not.toContain('not-json-secret-material');
+  });
+
+  it('refuses a lease ring that shares a key with the signing ring', async () => {
+    const shared = await jwks('same-kid');
+    const message = await refusal({ ...(await full()), ERP_SIGNING_JWKS: shared, ERP_LEASE_JWKS: shared });
+    expect(message).toContain('ERP_LEASE_JWKS');
+  });
+
+  it('positive control: outside production the dev bearer exists, so the drills keep working', async () => {
+    const r = await identityFromEnv({ NODE_ENV: 'development' }, inert);
+    expect(r.devJwtSecret).toBeDefined();
+  });
+});
 
 describe('loadApiConfig', () => {
   it('accepts a sound production configuration with safe defaults', () => {
@@ -46,9 +114,6 @@ describe('loadApiConfig', () => {
   });
 
   it.each([
-    ['the dev default secret', { AUTH_JWT_SECRET: 'dev-secret-change-me' }, 'AUTH_JWT_SECRET'],
-    ['a short secret', { POWERSYNC_JWT_SECRET: 'short' }, 'POWERSYNC_JWT_SECRET'],
-    ['one secret for both token kinds', { POWERSYNC_JWT_SECRET: AUTH }, 'POWERSYNC_JWT_SECRET'],
     ['a wildcard origin', { CORS_ORIGINS: '*' }, 'CORS_ORIGINS'],
     ['an origin with a path', { CORS_ORIGINS: 'https://app.example/x' }, 'CORS_ORIGINS'],
     ['a plain-http origin in production', { CORS_ORIGINS: 'http://app.example' }, 'CORS_ORIGINS'],

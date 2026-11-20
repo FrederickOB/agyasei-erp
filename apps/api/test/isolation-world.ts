@@ -108,6 +108,10 @@ export interface TenantWorld {
   goodsReceiptId: string;
   deliveryId: string;
   reviewId: string;
+  /** An active enrolled device, scoped at the outlet (identity, 0023). */
+  deviceId: string;
+  /** An outstanding enrolment code at the outlet. */
+  enrolmentCodeId: string;
   /** The owner: every capability, at the root. */
   owner: Caller;
   ownerIdentity: VerifiedIdentity;
@@ -132,6 +136,49 @@ async function serverWrite(h: ApiHarness, tenantId: string, op: string): Promise
     ),
   );
   return id;
+}
+
+/**
+ * One enrolled device and one outstanding enrolment code (identity, 0023), so
+ * the admin device and code lists have rows of each tenant's to leak. The code
+ * goes through the real admin route; the device is inserted as enrolment would
+ * leave it (the enrolment handshake needs a WebCrypto key pair and DPoP).
+ */
+async function buildDevices(
+  h: ApiHarness,
+  tenantId: string,
+  outletId: string,
+  owner: Caller,
+  ownerUserId: string,
+  marker: string,
+): Promise<{ deviceId: string; enrolmentCodeId: string }> {
+  await owner.admin.devices.issueCode({
+    idempotencyKey: uuidv7(),
+    label: `${marker} counter tablet (code)`,
+    formFactor: 'tablet',
+    locationId: outletId,
+  });
+  const code = await one<{ id: string }>(
+    h,
+    tenantId,
+    `select id from app.device_enrolment_code where label = $1`,
+    [`${marker} counter tablet (code)`],
+  );
+  const deviceId = uuidv7();
+  const w = await serverWrite(h, tenantId, 'test.device');
+  await h.db.withTenant(tenantId, async (tx) => {
+    await tx.query(
+      `insert into app.device (tenant_id, id, write_id, hlc, label, form_factor, public_jwk, jkt, status, enrolled_by)
+       values ($1, $2, $3, $4, $5, 'tablet', '{"kty":"EC"}'::jsonb, $6, 'active', $7)`,
+      [tenantId, deviceId, w, h.deps.clock.next(), `${marker} counter tablet`, `jkt${deviceId.replace(/-/g, '')}`.slice(0, 43).padEnd(43, 'x'), ownerUserId],
+    );
+    await tx.query(
+      `insert into app.device_location_scope (tenant_id, id, write_id, hlc, device_id, location_id, added_by)
+       values ($1, $2, $3, $4, $5, $6, $7)`,
+      [tenantId, uuidv7(), w, h.deps.clock.next(), deviceId, outletId, ownerUserId],
+    );
+  });
+  return { deviceId, enrolmentCodeId: code.id };
 }
 
 /** Open one REAL review: a device that wiped its database re-reports its block (class #14). */
@@ -164,7 +211,7 @@ async function openRealReview(caller: Caller, locationId: string): Promise<strin
 }
 
 /** A fiscal year, one open period, a minimal chart, and two posted documents. */
-async function buildLedger(h: ApiHarness, w: Omit<TenantWorld, 'reviewId'>): Promise<void> {
+async function buildLedger(h: ApiHarness, w: Omit<TenantWorld, 'reviewId' | 'deviceId' | 'enrolmentCodeId'>): Promise<void> {
   const t = w.tenantId;
   await h.db.withTenant(t, async (tx) => {
     await tx.query(
@@ -428,7 +475,8 @@ export async function buildTenantWorld(h: ApiHarness, spec: TenantSpec): Promise
   };
   await buildLedger(h, partial);
   const reviewId = await openRealReview(owner, outletId);
-  return { ...partial, reviewId };
+  const { deviceId, enrolmentCodeId } = await buildDevices(h, tenantId, outletId, owner, ownerIdentity.userId, spec.marker);
+  return { ...partial, reviewId, deviceId, enrolmentCodeId };
 }
 
 // ---------------------------------------------------------------------------

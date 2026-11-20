@@ -124,6 +124,33 @@ export async function verifyProvisioning(inputs: VerifyInputs): Promise<CheckRes
       );
     });
 
+    await guard('identity.route_owner', 'device sign-in route lookups', async () => {
+      // claim_enrolment_code / resolve_device_key run BEFORE any tenant context
+      // against RLS-forced route tables (0025). Their owner must bypass RLS or
+      // every enrolment and every device token fails closed in production.
+      const rows = (
+        await mig.query<{ fn: string; owner: string; ok: boolean }>(
+          `select p.proname::text as fn, r.rolname::text as owner, (r.rolsuper or r.rolbypassrls) as ok
+             from pg_proc p
+             join pg_namespace n on n.oid = p.pronamespace
+             join pg_roles r on r.oid = p.proowner
+            where n.nspname = 'platform' and p.proname in ('claim_enrolment_code', 'resolve_device_key')
+            order by p.proname`,
+        )
+      ).rows;
+      const bad = rows.filter((r) => !r.ok);
+      add(
+        'identity.route_owner',
+        'device sign-in route lookups',
+        rows.length < 2 || bad.length > 0 ? 'FAIL' : 'PASS',
+        rows.length < 2
+          ? 'route lookup functions missing (migration 0023 not applied?)'
+          : bad.length > 0
+            ? `owner cannot bypass RLS: ${bad.map((r) => `${r.fn} (${r.owner})`).join(', ')} — enrolment and device tokens would fail closed`
+            : `owned by ${[...new Set(rows.map((r) => r.owner))].join(', ')}, which bypasses RLS`,
+      );
+    });
+
     await guard('roles.migrator', 'backup and manifest', async () => {
       const r = one(
         (

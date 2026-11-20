@@ -17,7 +17,7 @@
  * JS `number` on this path (ADR-0004).
  */
 import pg from 'pg';
-import type { AdminRunner, Queryable, TenantRunner } from './db.js';
+import type { AdminRunner, PreTenantRunner, Queryable, TenantRunner } from './db.js';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -25,6 +25,8 @@ export interface PgRunners {
   runner: TenantRunner;
   /** Undefined when the operator plane is disabled (production default). */
   admin: AdminRunner | undefined;
+  /** app_user, no tenant GUC — the two pre-tenant route lookups only. */
+  preTenant: PreTenantRunner;
   /**
    * One statement as the CONNECTING role, outside any tenant context — for
    * health checks against non-tenant tables only (erp_meta). Forced RLS
@@ -115,6 +117,13 @@ export function createPgRunners(databaseUrl: string, options: PgRunnerOptions = 
     close: async () => {
       await pool.end();
       if (operatorPool !== null && operatorPool !== pool) await operatorPool.end();
+    },
+    preTenant: {
+      withoutTenant(fn) {
+        return inTransaction(async (tx) => {
+          await tx.query('set local role app_user');
+        }, fn);
+      },
     },
   };
 }

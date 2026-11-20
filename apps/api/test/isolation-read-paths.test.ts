@@ -545,6 +545,47 @@ const probes: Record<string, () => Promise<void>> = {
   },
 
   // ── sales ────────────────────────────────────────────────────────────────
+  // ── administration (identity, 0023) ─────────────────────────────────────
+  'admin.users.list': async () => {
+    const own = await A.owner.admin.users.list();
+    expect(JSON.stringify(own)).toContain(A.ownerIdentity.userId);
+    clean.assertClean('admin.users.list', own);
+    await bHolds('B users', `select count(*)::text as v from app.user_account where tenant_id = $1`);
+  },
+  'admin.roles.list': async () => {
+    const own = await A.owner.admin.roles.list();
+    expect(JSON.stringify(own).length).toBeGreaterThan(2);
+    clean.assertClean('admin.roles.list', own);
+    await bHolds('B roles', `select count(*)::text as v from app.role where tenant_id = $1`);
+  },
+  'admin.locations': async () => {
+    const own = await A.owner.admin.locations();
+    expect(JSON.stringify(own)).toContain(A.outletId);
+    clean.assertClean('admin.locations', own);
+    await bHolds('B locations', `select count(*)::text as v from app.location where tenant_id = $1`);
+  },
+  'admin.devices.list': async () => {
+    const own = await A.owner.admin.devices.list();
+    expect(JSON.stringify(own)).toContain(A.deviceId);
+    clean.assertClean('admin.devices.list', own);
+    await bHolds('B device', `select count(*)::text as v from app.device where tenant_id = $1 and id = $2`, [B.deviceId]);
+  },
+  'admin.devices.codes': async () => {
+    const own = await A.owner.admin.devices.codes();
+    expect(JSON.stringify(own)).toContain(A.enrolmentCodeId);
+    clean.assertClean('admin.devices.codes', own);
+    await bHolds('B code', `select count(*)::text as v from app.device_enrolment_code where tenant_id = $1 and id = $2`, [
+      B.enrolmentCodeId,
+    ]);
+  },
+  // The permission CATALOGUE is platform reference data, identical for every
+  // tenant; what must hold is that it carries nothing of B's.
+  'admin.catalogue': async () => {
+    const own = await A.owner.admin.catalogue();
+    expect(JSON.stringify(own)).toContain('sale.record');
+    clean.assertClean('admin.catalogue', own);
+  },
+
   // ── tills (migration 0020) ───────────────────────────────────────────────
   'cashSession.openCheck': async () => {
     // Non-vacuity: A's own check answers with a real server date for its outlet.
@@ -600,6 +641,12 @@ const probes: Record<string, () => Promise<void>> = {
 
 describe('every query procedure: tenant A sees none of tenant B, at every read path', () => {
   it('[isolation:catalogue.list] the whole catalogue, paged, is exactly A’s products', () => probes['catalogue.list']!());
+  it('[isolation:admin.users.list] A’s people only; none of B’s users', () => probes['admin.users.list']!());
+  it('[isolation:admin.roles.list] A’s roles only', () => probes['admin.roles.list']!());
+  it('[isolation:admin.locations] A’s tree only', () => probes['admin.locations']!());
+  it('[isolation:admin.devices.list] A’s device listed; B’s enrolled device absent', () => probes['admin.devices.list']!());
+  it('[isolation:admin.devices.codes] A’s code listed; B’s outstanding code absent', () => probes['admin.devices.codes']!());
+  it('[isolation:admin.catalogue] the platform catalogue carries nothing of B’s', () => probes['admin.catalogue']!());
   it('[isolation:cashSession.openCheck] A’s outlet answers; B’s outlet, which holds tills, answers as a nonexistent one', () =>
     probes['cashSession.openCheck']!());
   it('[isolation:catalogue.search] B’s marker product is unfindable; a wide search carries nothing of B’s', () =>
@@ -793,6 +840,12 @@ const DECISIVE_MUTATION: Record<string, Decisive> = {
   'reports.distributionCostRatio': 'held-by-app-predicate',
   'review.list': 'held-by-app-predicate',
   'review.get': 'rls-off',
+  'admin.users.list': 'rls-off',
+  'admin.roles.list': 'rls-off',
+  'admin.locations': 'rls-off',
+  'admin.devices.list': 'rls-off',
+  'admin.devices.codes': 'held-by-app-predicate',
+  'admin.catalogue': 'held-by-app-predicate',
   'cashSession.openCheck': 'held-by-app-predicate',
   'sales.get': 'rls-off',
   'sales.recomputeCheck': 'rls-off',

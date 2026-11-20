@@ -74,8 +74,12 @@ export function wireKind(kind: string): string {
 export interface HttpTransportOptions {
   /** API dev server base URL (VITE_API_URL). */
   readonly apiUrl: string;
-  /** Dev-only API bearer; real credential exchange is the online login flow (§8.2). */
+  /** DEV ONLY static bearer (`pnpm dev:token`). Ignored when `authorize` is given. */
   readonly apiToken: string;
+  /** THE DEVICE PATH: DPoP-bound headers for one request (data/auth). */
+  readonly authorize?: (method: string, url: string) => Promise<Record<string, string>>;
+  /** A `423 device_revoked` — record it; the revoked-device drain takes over. */
+  readonly onRevoked?: (body: Record<string, unknown>) => void | Promise<void>;
   readonly fetchFn?: FetchLike;
 }
 
@@ -126,6 +130,7 @@ export function httpUploadTransport(opts: HttpTransportOptions): UploadTransport
 
   return {
     async send(ops: readonly PendingOp[]): Promise<UploadResult> {
+      const target = `${base}/sync/upload`;
       // TYPED AS THE CONTRACT'S ENVELOPE — the same declaration the API's
       // /sync/upload route parses. The envelope used to be hand-rolled here
       // against a schema defined only on the server.
@@ -151,16 +156,25 @@ export function httpUploadTransport(opts: HttpTransportOptions): UploadTransport
 
       let res: HttpResponseLike;
       try {
-        res = await fetchFn(`${base}/sync/upload`, {
+        const auth = opts.authorize
+          ? await opts.authorize('POST', target)
+          : { authorization: `Bearer ${opts.apiToken}` };
+        res = await fetchFn(target, {
           method: 'POST',
-          headers: {
-            authorization: `Bearer ${opts.apiToken}`,
-            'content-type': 'application/json',
-          },
+          headers: { ...auth, 'content-type': 'application/json' },
           body: JSON.stringify(body),
         });
       } catch {
+        // No credential (locked, offline refresh) is the same as no network:
+        // nothing settles, everything stays queued.
         return { ok: false, status: 0, acks: [] };
+      }
+      if (res.status === 423 && opts.onRevoked) {
+        // §2.7: revoked. The normal queue stops HERE and the revoked-device
+        // drain takes over (data/auth/drain.ts) — the outbox is never wiped
+        // before the server has it.
+        const lockedBody = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+        await opts.onRevoked(lockedBody);
       }
       if (!res.ok) return { ok: false, status: res.status, acks: [] };
       let parsedBody: unknown;

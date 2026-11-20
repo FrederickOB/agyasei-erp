@@ -39,13 +39,16 @@ sync_config:
 # API's POWERSYNC_JWT_SECRET (a different secret from the API's own session
 # key). The identity work package replaces this with the API's published
 # signing keys (jwks_uri) — see the runbook's placeholder list.
+# Sync tokens are ES256, minted by the API for an enrolled device's session
+# (audience erp-sync, carrying the `did` and `sub` every parameter query keys
+# on) and verified here against the API's PUBLIC key set. No shared secret:
+# the HS256 dev path does not exist in production (identity/config.ts).
+# PS_JWKS_URI is the API's public https URL — https://<api app>.fly.dev/
+# .well-known/jwks.json — not a Fly-private address: block_local_jwks stays at
+# its default (true), so the sync service refuses keys from a private range.
 client_auth:
-  jwks:
-    keys:
-      - kty: 'oct'
-        alg: 'HS256'
-        k: !env PS_JWT_K
-  audience: ['powersync']
+  jwks_uri: !env PS_JWKS_URI
+  audience: ['erp-sync']
 
 # The diagnostics/admin API: a long random token, never the dev one.
 api:
