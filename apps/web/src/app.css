@@ -3836,7 +3836,11 @@ button {
 }
 .splitbars-row {
   display: grid;
-  grid-template-columns: minmax(100px, 2fr) 3fr auto;
+  /* The bar is the column that gives way on a narrow screen: a bare 3fr track
+     keeps its min-content (the share label inside it), which on a 360px phone
+     left no slack, and a wider fallback font (CI's DejaVu Sans) pushed the
+     value column past the edge. minmax(0, …) lets the bar shrink instead. */
+  grid-template-columns: minmax(100px, 2fr) minmax(0, 3fr) auto;
   gap: 12px;
   align-items: center;
   font-size: 12.5px;
