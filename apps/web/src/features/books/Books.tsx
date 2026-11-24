@@ -1,5 +1,12 @@
 /**
- * THE BOOKS — trial balance, P&L, balance sheet, and the close gate's queue.
+ * THE BOOKS — the P&L sheet and expenses (management figures), then the
+ * ledger's own trial balance, P&L, balance sheet and the close gate's queue.
+ *
+ * The first tab, the P&L SHEET (./ProfitSheet.tsx), is the founder's "actual
+ * P&L": sales, cost of goods sold and recorded expenses, computed from
+ * operational records. It is NOT the ledger — expenses are operational records
+ * and nothing they do posts — and it says so on its face. The ledger tabs
+ * below keep every rule they had:
  *
  * Three rules, in order of how expensive they are to break:
  *
@@ -31,14 +38,16 @@ import {
   type StatementRow,
 } from '../../data/api/ledger';
 import type { ApiCallOptions } from '../../data/api/client';
+import type { PermissionsState } from '../../data/api/session';
 import { useApiQuery } from '../../data/api/use-api-query';
 import { Money } from '../../money/Money';
 import { Icon } from '../../ui/Icon';
 import { FetchedAt, ServerPending, ServerUnavailable } from '../shell/ServerAnswer';
+import { ProfitSheetView } from './ProfitSheet';
 
 const WHAT = 'The books';
 
-type Tab = 'trial-balance' | 'profit-and-loss' | 'balance-sheet';
+type Tab = 'pl-sheet' | 'trial-balance' | 'profit-and-loss' | 'balance-sheet';
 
 function EmptyLedger({ openExceptions }: { readonly openExceptions: number }): ReactNode {
   return (
@@ -222,8 +231,15 @@ function BalanceSheetView({ apiOptions }: { readonly apiOptions: ApiCallOptions 
  */
 const NO_OPTIONS: ApiCallOptions = {};
 
-export function Books({ apiOptions = NO_OPTIONS }: { readonly apiOptions?: ApiCallOptions }): ReactNode {
-  const [tab, setTab] = useState<Tab>('trial-balance');
+export function Books({
+  apiOptions = NO_OPTIONS,
+  permissions,
+}: {
+  readonly apiOptions?: ApiCallOptions;
+  /** For the "Record expense" affordance only. The server re-checks every write. */
+  readonly permissions?: PermissionsState | undefined;
+}): ReactNode {
+  const [tab, setTab] = useState<Tab>('pl-sheet');
   const exceptions = useApiQuery(() => fetchPostingExceptions(apiOptions), [apiOptions]);
 
   return (
@@ -231,8 +247,9 @@ export function Books({ apiOptions = NO_OPTIONS }: { readonly apiOptions?: ApiCa
       <header className="books-head">
         <h2>The books</h2>
         <p className="books-note">
-          Written by the system from settled documents. Nothing here can be edited — a correction
-          is always a new, reversing entry.
+          The P&amp;L sheet is your management view: what you sold, what it cost you and the
+          expenses you record here. The ledger tabs are written by the system from settled
+          documents and cannot be edited — a correction is always a new, reversing entry.
         </p>
       </header>
 
@@ -259,8 +276,9 @@ export function Books({ apiOptions = NO_OPTIONS }: { readonly apiOptions?: ApiCa
       <nav className="books-tabs" aria-label="Statements">
         {(
           [
+            ['pl-sheet', 'P&L sheet'],
             ['trial-balance', 'Trial balance'],
-            ['profit-and-loss', 'Profit & loss'],
+            ['profit-and-loss', 'Ledger P&L'],
             ['balance-sheet', 'Balance sheet'],
           ] as const
         ).map(([id, label]) => (
@@ -276,6 +294,7 @@ export function Books({ apiOptions = NO_OPTIONS }: { readonly apiOptions?: ApiCa
         ))}
       </nav>
 
+      {tab === 'pl-sheet' ? <ProfitSheetView apiOptions={apiOptions} permissions={permissions} /> : null}
       {tab === 'trial-balance' ? <TrialBalanceView apiOptions={apiOptions} /> : null}
       {tab === 'profit-and-loss' ? <ProfitAndLossView apiOptions={apiOptions} /> : null}
       {tab === 'balance-sheet' ? <BalanceSheetView apiOptions={apiOptions} /> : null}

@@ -77,6 +77,8 @@ export const CAPABILITY = {
   saleReturn: 'sale.return',
   /** HQ's one-time bulk load of opening stock (Q20). Online only. */
   stockOpeningImport: 'stock.opening.import',
+  /** Load the product list from a spreadsheet, and archive the catalogue (0032). Online only. */
+  catalogueManage: 'catalogue.manage',
   /**
    * Correct what the ledger says is physically there, at a location. The
    * server derives this same code from the movement's `sourceKind` and
@@ -101,6 +103,8 @@ export const CAPABILITY = {
    * through the owner expansion. Read-only: no write capability exists.
    */
   glView: 'gl.view',
+  /** Record (and void) a business expense for the management P&L. Online only; never a journal entry. */
+  expenseRecord: 'expense.record',
   /**
    * Open a customer's credit account, amend its terms, and MOVE IT BETWEEN
    * ACTIVE, SUSPENDED AND CLOSED — the switch behind the check

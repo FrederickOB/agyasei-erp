@@ -81,6 +81,9 @@ export const PERMISSION_CODES = [
   'credit.policy.manage',
 
   'gl.view',
+  // Migration 0033: record (and void) a business expense — an OPERATIONAL
+  // record for the management P&L, never a journal entry (Track B is blocked).
+  'expense.record',
   'report.view.location',
   'report.view.tenant',
   'report.view.margin',

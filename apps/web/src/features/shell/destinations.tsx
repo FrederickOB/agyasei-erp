@@ -45,6 +45,9 @@ const Deliveries = lazy(async () => ({
 const PeopleAdmin = lazy(async () => ({ default: (await import('../admin/Admin')).PeopleAdmin }));
 const DevicesAdmin = lazy(async () => ({ default: (await import('../admin/Admin')).DevicesAdmin }));
 const RolesAdmin = lazy(async () => ({ default: (await import('../admin/Admin')).RolesAdmin }));
+const Products = lazy(async () => ({
+  default: (await import('../products/Products')).Products,
+}));
 const OpeningStock = lazy(async () => ({
   default: (await import('../stock/OpeningStock')).OpeningStock,
 }));
@@ -66,6 +69,7 @@ export type DestinationId =
   | 'people'
   | 'devices'
   | 'roles'
+  | 'products'
   | 'opening'
   | 'printer';
 
@@ -110,6 +114,9 @@ export const DESTINATIONS: readonly DestinationDef[] = [
   { id: 'people', label: 'People', icon: 'grid', requires: CAPABILITY.adminUser, group: 'control', counterWork: false, officeOnly: true },
   { id: 'devices', label: 'Devices', icon: 'pin', requires: CAPABILITY.adminDeviceEnrol, group: 'control', counterWork: false, officeOnly: true },
   { id: 'roles', label: 'Roles', icon: 'tag', requires: CAPABILITY.adminRole, group: 'control', counterWork: false, officeOnly: true },
+  // The product list from a spreadsheet, and archiving the catalogue (0032).
+  // A laptop job against a live server: cost prices never reach a counter.
+  { id: 'products', label: 'Products', icon: 'tag', requires: CAPABILITY.catalogueManage, group: 'stock', counterWork: false, officeOnly: true },
   // HQ's one-time bulk load of opening STOCK before go-live (Q20). A laptop
   // job against a live server; it posts nothing to the books.
   { id: 'opening', label: 'Opening stock', icon: 'download', requires: CAPABILITY.stockOpeningImport, group: 'stock', counterWork: false, officeOnly: true },
@@ -193,7 +200,7 @@ export function renderDestination(id: DestinationId, { db, permissions, apiOptio
     case 'books':
       return (
         <Suspense fallback={<ServerPending shape="table" what="The books" rows={4} />}>
-          <Books {...api} />
+          <Books permissions={permissions} {...api} />
         </Suspense>
       );
     case 'people':
@@ -212,6 +219,12 @@ export function renderDestination(id: DestinationId, { db, permissions, apiOptio
       return (
         <Suspense fallback={<ServerPending shape="cards" what="Roles" rows={3} />}>
           <RolesAdmin {...api} />
+        </Suspense>
+      );
+    case 'products':
+      return (
+        <Suspense fallback={<ServerPending shape="cards" what="Products" rows={3} />}>
+          <Products {...api} />
         </Suspense>
       );
     case 'opening':

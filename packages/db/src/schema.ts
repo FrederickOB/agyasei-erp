@@ -1825,3 +1825,82 @@ export const openingStockImport = tenantTable(
   },
   (t) => [uniqueIndex('opening_stock_import_content_uq').on(t.tenantId, t.contentSha256)],
 );
+
+/**
+ * The tenant's stated cost of ONE stocking unit (migration 0032), minor units
+ * × 10⁴. The management P&L's fallback cost when a product has sold with no
+ * costed receipt behind it. SERVER-ONLY: never in a device's sync bucket.
+ */
+export const productCost = tenantTable(
+  'product_cost',
+  {
+    productId: uuid('product_id').notNull(),
+    costE4: bigint('cost_e4', { mode: 'bigint' }).notNull(),
+  },
+  (t) => [uniqueIndex('product_cost_product_uq').on(t.tenantId, t.productId)],
+);
+
+/**
+ * One committed product-list file (migration 0032). Unlike opening stock, a
+ * product list is accepted row by row: good rows are created, refused rows
+ * are counted here and handed back to the person with a reason.
+ */
+export const catalogueImport = tenantTable('catalogue_import', {
+  contentSha256: text('content_sha256').notNull(),
+  fileName: text('file_name'),
+  rowCount: integer('row_count').notNull(),
+  importedCount: integer('imported_count').notNull(),
+  rejectedCount: integer('rejected_count').notNull(),
+  importedBy: uuid('imported_by').notNull(),
+});
+
+/**
+ * The tenant's own expense categories (migration 0033). Tenant data, created
+ * on first use from the expense form; no migration seeds any. The live-row
+ * uniqueness on lower(name) is an expression index in the migration
+ * (`expense_category_name_uq`) and is not mirrored here.
+ */
+export const expenseCategory = tenantTable('expense_category', {
+  code: text('code'),
+  name: text('name').notNull(),
+  sortOrder: integer('sort_order').notNull(),
+  isActive: boolean('is_active').notNull(),
+});
+
+/**
+ * One settled business expense (migration 0033). An OPERATIONAL record, not a
+ * journal entry — nothing posts it to the GL. Immutable; `locationId` null is
+ * the whole business. Currency and minor-unit scale are snapshots of the pack.
+ */
+export const expense = tenantTable(
+  'expense',
+  {
+    locationId: uuid('location_id'),
+    categoryId: uuid('category_id').notNull(),
+    expenseDate: date('expense_date').notNull(),
+    amountMinor: bigint('amount_minor', { mode: 'bigint' }).notNull(),
+    currencyCode: char('currency_code', { length: 3 }).notNull(),
+    moneyScale: bigint('money_scale', { mode: 'bigint' }).notNull(),
+    paidFrom: text('paid_from').notNull(),
+    payee: text('payee'),
+    reference: text('reference'),
+    note: text('note'),
+    recordedBy: uuid('recorded_by').notNull(),
+  },
+  (t) => [
+    index('expense_date_ix').on(t.tenantId, t.expenseDate),
+    index('expense_location_date_ix').on(t.tenantId, t.locationId, t.expenseDate),
+    index('expense_category_ix').on(t.tenantId, t.categoryId),
+  ],
+);
+
+/** Voids one expense (migration 0033). Void status is derived from this row. */
+export const expenseVoid = tenantTable(
+  'expense_void',
+  {
+    expenseId: uuid('expense_id').notNull(),
+    reason: text('reason').notNull(),
+    voidedBy: uuid('voided_by').notNull(),
+  },
+  (t) => [uniqueIndex('expense_void_expense_uq').on(t.tenantId, t.expenseId)],
+);

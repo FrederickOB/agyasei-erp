@@ -59,6 +59,11 @@ function renderBooks(answers: Readonly<Record<string, Answer>>) {
   );
 }
 
+/** The P&L sheet is the first tab now; the ledger's trial balance is one click away. */
+async function openTrialBalance(): Promise<void> {
+  fireEvent.click(await screen.findByRole('button', { name: 'Trial balance' }));
+}
+
 afterEach(cleanup);
 
 describe('rule 1 — an empty ledger is a state with a reason', () => {
@@ -67,6 +72,7 @@ describe('rule 1 — an empty ledger is a state with a reason', () => {
       'ledger.trialBalance': { ok: true, json: EMPTY_TB },
       'ledger.postingExceptions': { ok: true, json: NO_EXCEPTIONS },
     });
+    await openTrialBalance();
     expect(await screen.findByText(/no chart of accounts yet/i)).toBeTruthy();
     expect(screen.getByText(/qualified accountant/i)).toBeTruthy();
     expect(screen.getByText(/deliberate, not a fault/i)).toBeTruthy();
@@ -146,6 +152,7 @@ describe('rule 3 — open exceptions are the headline', () => {
       },
       'ledger.postingExceptions': { ok: true, json: NO_EXCEPTIONS },
     });
+    await openTrialBalance();
     expect(await screen.findByText(/sums to zero.*every location/i)).toBeTruthy();
   });
 
@@ -161,6 +168,7 @@ describe('rule 3 — open exceptions are the headline', () => {
       },
       'ledger.postingExceptions': { ok: true, json: NO_EXCEPTIONS },
     });
+    await openTrialBalance();
     expect(await screen.findByText(/DOES NOT SUM TO ZERO/)).toBeTruthy();
     expect(screen.getByText(new RegExp(`location ${LOC}`))).toBeTruthy();
   });
@@ -186,6 +194,7 @@ describe('a per-location statement names the outlet', () => {
       },
       'ledger.postingExceptions': { ok: true, json: NO_EXCEPTIONS },
     });
+    await openTrialBalance();
     expect(await screen.findByText('OUT-01')).toBeTruthy();
     expect(screen.getByText('OUT-02')).toBeTruthy();
     expect(screen.getByRole('columnheader', { name: 'Outlet' })).toBeTruthy();
@@ -202,6 +211,7 @@ describe('a per-location statement names the outlet', () => {
       },
       'ledger.postingExceptions': { ok: true, json: NO_EXCEPTIONS },
     });
+    await openTrialBalance();
     await screen.findByText('Sales revenue');
     expect(screen.queryByRole('columnheader', { name: 'Outlet' })).toBeNull();
   });
@@ -210,6 +220,7 @@ describe('a per-location statement names the outlet', () => {
 describe('with the radio off, it refuses out loud', () => {
   it('shows the shared refusal, never a blank ledger', async () => {
     renderBooks({});
+    await openTrialBalance();
     expect(await screen.findByRole('status')).toBeTruthy();
     expect(screen.queryByText(/no chart of accounts yet/i)).toBeNull();
   });
