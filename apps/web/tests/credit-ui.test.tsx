@@ -172,9 +172,11 @@ function renderScreen(db: LocalDb, permissions: PermissionsState, apiOptions: Ap
 }
 
 async function pickCustomer(): Promise<void> {
-  const select = await screen.findByLabelText('Which customer');
-  await waitFor(() => expect(screen.getByRole('option', { name: /Kofi Buildings/ })).toBeDefined());
-  fireEvent.change(select, { target: { value: CUSTOMER } });
+  // Either a row in the list or, if already chosen, the summary at the top:
+  // picking the same customer twice is a no-op, as it was with the dropdown.
+  const name = await screen.findByText('Kofi Buildings');
+  const row = name.closest('button.customer-row');
+  if (row !== null) fireEvent.click(row);
 }
 
 afterEach(cleanup);
@@ -206,7 +208,7 @@ describe('offline', () => {
     });
     // The customer list is local (`tenant_customers` carries identity only),
     // so finding WHO works offline even though WHAT THEY OWE cannot.
-    expect(await screen.findByRole('option', { name: /Kofi Buildings/ })).toBeDefined();
+    expect(await screen.findByRole('button', { name: /Kofi Buildings/ })).toBeDefined();
   });
 
   it('never shows a previously fetched balance after the connection drops', async () => {
@@ -226,7 +228,7 @@ describe('offline', () => {
       </CurrencyProvider>,
     );
     await pickCustomer();
-    expect(await screen.findByText(`${SIGN}4944.00`)).toBeDefined();
+    expect(await screen.findByText(`${SIGN}4,944.00`)).toBeDefined();
 
     // The radio drops and the screen is asked again.
     live = false;
@@ -243,7 +245,7 @@ describe('offline', () => {
     await waitFor(() => expect(screen.getByText(/Not available offline\./)).toBeDefined());
     // The old figure is GONE. `useApiQuery` discards the previous answer on a
     // failed refresh precisely so this cannot happen.
-    expect(screen.queryByText(`${SIGN}4944.00`)).toBeNull();
+    expect(screen.queryByText(`${SIGN}4,944.00`)).toBeNull();
   });
 });
 
@@ -257,13 +259,13 @@ describe('the balance and the headroom', () => {
     await pickCustomer();
 
     expect(await screen.findByText('Balance')).toBeDefined();
-    expect(screen.getByText(`${SIGN}4944.00`)).toBeDefined();
+    expect(screen.getByText(`${SIGN}4,944.00`)).toBeDefined();
     expect(screen.getByText('Limit')).toBeDefined();
     // The limit is stated twice — in the headline figures and again beside the
     // control that changes it, which is where a person decides against it.
-    expect(screen.getAllByText(`${SIGN}50000.00`).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(`${SIGN}50,000.00`).length).toBeGreaterThan(0);
     expect(screen.getByText('Left to spend')).toBeDefined();
-    expect(screen.getByText(`${SIGN}45056.00`)).toBeDefined();
+    expect(screen.getByText(`${SIGN}45,056.00`)).toBeDefined();
   });
 
   it('says an account is PAST its limit rather than showing a negative headroom', async () => {
@@ -291,7 +293,7 @@ describe('the balance and the headroom', () => {
     await pickCustomer();
 
     expect(await screen.findByText('Over the limit by')).toBeDefined();
-    expect(screen.getByText(`${SIGN}1000.00`)).toBeDefined();
+    expect(screen.getByText(`${SIGN}1,000.00`)).toBeDefined();
     expect(screen.getByText(/already past its limit/)).toBeDefined();
   });
 });
@@ -310,14 +312,44 @@ describe('the ageing buckets add up to the balance, in the rendered view', () =>
     expect(text).toContain('current');
     expect(text).toContain('1-30');
     // 3000.00 + 1944.00 = 4944.00, the balance above.
-    expect(screen.getByText(`${SIGN}3000.00`)).toBeDefined();
+    expect(screen.getByText(`${SIGN}3,000.00`)).toBeDefined();
     // Twice: once as the bucket total, once as the invoice sitting in it.
-    expect(screen.getAllByText(`${SIGN}1944.00`).length).toBe(2);
+    expect(screen.getAllByText(`${SIGN}1,944.00`).length).toBe(2);
     expect(screen.getByText(/add up to the figure above, exactly/)).toBeDefined();
     expect(screen.queryByText(/do not add up/)).toBeNull();
     // And the reader is told WHICH ageing this is — days past due, not
     // invoice age — because the two are different questions.
     expect(screen.getAllByText(/days past due/i).length).toBeGreaterThan(0);
+  });
+
+  it('words an invoice not yet due as days to go, never as negative days late', async () => {
+    const db = await counter();
+    const invoice = (id: string, daysPastDue: number) => ({
+      chargeId: `018f3a1e-0000-7000-8000-0000000000${id}`,
+      dueDate: '2026-09-17',
+      daysPastDue,
+      outstandingMinor: '100',
+      bucket: 'current',
+    });
+    renderScreen(db, holding([CAPABILITY.creditView]), {
+      endpoint: ENDPOINT,
+      fetchFn: router(
+        answering({
+          'credit.ageing': {
+            ok: true,
+            json: ageingPayload({
+              invoices: [invoice('b2', -26), invoice('b3', -1), invoice('b4', 0), invoice('b5', 33)],
+            }),
+          },
+        }),
+      ),
+    });
+    await pickCustomer();
+    expect(await screen.findByText('Not due — 26 days to go')).toBeDefined();
+    expect(screen.getByText('Not due — 1 day to go')).toBeDefined();
+    expect(screen.getByText('Due today')).toBeDefined();
+    expect(screen.getByText('33')).toBeDefined();
+    expect(screen.queryByText('-26')).toBeNull();
   });
 
   it('says so, loudly, when the two answers do not reconcile', async () => {
@@ -342,8 +374,8 @@ describe('the ageing buckets add up to the balance, in the rendered view', () =>
 
     const alert = await screen.findByRole('alert');
     expect(alert.textContent).toContain('do not add up');
-    expect(alert.textContent).toContain(`${SIGN}4944.00`);
-    expect(alert.textContent).toContain(`${SIGN}4000.00`);
+    expect(alert.textContent).toContain(`${SIGN}4,944.00`);
+    expect(alert.textContent).toContain(`${SIGN}4,000.00`);
     expect(screen.queryByText(/add up to the figure above, exactly/)).toBeNull();
   });
 
@@ -364,7 +396,7 @@ describe('the ageing buckets add up to the balance, in the rendered view', () =>
     await pickCustomer();
 
     expect(await screen.findByText('Paid, not yet put against an invoice')).toBeDefined();
-    expect(screen.getByText(`${SIGN}1000.00`)).toBeDefined();
+    expect(screen.getByText(`${SIGN}1,000.00`)).toBeDefined();
     expect(screen.getByText(/never quietly taken off the oldest one/)).toBeDefined();
     expect(screen.queryByText(/do not add up/)).toBeNull();
   });
@@ -472,7 +504,7 @@ describe('the fee', () => {
     });
     await pickCustomer();
 
-    expect(await screen.findByText(`${SIGN}4944.00`)).toBeDefined();
+    expect(await screen.findByText(`${SIGN}4,944.00`)).toBeDefined();
     expect(screen.getByText(/Not available offline\./)).toBeDefined();
   });
 });
@@ -487,7 +519,7 @@ describe('finding the account, without asking a person for a UUID', () => {
     });
     await pickCustomer();
 
-    expect(await screen.findByText(`${SIGN}4944.00`)).toBeDefined();
+    expect(await screen.findByText(`${SIGN}4,944.00`)).toBeDefined();
     // The device asked; it did not remember, and it did not make anybody type.
     expect(asked).toContain('credit.accountForCustomer');
     expect(screen.queryByLabelText('Account reference')).toBeNull();
@@ -589,7 +621,7 @@ describe('what each session is offered', () => {
     await pickCustomer();
 
     // Sees the money.
-    expect(await screen.findByText(`${SIGN}4944.00`)).toBeDefined();
+    expect(await screen.findByText(`${SIGN}4,944.00`)).toBeDefined();
     // Cannot change what they may owe, and is told whose decision it is.
     expect(screen.queryByRole('button', { name: 'Change the limit' })).toBeNull();
     expect(screen.getByText(/decided at the office/)).toBeDefined();
@@ -852,9 +884,9 @@ describe('recording a repayment', () => {
     await takePayment('1000');
     await screen.findByText(/Recorded on this device/);
 
-    expect(screen.getByText(`${SIGN}4944.00`)).toBeDefined();
+    expect(screen.getByText(`${SIGN}4,944.00`)).toBeDefined();
     // 4944.00 − 1000.00 would be 3944.00. It must appear nowhere.
-    expect(screen.queryByText(`${SIGN}3944.00`)).toBeNull();
+    expect(screen.queryByText(`${SIGN}3,944.00`)).toBeNull();
     expect(screen.getByText(/does not include it/)).toBeDefined();
   });
 
@@ -878,7 +910,7 @@ describe('recording a repayment', () => {
       { endpoint: ENDPOINT, fetchFn: router(answering()) },
     );
     await pickCustomer();
-    await screen.findByText(`${SIGN}4944.00`);
+    await screen.findByText(`${SIGN}4,944.00`);
 
     expect(screen.queryByLabelText('Amount received')).toBeNull();
     expect(screen.getByText(/not part of what this device may do/)).toBeDefined();

@@ -62,6 +62,7 @@ import { formatQtyScaled, parseQtyScaled, QuantityInputError } from '../../lib/q
 import { formatBasisPointsAsPercent } from '../../lib/ratio';
 import { uuidv7 } from '../../lib/uuidv7';
 import { Icon } from '../../ui/Icon';
+import { Unit } from '../../ui/Unit';
 import { FetchedAt, ServerPending, ServerUnavailable } from '../shell/ServerAnswer';
 
 const WHAT = 'The low-stock list';
@@ -177,7 +178,7 @@ function ThresholdForm({
             aria-label={`Reorder threshold in ${target.uomCode}`}
             onChange={(e) => setText(e.currentTarget.value)}
           />
-          <span className="threshold-form-uom">{target.uomCode}</span>
+          <span className="threshold-form-uom"><Unit code={target.uomCode} /></span>
         </span>
       </label>
       {problem === null ? null : (
@@ -226,19 +227,19 @@ function AlertRow({
         <div>
           <dt>On hand</dt>
           <dd className="tabular">
-            {formatQtyScaled(alert.qtyOnHand, alert.qtyScale)} {alert.uomCode}
+            {formatQtyScaled(alert.qtyOnHand, alert.qtyScale)} <Unit code={alert.uomCode} />
           </dd>
         </div>
         <div>
           <dt>Threshold</dt>
           <dd className="tabular">
-            {formatQtyScaled(alert.reorderPointQty, alert.qtyScale)} {alert.uomCode}
+            {formatQtyScaled(alert.reorderPointQty, alert.qtyScale)} <Unit code={alert.uomCode} />
           </dd>
         </div>
         <div>
           <dt>Short by</dt>
           <dd className="tabular">
-            {formatQtyScaled(alert.shortfallQty, alert.qtyScale)} {alert.uomCode}
+            {formatQtyScaled(alert.shortfallQty, alert.qtyScale)} <Unit code={alert.uomCode} />
           </dd>
         </div>
         {alert.coverageBp === null ? null : (
@@ -281,7 +282,7 @@ function EmptyList({
 }): ReactNode {
   if (coverage === undefined || coverage.kind === 'unknown') {
     return (
-      <div className="empty-state">
+      <div className="empty-state empty-attn">
         <Icon name="cloud-off" size={40} />
         <span className="empty-title">This device could not check</span>
         <p className="empty-body">
@@ -311,7 +312,7 @@ function EmptyList({
     );
   }
   return (
-    <div className="empty-state">
+    <div className="empty-state empty-good">
       <Icon name="check" size={40} />
       <span className="empty-title">Nothing is below its threshold</span>
       <p className="empty-body">
@@ -391,14 +392,14 @@ export function LowStock({ db, permissions, apiOptions }: LowStockProps): ReactN
     // A local read, so this is a frame or two, not a spinner.
     return (
       <div className="stock-screen">
-        <ServerPending what={WHAT} rows={4} />
+        <ServerPending shape="cards" what={WHAT} rows={4} />
       </div>
     );
   }
 
   if (location === null) {
     return (
-      <div className="empty-state">
+      <div className="empty-state empty-attn">
         <Icon name="pin" size={40} />
         <span className="empty-title">This device does not know where it is</span>
         <p className="empty-body">
@@ -416,6 +417,7 @@ export function LowStock({ db, permissions, apiOptions }: LowStockProps): ReactN
       apiOptions={apiOptions ?? EMPTY_OPTIONS}
       locationId={location.id}
       locationCode={location.code}
+      locationName={location.name ?? null}
     />
   );
 }
@@ -481,12 +483,14 @@ function LowStockAt({
   apiOptions,
   locationId,
   locationCode,
+  locationName,
 }: {
   readonly db: LocalDb;
   readonly permissions: PermissionsState;
   readonly apiOptions: ApiCallOptions;
   readonly locationId: string;
   readonly locationCode: string;
+  readonly locationName: string | null;
 }): ReactNode {
   const products = useLiveQuery(db, loadActiveProducts, []);
   const [editing, setEditing] = useState<Editing>(null);
@@ -509,11 +513,11 @@ function LowStockAt({
   return (
     <div className="stock-screen">
       <header className="report-panel-head">
-        <h2>Low stock · {locationCode}</h2>
+        <h2>Low stock · {locationName ?? locationCode}</h2>
         {state.status === 'ready' ? <FetchedAt atMs={state.fetchedAtMs} /> : null}
       </header>
 
-      {state.status === 'loading' ? <ServerPending what={WHAT} slow={state.slow} rows={4} /> : null}
+      {state.status === 'loading' ? <ServerPending shape="cards" what={WHAT} slow={state.slow} rows={4} /> : null}
       {state.status === 'failed' ? (
         <ServerUnavailable what={WHAT} failure={state.failure} onRetry={refresh} />
       ) : null}

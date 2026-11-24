@@ -222,7 +222,7 @@ function SourceComparison({
         {state.status === 'ready' ? <FetchedAt atMs={state.fetchedAtMs} /> : null}
       </header>
       {state.status === 'loading' ? (
-        <ServerPending what={WHAT_SOURCES} slow={state.slow} rows={3} />
+        <ServerPending shape="cards" what={WHAT_SOURCES} slow={state.slow} rows={3} />
       ) : null}
       {state.status === 'failed' ? (
         <ServerUnavailable what={WHAT_SOURCES} failure={state.failure} onRetry={refresh} />
@@ -501,7 +501,7 @@ export function Suppliers({ db, permissions, apiOptions }: SuppliersProps): Reac
         </div>
 
         {state.status === 'loading' ? (
-          <ServerPending what={WHAT_SUPPLIERS} slow={state.slow} rows={4} />
+          <ServerPending shape="cards" what={WHAT_SUPPLIERS} slow={state.slow} rows={4} />
         ) : null}
         {state.status === 'failed' ? (
           <ServerUnavailable what={WHAT_SUPPLIERS} failure={state.failure} onRetry={refresh} />

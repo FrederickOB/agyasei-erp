@@ -34,11 +34,14 @@ describe('<Money grouped>', () => {
         <Money grouped amount={-123456789n} />
         <Money grouped withSymbol={false} amount={1000n} />
         <Money amount={123456789n} />
+        <Money grouped={false} amount={987654321n} />
       </CurrencyProvider>,
     );
     expect(screen.getByText('-¤1,234,567.89')).toBeTruthy();
     expect(screen.getByText('10.00')).toBeTruthy();
-    // Ungrouped by default — the counter is unchanged.
-    expect(screen.getByText('¤1234567.89')).toBeTruthy();
+    // Grouped by default — at the counter too, where a misread is cash.
+    expect(screen.getByText('¤1,234,567.89')).toBeTruthy();
+    // Opting out gives the canonical, parseable form.
+    expect(screen.getByText('¤9876543.21')).toBeTruthy();
   });
 });

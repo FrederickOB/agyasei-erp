@@ -125,6 +125,116 @@ export function ServerUnavailable({
 }
 
 /**
+ * What a waiting answer LOOKS like, so the skeleton has the shape of what is
+ * coming and the page does not jump when it lands:
+ *
+ *   rows     — generic full-width rows (the old default)
+ *   figures  — a few labelled headline figures (a balance, a KPI)
+ *   table    — a header and columns of cells
+ *   cards    — a list of record cards: a name, a line under it, a figure
+ *   chart    — a row of bars over an axis
+ *   tiles    — a grid of dashboard cards
+ */
+export type PendingShape = 'rows' | 'figures' | 'table' | 'cards' | 'chart' | 'tiles';
+
+/** Deterministic widths: a skeleton that changes on every render flickers. */
+const WIDTHS = ['72%', '54%', '64%', '46%', '58%', '68%', '50%', '62%'] as const;
+const widthAt = (i: number): string => WIDTHS[i % WIDTHS.length] ?? '60%';
+const BARS = [46, 70, 38, 82, 60, 92, 54, 76, 44, 66, 88, 58];
+
+function Bone({ w, h, className }: { readonly w?: string; readonly h?: number; readonly className?: string }): ReactNode {
+  return (
+    <span
+      className={`skeleton skeleton-bone${className === undefined ? '' : ` ${className}`}`}
+      style={{ width: w, height: h === undefined ? undefined : `${String(h)}px` }}
+    />
+  );
+}
+
+function Shape({ shape, rows }: { readonly shape: PendingShape; readonly rows: number }): ReactNode {
+  const n = Array.from({ length: rows }, (_, i) => i);
+  switch (shape) {
+    case 'figures':
+      return (
+        <div className="pending-figures">
+          {n.map((i) => (
+            <div key={i} className="pending-figure">
+              <Bone w="48%" h={12} />
+              <Bone w={widthAt(i)} h={28} />
+              <Bone w="36%" h={10} />
+            </div>
+          ))}
+        </div>
+      );
+    case 'table':
+      return (
+        <div className="pending-table">
+          <div className="pending-table-row pending-table-head">
+            <Bone w="30%" h={10} />
+            <Bone w="14%" h={10} />
+            <Bone w="14%" h={10} />
+            <Bone w="14%" h={10} />
+          </div>
+          {n.map((i) => (
+            <div key={i} className="pending-table-row">
+              <Bone w={widthAt(i)} h={14} />
+              <Bone w="60%" h={14} />
+              <Bone w="70%" h={14} />
+              <Bone w="54%" h={14} />
+            </div>
+          ))}
+        </div>
+      );
+    case 'cards':
+      return (
+        <ul className="pending-cards">
+          {n.map((i) => (
+            <li key={i} className="pending-card">
+              <span className="pending-card-text">
+                <Bone w={widthAt(i)} h={16} />
+                <Bone w="38%" h={11} />
+              </span>
+              <Bone w="88px" h={20} />
+            </li>
+          ))}
+        </ul>
+      );
+    case 'chart':
+      return (
+        <div className="pending-chart">
+          <Bone w="40%" h={22} />
+          <div className="pending-bars">
+            {BARS.map((h, i) => (
+              <span key={i} className="skeleton pending-bar" style={{ height: `${String(h)}%` }} />
+            ))}
+          </div>
+        </div>
+      );
+    case 'tiles':
+      return (
+        <div className="pending-tiles">
+          {n.map((i) => (
+            <div key={i} className="pending-tile">
+              <Bone w="44%" h={14} />
+              <Bone w={widthAt(i + 2)} h={30} />
+              <Bone w="80%" h={10} />
+              <Bone w="62%" h={10} />
+            </div>
+          ))}
+        </div>
+      );
+    case 'rows':
+      return (
+        <ul className="server-pending-rows">
+          {n.map((i) => (
+            <li key={i} className="skeleton skeleton-row" />
+          ))}
+        </ul>
+      );
+  }
+}
+
+/**
  * Waiting on the server. Skeletons rather than a blank panel — a blank panel
  * where figures belong reads as "nothing sold", which is the one answer this
  * screen must never give by accident (the same rule the sales list follows).
@@ -136,25 +246,25 @@ export function ServerUnavailable({
 export function ServerPending({
   rows = 3,
   slow = false,
+  shape = 'rows',
   what,
 }: {
   readonly rows?: number;
   readonly slow?: boolean;
+  readonly shape?: PendingShape;
   readonly what: string;
 }): ReactNode {
   return (
-    <div className="server-pending">
+    <div className="server-pending" data-shape={shape}>
       {slow ? (
         <p className="server-pending-note" role="status">
           <Icon name="sync" size={18} />
           Still asking the server for {what.toLowerCase()}. This connection is slow.
         </p>
       ) : null}
-      <ul className="server-pending-rows" aria-hidden="true">
-        {Array.from({ length: rows }, (_, i) => (
-          <li key={i} className="skeleton skeleton-row" />
-        ))}
-      </ul>
+      <div aria-hidden="true">
+        <Shape shape={shape} rows={rows} />
+      </div>
     </div>
   );
 }

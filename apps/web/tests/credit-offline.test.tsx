@@ -199,9 +199,13 @@ function renderScreen(db: LocalDb, apiOptions: ApiCallOptions) {
 }
 
 async function pickCustomer(): Promise<void> {
-  const select = await screen.findByLabelText('Which customer');
-  await waitFor(() => expect(screen.getByRole('option', { name: /Kofi Buildings/ })).toBeDefined());
-  fireEvent.change(select, { target: { value: CUSTOMER } });
+  // Either a row in the list or, if already chosen, the summary at the top:
+  // picking the same customer twice is a no-op, as it was with the dropdown.
+  // With the book synced the landing is the debtors worklist; without it, the
+  // customer list. Either row opens the same customer.
+  const name = await screen.findByText('Kofi Buildings');
+  const row = name.closest('button.customer-row, button.debtor-row');
+  if (row !== null) fireEvent.click(row);
 }
 
 afterEach(cleanup);
@@ -340,7 +344,7 @@ describe('staleness renders', () => {
     panel(await synced(db));
 
     // The figure IS shown — this is the visibility criterion 3 asks for.
-    expect(screen.getByText(`${SIGN}7000.00`)).toBeDefined();
+    expect(screen.getByText(`${SIGN}7,000.00`)).toBeDefined();
     // …and its label carries its own age.
     const labels = screen.getAllByText(/^Balance as at \d\d:\d\d today$/);
     expect(labels.length).toBe(1);
@@ -368,7 +372,7 @@ describe('staleness renders', () => {
     await seedSyncedBook(db);
     panel(await synced(db));
     expect(screen.getByText(/holds the last 400 days of this account/)).toBeDefined();
-    expect(screen.getByText(`${SIGN}1500.00`)).toBeDefined(); // the opening balance
+    expect(screen.getByText(`${SIGN}1,500.00`)).toBeDefined(); // the opening balance
   });
 
   it('labels the facility fee provisional while nobody has confirmed the policy', async () => {
@@ -386,8 +390,8 @@ describe('staleness renders', () => {
     expect(screen.getByText(/1 movement has been recorded since/)).toBeDefined();
     expect(screen.getByText(/NOT included in it/)).toBeDefined();
     // Shown as its own line, and the headline is still the synced one.
-    expect(screen.getByText(`${SIGN}7000.00`)).toBeDefined();
-    expect(screen.queryByText(`${SIGN}6000.00`)).toBeNull();
+    expect(screen.getByText(`${SIGN}7,000.00`)).toBeDefined();
+    expect(screen.queryByText(`${SIGN}6,000.00`)).toBeNull();
   });
 });
 
@@ -398,7 +402,7 @@ describe('the screen, with the radio off', () => {
     renderScreen(db, { endpoint: ENDPOINT, fetchFn: DEAD_RADIO });
     await pickCustomer();
 
-    expect(await screen.findByText(`${SIGN}7000.00`)).toBeDefined();
+    expect(await screen.findByText(`${SIGN}7,000.00`)).toBeDefined();
     expect(screen.getByText(/What this device last received/)).toBeDefined();
     // Still says the office could not be reached — the figure does not replace
     // the refusal, it sits beside it with its age on it.
@@ -457,11 +461,11 @@ describe('the screen, with the radio off', () => {
     await pickCustomer();
 
     // The verified answer is on screen…
-    expect(await screen.findByText(`${SIGN}4944.00`)).toBeDefined();
+    expect(await screen.findByText(`${SIGN}4,944.00`)).toBeDefined();
     expect(screen.getByText('Balance')).toBeDefined();
     // …and the synced panel is absent entirely. Two provenances, never mixed.
     expect(screen.queryByText(/What this device last received/)).toBeNull();
-    expect(screen.queryByText(`${SIGN}7000.00`)).toBeNull();
+    expect(screen.queryByText(`${SIGN}7,000.00`)).toBeNull();
   });
 
   it('still discards a verified figure when the refresh fails', async () => {
@@ -514,7 +518,7 @@ describe('the screen, with the radio off', () => {
       </CurrencyProvider>,
     );
     await pickCustomer();
-    expect(await screen.findByText(`${SIGN}4944.00`)).toBeDefined();
+    expect(await screen.findByText(`${SIGN}4,944.00`)).toBeDefined();
 
     live = false;
     view.rerender(
@@ -528,6 +532,6 @@ describe('the screen, with the radio off', () => {
     );
     await pickCustomer();
     await waitFor(() => expect(screen.getByText(/Not available offline\./)).toBeDefined());
-    expect(screen.queryByText(`${SIGN}4944.00`)).toBeNull();
+    expect(screen.queryByText(`${SIGN}4,944.00`)).toBeNull();
   });
 });

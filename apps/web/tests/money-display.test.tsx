@@ -28,7 +28,7 @@ function renderMoney(amount: bigint, spec: CurrencySpec, withSymbol = true): voi
 describe('<Money>', () => {
   it('renders through format() with the configured symbol and scale', () => {
     renderMoney(123456n, scale2);
-    expect(screen.getByText(`${GENERIC_SIGN}1234.56`)).toBeTruthy();
+    expect(screen.getByText(`${GENERIC_SIGN}1,234.56`)).toBeTruthy();
   });
 
   it('renders negatives with the sign before the symbol', () => {
@@ -38,7 +38,7 @@ describe('<Money>', () => {
 
   it('respects a scale-0 currency — no assumed 100 minor units', () => {
     renderMoney(1234n, scale0);
-    expect(screen.getByText(`${GENERIC_SIGN}1234`)).toBeTruthy();
+    expect(screen.getByText(`${GENERIC_SIGN}1,234`)).toBeTruthy();
   });
 
   it('can render the bare canonical amount without a symbol', () => {

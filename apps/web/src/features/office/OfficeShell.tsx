@@ -22,10 +22,13 @@
  * downloads a page it would never see (§8.10).
  */
 import { Suspense, lazy, useState, type ReactNode } from 'react';
-import { holdsCapability, type PermissionsState } from '../../data/api/session';
+import { fetchTenantName, holdsCapability, type PermissionsState } from '../../data/api/session';
+import { useApiQuery } from '../../data/api/use-api-query';
 import type { LocalDb } from '../../data/db';
 import type { ApiCallOptions } from '../../data/api/client';
 import { Icon } from '../../ui/Icon';
+import { useScrollEdges } from '../../ui/use-scroll-edges';
+import { useSlidingPill } from '../../ui/use-sliding-pill';
 import { DESTINATIONS, renderDestination, type DestinationId } from '../shell/destinations';
 import { ServerPending } from '../shell/ServerAnswer';
 
@@ -46,7 +49,10 @@ export interface OfficeShellProps {
   readonly onOpenCounter: () => void;
   /** Lines in the open cart, so the way back says the cart is still there. */
   readonly cartLines: number;
-  /** The tenant's own name, from the session. Absent until it is known. */
+  /**
+   * The tenant's own name. Asked of the server when not given; absent until
+   * it is known, and "Back office" stands alone while it is not.
+   */
   readonly tenantName?: string | undefined;
 }
 
@@ -68,9 +74,14 @@ export function OfficeShell({
   apiOptions,
   onOpenCounter,
   cartLines,
-  tenantName,
+  tenantName: givenName,
 }: OfficeShellProps): ReactNode {
   const [view, setView] = useState<OfficeViewId>('dashboard');
+  // The company's name over its own books. Asked once per mount; never
+  // remembered, so a re-enrolled device cannot wear its last owner's name.
+  const named = useApiQuery(() => fetchTenantName(apiOptions), [apiOptions]);
+  const tenantName =
+    givenName ?? (named.state.status === 'ready' ? (named.state.data ?? undefined) : undefined);
   // The two outbox writers are counter work; the office does not offer them.
   const offered = DESTINATIONS.filter(
     (d) => !d.counterWork && (d.requires === null || holdsCapability(permissions, d.requires)),
@@ -78,6 +89,8 @@ export function OfficeShell({
   const active: OfficeViewId =
     view === 'dashboard' || offered.some((d) => d.id === view) ? view : 'dashboard';
   const props = { db, permissions, apiOptions };
+  const { ref: tabsRef, more: tabsMore } = useScrollEdges<HTMLElement>(active);
+  const pill = useSlidingPill(tabsRef, active, '.office-tab[aria-current="page"]');
 
   return (
     <div className="office">
@@ -92,7 +105,15 @@ export function OfficeShell({
               {tenantName === undefined ? null : <small>Back office</small>}
             </span>
           </div>
-          <nav className="office-tabs" aria-label="Office">
+          <nav
+            className="office-tabs"
+            aria-label="Office"
+            ref={tabsRef}
+            data-more-start={tabsMore.start}
+            data-more-end={tabsMore.end}
+            data-pill={pill.style === null ? 'off' : 'on'}
+          >
+            {pill.style === null ? null : <span className="nav-pill" aria-hidden="true" style={pill.style} />}
             <button
               type="button"
               className="office-tab pressable"
@@ -137,17 +158,19 @@ export function OfficeShell({
         {notice}
       </header>
       <main className="office-main">
-        {active === 'dashboard' ? (
-          <Suspense fallback={<ServerPending what="The dashboard" rows={4} />}>
-            <Dashboard {...props} onOpen={(id) => setView(id)} />
-          </Suspense>
-        ) : active === 'reports' ? (
-          <Suspense fallback={<ServerPending what="Reporting" rows={4} />}>
-            <OfficeReports {...props} />
-          </Suspense>
-        ) : (
-          renderDestination(active, props)
-        )}
+        <div className="view-enter" key={active}>
+          {active === 'dashboard' ? (
+            <Suspense fallback={<ServerPending shape="tiles" what="The dashboard" rows={4} />}>
+              <Dashboard {...props} onOpen={(id) => setView(id)} />
+            </Suspense>
+          ) : active === 'reports' ? (
+            <Suspense fallback={<ServerPending shape="chart" what="Reporting" rows={4} />}>
+              <OfficeReports {...props} />
+            </Suspense>
+          ) : (
+            renderDestination(active, props)
+          )}
+        </div>
       </main>
     </div>
   );

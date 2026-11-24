@@ -16,7 +16,7 @@
  * `null` is a gap (nothing drawn). `0n` is a zero: a low stub on the
  * baseline, so a closed day reads as "closed", not "no data".
  */
-import type { ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
 import { maxOf, shareBp } from './scale';
 
 export interface DailyBarsProps {
@@ -30,6 +30,12 @@ export interface DailyBarsProps {
   /** Formatted figure for the last real point, set above its bar. */
   readonly endLabel?: ReactNode;
   readonly label: string;
+  /**
+   * How one day's figure is written. Given, pointing at (or tapping) a day
+   * shows that day and its figure — the only way to read a bar that is not
+   * the last one, since the chart labels only the end. Money → `<Money>`.
+   */
+  readonly format?: (value: bigint) => ReactNode;
   readonly tickEvery?: number;
   readonly width?: number;
   readonly height?: number;
@@ -46,6 +52,7 @@ export function DailyBars({
   averageWindow = 7,
   endLabel,
   label,
+  format,
   tickEvery = 5,
   width = 760,
   height = 210,
@@ -81,8 +88,10 @@ export function DailyBars({
   }
 
   const gridValues = max > 0n ? [max, (max * 2n) / 3n, max / 3n] : [];
+  const [hover, setHover] = useState<number | null>(null);
+  const hovered = hover === null ? undefined : points[hover];
 
-  return (
+  const chart = (
     <svg className="dailybars" viewBox={`0 0 ${String(width)} ${String(height)}`} role="img" aria-label={label}>
       {gridValues.map((g, i) => (
         <line key={i} className="dailybars-grid" x1={LEFT} x2={width - 6} y1={y(g)} y2={y(g)} />
@@ -97,7 +106,7 @@ export function DailyBars({
         return (
           <rect
             key={i}
-            className={i === lastIndex ? 'dailybars-bar dailybars-bar-last' : 'dailybars-bar'}
+            className={`dailybars-bar${i === lastIndex ? ' dailybars-bar-last' : ''}${i === hover ? ' dailybars-bar-hover' : ''}`}
             x={x(i)}
             y={top}
             width={bw}
@@ -118,7 +127,43 @@ export function DailyBars({
         ) : null,
       )}
       {lastIndex >= 0 && endLabel !== undefined ? <EndLabel centre={x(lastIndex) + bw / 2} top={y(points[lastIndex] as bigint)} width={width} text={endLabel} /> : null}
+      {format === undefined
+        ? null
+        : points.map((_, i) => (
+            // One full-height target per day, so a thin bar (or a gap) is
+            // as easy to point at as a tall one.
+            <rect
+              key={`hit-${String(i)}`}
+              className="dailybars-hit"
+              x={LEFT + i * slot}
+              y={0}
+              width={slot}
+              height={base}
+              onPointerEnter={() => setHover(i)}
+              onPointerDown={() => setHover(i)}
+            />
+          ))}
     </svg>
+  );
+
+  if (format === undefined) return chart;
+  return (
+    <div className="dailybars-wrap" onPointerLeave={() => setHover(null)}>
+      {chart}
+      {hover === null || hovered === undefined ? null : (
+        <div
+          className="chart-tip"
+          role="status"
+          style={{
+            left: `${String(((x(hover) + bw / 2) / width) * 100)}%`,
+            top: `${String(((hovered === null || hovered === 0n ? base : y(hovered)) / height) * 100)}%`,
+          }}
+        >
+          <span className="chart-tip-label">{labels[hover] ?? ''}</span>
+          <b className="chart-tip-value tabular">{hovered === null ? 'No figure' : format(hovered)}</b>
+        </div>
+      )}
+    </div>
   );
 }
 

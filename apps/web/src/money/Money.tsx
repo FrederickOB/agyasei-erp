@@ -28,12 +28,17 @@ export function groupDigits(canonical: string): string {
 export function Money({
   amount,
   withSymbol = true,
-  grouped = false,
+  grouped = true,
   className,
 }: {
   readonly amount: bigint;
   readonly withSymbol?: boolean;
-  /** Group thousands for reading at a glance — the office's figures. */
+  /**
+   * Group thousands for reading at a glance. On by default everywhere a
+   * person reads an amount: at the counter `1005.00` and `10050.00` are one
+   * misread apart, and that misread is cash in or out of the drawer. Pass
+   * `grouped={false}` only where the text is copied somewhere that parses it.
+   */
   readonly grouped?: boolean;
   readonly className?: string;
 }): ReactNode {

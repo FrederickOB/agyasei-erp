@@ -11,7 +11,7 @@
  *    target, and a missing day is a gap in the line, not a dip.
  */
 import { afterEach, describe, expect, it } from 'vitest';
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 
 import { Bars } from '../src/ui/charts/Bars';
 import { Columns } from '../src/ui/charts/Columns';
@@ -138,6 +138,33 @@ describe('Sparkline', () => {
 });
 
 describe('DailyBars', () => {
+  it('names the day and its figure under the pointer — and only when asked to', () => {
+    const { container, rerender } = render(
+      <DailyBars
+        label="Days"
+        points={[10n, null, 30n]}
+        labels={['1 Nov', '2 Nov', '3 Nov']}
+        averageWindow={0}
+        format={(v) => `${v.toString()} units`}
+      />,
+    );
+    const hits = container.querySelectorAll('.dailybars-hit');
+    expect(hits).toHaveLength(3);
+    fireEvent.pointerEnter(hits[0]!);
+    expect(screen.getByRole('status').textContent).toBe('1 Nov10 units');
+    expect(container.querySelector('.dailybars-bar-hover')).not.toBeNull();
+    // A gap is named as a gap, never as a zero.
+    fireEvent.pointerEnter(hits[1]!);
+    expect(screen.getByRole('status').textContent).toBe('2 NovNo figure');
+    fireEvent.pointerLeave(container.querySelector('.dailybars-wrap')!);
+    expect(screen.queryByRole('status')).toBeNull();
+
+    // Without a formatter there are no targets and no wrapper: the old chart.
+    rerender(<DailyBars label="Days" points={[10n]} labels={['1 Nov']} averageWindow={0} />);
+    expect(container.querySelector('.dailybars-hit')).toBeNull();
+    expect(container.querySelector('.dailybars-wrap')).toBeNull();
+  });
+
   it('draws a zero as a stub on the baseline and a null as nothing', () => {
     const { container } = render(
       <DailyBars label="Days" points={[10n, 0n, null, 30n]} labels={['a', 'b', 'c', 'd']} averageWindow={0} />,

@@ -160,7 +160,11 @@ function CartTotals({ pricing }: { readonly pricing: CartPricing }): ReactNode {
       ) : null}
       <div className="total-row">
         <span className="total-label">Total</span>
-        <Money amount={pricing.grossMinor} className="money total-value cart-total" />
+        {/* Keyed by the amount: each change remounts the wrapper and replays
+            a short tick, so a cashier sees the total MOVE as lines go in. */}
+        <span className="total-tick" key={pricing.grossMinor.toString()}>
+          <Money amount={pricing.grossMinor} className="money total-value cart-total" />
+        </span>
       </div>
       {showsTax && pricing.isTaxInclusive ? (
         <p className="total-note">

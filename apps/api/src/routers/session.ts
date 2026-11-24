@@ -76,4 +76,27 @@ export const sessionRouter = router({
       locationIds: [...new Set(grants.map((g) => g.locationId))].sort(),
     };
   }),
+
+  /**
+   * The name of the business this session belongs to — for the back office's
+   * masthead, so the people running a company see THEIR company named there.
+   *
+   * Takes no input. The tenant is the verified token's, and the row is chosen
+   * by an explicit `id = <token tenant>` predicate as well as by the
+   * `tenant_self` RLS policy on platform.tenant (0027), so a forgotten policy
+   * and a forgotten predicate would both have to happen for it to answer with
+   * another tenant's name. Nothing but the name leaves: not the slug, not the
+   * lifecycle status, not the jurisdiction.
+   */
+  tenant: tenantProcedure.query(async ({ ctx }) => {
+    const tenantId = ctx.identity.tenantId;
+    return ctx.deps.runner.withTenant(tenantId, async (tx) => {
+      const res = await tx.query<{ legal_name: string }>(
+        `select legal_name from platform.tenant where id = $1`,
+        [tenantId],
+      );
+      const name = res.rows[0]?.legal_name.trim() ?? '';
+      return { name: name.length > 0 ? name : null };
+    });
+  }),
 });

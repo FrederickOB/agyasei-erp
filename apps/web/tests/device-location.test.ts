@@ -217,7 +217,7 @@ describe('a device provisions itself from its session', () => {
     expect(blocksSales(state)).toBe(false);
     expect(await readDeviceLocationId(db)).toBe(locationId);
     // The synced row's code rides along, so the first receipt is not blank.
-    expect(await readDeviceLocation(db)).toEqual({ id: locationId, code: 'C-1', timeZone: 'UTC' });
+    expect(await readDeviceLocation(db)).toEqual({ id: locationId, code: 'C-1', name: 'A counter', timeZone: 'UTC' });
   });
 
   it('provisions before the location row has synced, and fills the code in later', async () => {
@@ -226,7 +226,7 @@ describe('a device provisions itself from its session', () => {
 
     const state = await reconcileDeviceLocation(db, devBearer([locationId]));
     expect(state.status).toBe('provisioned');
-    expect(await readDeviceLocation(db)).toEqual({ id: locationId, code: '', timeZone: null });
+    expect(await readDeviceLocation(db)).toEqual({ id: locationId, code: '', name: null, timeZone: null });
 
     await seedLocationRow(db, locationId, 'C-9');
     expect((await readDeviceLocation(db))?.code).toBe('C-9');
@@ -299,7 +299,7 @@ describe('a device provisions itself from its session', () => {
     await reconcileDeviceLocation(db, devBearer([current]));
 
     expect(await configValue(db, CONFIG_KEY_LOCATION_CODE)).toBeNull();
-    expect(await readDeviceLocation(db)).toEqual({ id: current, code: '', timeZone: null });
+    expect(await readDeviceLocation(db)).toEqual({ id: current, code: '', name: null, timeZone: null });
   });
 
   it('discards a stored location the session dropped, even with nothing to replace it', async () => {

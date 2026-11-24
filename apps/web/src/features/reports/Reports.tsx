@@ -59,6 +59,8 @@ import { formatQtyScaled } from '../../lib/quantity';
 import { formatDaysE4, formatPercentE4 } from '../../lib/ratio';
 import { Money } from '../../money/Money';
 import { Icon } from '../../ui/Icon';
+import { withheld } from './withheld';
+import { Unit } from '../../ui/Unit';
 import { FetchedAt, ServerPending, ServerUnavailable } from '../shell/ServerAnswer';
 
 // ---------------------------------------------------------------------------
@@ -131,7 +133,7 @@ function Panel({
         <h2>{title}</h2>
         {state.status === 'ready' ? <FetchedAt atMs={state.fetchedAtMs} /> : null}
       </header>
-      {state.status === 'loading' ? <ServerPending what={what} slow={state.slow} /> : null}
+      {state.status === 'loading' ? <ServerPending shape="table" what={what} slow={state.slow} /> : null}
       {state.status === 'failed' ? (
         <ServerUnavailable what={what} failure={state.failure} onRetry={onRetry} />
       ) : null}
@@ -382,7 +384,7 @@ function StockPanel({ apiOptions }: { readonly apiOptions: ApiCallOptions }): Re
                       <span className="report-loc-code tabular">{p.skuCode}</span>
                     </th>
                     <td className="numeric tabular">
-                      {formatQtyScaled(p.qtyOnHand, p.qtyScale)} {p.uomCode}
+                      {formatQtyScaled(p.qtyOnHand, p.qtyScale)} <Unit code={p.uomCode} />
                     </td>
                   </tr>
                 ))}
@@ -412,27 +414,6 @@ function StockPanel({ apiOptions }: { readonly apiOptions: ApiCallOptions }): Re
  * cost, inflating BOTH margin and inventory days, and both would look
  * reasonable next to the target.
  */
-function withheld(reason: string | null): string {
-  switch (reason) {
-    case 'INCOMPLETE_COST_BASIS':
-      return 'no full cost basis';
-    case 'NO_COGS_IN_PERIOD':
-      return 'nothing sold in this period';
-    case 'NO_DISTRIBUTION_COST_SOURCE':
-      return 'not recorded anywhere yet';
-    case 'NO_REVENUE_IN_PERIOD':
-      // A percentage of nothing is undefined, not zero. The COST is still
-      // shown beside this: a warehouse has no till and still pays hauliers.
-      return 'nothing was sold here in this period';
-    case 'INCOMPLETE_FREIGHT_BASIS':
-      return 'some freight was never agreed';
-    case null:
-      return 'not available';
-    default:
-      return reason;
-  }
-}
-
 function InventoryDaysPanel({ from, to, apiOptions }: RangeProps): ReactNode {
   const { state, refresh } = useApiQuery(
     () => fetchInventoryDays({ from, to }, apiOptions),
@@ -936,13 +917,34 @@ export interface ReportsProps {
  * figures on it — and, worse, would briefly show a period the operator never
  * chose. One local read, then one server read per panel.
  */
+/**
+ * One question at a time. With every panel at once this screen was over
+ * 12,000px on a tablet — each panel lists every location — and asked the
+ * server six things on every visit over a metered connection. A section asks
+ * only what it shows. "Everything" keeps the whole page for whoever wants to
+ * read it end to end.
+ */
+type Section = 'sales' | 'cash' | 'stock' | 'margin' | 'haulage' | 'all';
+
+const SECTIONS: readonly { readonly id: Section; readonly label: string }[] = [
+  { id: 'sales', label: 'Sales' },
+  { id: 'cash', label: 'Cash' },
+  { id: 'stock', label: 'Stock' },
+  { id: 'margin', label: 'Margin & cover' },
+  { id: 'haulage', label: 'Moving goods' },
+  { id: 'all', label: 'Everything' },
+];
+
+/** Stock on hand is "now", not a period: no date range beside it. */
+const RANGED: ReadonlySet<Section> = new Set<Section>(['sales', 'cash', 'margin', 'haulage', 'all']);
+
 export function Reports({ db, permissions, apiOptions }: ReportsProps): ReactNode {
   const location = useLiveQuery(db, readDeviceLocation, []);
   if (location === undefined) {
     // A local read, so this is a frame or two, not a spinner.
     return (
       <div className="reports-screen">
-        <ServerPending what="Reporting" rows={2} />
+        <ServerPending shape="table" what="Reporting" rows={2} />
       </div>
     );
   }
@@ -975,56 +977,75 @@ function ReportsFor({
   const rangeValid = activeFrom <= activeTo;
 
   const canSeeMargin = holdsCapability(permissions, CAPABILITY.reportMargin);
+  const [section, setSection] = useState<Section>('sales');
+  const showing = (s: Section): boolean => section === s || section === 'all';
+  const ranged = RANGED.has(section);
 
   return (
     <div className="reports-screen">
-      <form className="report-range" onSubmit={(e) => e.preventDefault()}>
-        <label className="report-range-field">
-          <span>From</span>
-          <input
-            type="date"
-            value={activeFrom}
-            max={activeTo}
-            onChange={(e) => setFrom(e.currentTarget.value)}
-          />
-        </label>
-        <label className="report-range-field">
-          <span>To</span>
-          <input
-            type="date"
-            value={activeTo}
-            min={activeFrom}
-            onChange={(e) => setTo(e.currentTarget.value)}
-          />
-        </label>
-      </form>
+      <div className="chip-row report-sections" role="group" aria-label="Report section">
+        {SECTIONS.map((s) => (
+          <button
+            key={s.id}
+            type="button"
+            className="chip pressable"
+            aria-pressed={section === s.id}
+            onClick={() => setSection(s.id)}
+          >
+            {s.label}
+          </button>
+        ))}
+      </div>
+
+      {ranged ? (
+        <form className="report-range" onSubmit={(e) => e.preventDefault()}>
+          <label className="report-range-field">
+            <span>From</span>
+            <input
+              type="date"
+              value={activeFrom}
+              max={activeTo}
+              onChange={(e) => setFrom(e.currentTarget.value)}
+            />
+          </label>
+          <label className="report-range-field">
+            <span>To</span>
+            <input
+              type="date"
+              value={activeTo}
+              min={activeFrom}
+              onChange={(e) => setTo(e.currentTarget.value)}
+            />
+          </label>
+        </form>
+      ) : null}
 
       {/* Refused on the device rather than sent: the shared contract rejects a
           reversed range instead of normalising it, because a silently swapped
           range is the right-looking figure for the wrong period. */}
-      {!rangeValid ? (
+      {!rangeValid && ranged ? (
         <p className="device-gate-error" role="alert">
           <Icon name="alert" size={20} />
           The first date is after the second, so there is no period to report on.
         </p>
       ) : (
         <>
-          <SalesPanel from={activeFrom} to={activeTo} apiOptions={options} />
-          <CashPanel from={activeFrom} to={activeTo} apiOptions={options} />
-          <StockPanel apiOptions={options} />
-          {canSeeMargin ? (
+          {showing('sales') ? <SalesPanel from={activeFrom} to={activeTo} apiOptions={options} /> : null}
+          {showing('cash') ? <CashPanel from={activeFrom} to={activeTo} apiOptions={options} /> : null}
+          {showing('stock') ? <StockPanel apiOptions={options} /> : null}
+          {!showing('margin') ? null : canSeeMargin ? (
             <InventoryDaysPanel from={activeFrom} to={activeTo} apiOptions={options} />
           ) : (
             <NotYours title="Stock cover and margin" what="Cost and margin" />
           )}
-          {canSeeMargin ? (
+          {!showing('haulage') ? null : canSeeMargin ? (
             <DistributionPanel from={activeFrom} to={activeTo} apiOptions={options} />
           ) : (
             <NotYours title="Distribution cost" what="What it costs to move goods" />
           )}
           {/* The ratio above is the outcome; this is the lever ADR-0001 traded
               the fleet for. Same capability, because it is the same money. */}
-          {canSeeMargin ? (
+          {!showing('haulage') ? null : canSeeMargin ? (
             <CarrierPanel from={activeFrom} to={activeTo} apiOptions={options} />
           ) : (
             <NotYours

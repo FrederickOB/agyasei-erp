@@ -44,6 +44,7 @@ import { DailyBars } from '../../ui/charts/DailyBars';
 import { maxOf, shareBp } from '../../ui/charts/scale';
 import { SplitBars } from '../../ui/charts/SplitBars';
 import { Icon } from '../../ui/Icon';
+import { withheldSentence } from '../reports/withheld';
 import { FetchedAt, ServerPending, ServerUnavailable } from '../shell/ServerAnswer';
 import {
   averageBasket,
@@ -124,7 +125,7 @@ function Card({
           </button>
         )}
       </header>
-      {state.status === 'loading' ? <ServerPending what={what} slow={state.slow} rows={3} /> : null}
+      {state.status === 'loading' ? <ServerPending shape="chart" what={what} slow={state.slow} rows={3} /> : null}
       {state.status === 'failed' ? <ServerUnavailable what={what} failure={state.failure} onRetry={onRetry} /> : null}
       {state.status === 'ready' ? children : null}
       {state.status === 'ready' ? (
@@ -307,6 +308,7 @@ function Body({
                     tickEvery={Math.max(1, Math.ceil(series.length / 8))}
                     {...(prevPerDay === undefined ? {} : { reference: prevPerDay })}
                     endLabel={series.length > 0 ? <M amount={series[series.length - 1]!.netRevenueMinor} symbol={false} /> : undefined}
+                    format={(v) => <M amount={v} />}
                     width={1100}
                     height={230}
                   />
@@ -382,6 +384,7 @@ function Body({
                   tickEvery={Math.max(1, Math.ceil(series.length / 6))}
                   averageWindow={7}
                   endLabel={series.length > 0 ? String(series[series.length - 1]!.saleCount) : undefined}
+                  format={(v) => `${v.toString()} ${v === 1n ? 'sale' : 'sales'}`}
                   width={360}
                   height={150}
                 />
@@ -613,7 +616,7 @@ function Body({
                 {days.state.data.total.inventoryDaysE4 === null ? (
                   <div className="tile-unavailable" role="status">
                     <b>Network figure unavailable</b>
-                    <span>{days.state.data.total.unavailable}</span>
+                    <span>{withheldSentence(days.state.data.total.unavailable)}</span>
                   </div>
                 ) : null}
                 <Bars
@@ -767,7 +770,7 @@ export function OfficeReports({ db, permissions, apiOptions }: OfficeReportsProp
   if (location === undefined) {
     return (
       <div className="dashboard">
-        <ServerPending what="Reporting" rows={3} />
+        <ServerPending shape="chart" what="Reporting" rows={3} />
       </div>
     );
   }

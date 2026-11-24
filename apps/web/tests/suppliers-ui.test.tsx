@@ -239,7 +239,7 @@ describe('the cheapest source is the cheapest in a COMMON unit', () => {
     // The headline quote, in the supplier's own unit…
     // `@erp/money` formats without grouping separators — a grouped figure is
     // a locale decision, and the counter never makes one.
-    expect(list.textContent).toContain('1000.00');
+    expect(list.textContent).toContain('1,000.00');
     expect(list.textContent).toContain('per TONNE');
     // …and the figure that makes it comparable, which is the smaller one even
     // though the quote is the larger.

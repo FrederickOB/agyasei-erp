@@ -34,6 +34,8 @@ export interface DeviceLocation {
   readonly id: string;
   /** The location's own code — printed on the receipt. */
   readonly code: string;
+  /** The location's display name from the synced row; absent until it arrives. */
+  readonly name?: string | null;
   /** IANA zone id from the synced row; null until it arrives. */
   readonly timeZone: string | null;
 }
@@ -62,10 +64,11 @@ export async function readDeviceLocation(db: DbExecutor): Promise<DeviceLocation
   const id = await readConfig(db, CONFIG_KEY_LOCATION_ID);
   if (id === null) return null;
 
-  const rows = await db.getAll('SELECT code, timezone FROM location WHERE id = ? LIMIT 1', [id]);
+  const rows = await db.getAll('SELECT code, name, timezone FROM location WHERE id = ? LIMIT 1', [id]);
   const row = rows[0];
   const syncedCode = row?.['code'];
   const tz = row?.['timezone'];
+  const syncedName = row?.['name'];
   const code =
     typeof syncedCode === 'string' && syncedCode.length > 0
       ? syncedCode
@@ -73,6 +76,7 @@ export async function readDeviceLocation(db: DbExecutor): Promise<DeviceLocation
   return {
     id,
     code,
+    name: typeof syncedName === 'string' && syncedName.trim().length > 0 ? syncedName.trim() : null,
     timeZone: typeof tz === 'string' && tz.length > 0 ? tz : null,
   };
 }

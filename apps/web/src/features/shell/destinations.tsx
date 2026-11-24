@@ -135,13 +135,13 @@ export function renderDestination(id: DestinationId, { db, permissions, apiOptio
   switch (id) {
     case 'reports':
       return (
-        <Suspense fallback={<ServerPending what="Reporting" rows={2} />}>
+        <Suspense fallback={<ServerPending shape="table" what="Reporting" rows={2} />}>
           <Reports db={db} permissions={permissions} {...api} />
         </Suspense>
       );
     case 'stock':
       return (
-        <Suspense fallback={<ServerPending what="The low-stock list" rows={4} />}>
+        <Suspense fallback={<ServerPending shape="cards" what="The low-stock list" rows={4} />}>
           <LowStock db={db} permissions={permissions} {...api} />
         </Suspense>
       );
@@ -150,79 +150,79 @@ export function renderDestination(id: DestinationId, { db, permissions, apiOptio
       // rows and writes to the local outbox, which is what lets it work in a
       // partition.
       return (
-        <Suspense fallback={<ServerPending what="Stock adjustments" rows={3} />}>
+        <Suspense fallback={<ServerPending shape="cards" what="Stock adjustments" rows={3} />}>
           <StockAdjust db={db} permissions={permissions} />
         </Suspense>
       );
     case 'credit':
       return (
-        <Suspense fallback={<ServerPending what="The credit position" rows={3} />}>
+        <Suspense fallback={<ServerPending shape="figures" what="The credit position" rows={3} />}>
           <Credit db={db} permissions={permissions} {...api} />
         </Suspense>
       );
     case 'receive':
       return (
-        <Suspense fallback={<ServerPending what="Deliveries expected here" rows={3} />}>
+        <Suspense fallback={<ServerPending shape="cards" what="Deliveries expected here" rows={3} />}>
           <Receiving db={db} permissions={permissions} {...api} />
         </Suspense>
       );
     case 'buying':
       return (
-        <Suspense fallback={<ServerPending what="The order list" rows={3} />}>
+        <Suspense fallback={<ServerPending shape="cards" what="The order list" rows={3} />}>
           <Purchasing db={db} permissions={permissions} {...api} />
         </Suspense>
       );
     case 'suppliers':
       return (
-        <Suspense fallback={<ServerPending what="The supplier list" rows={3} />}>
+        <Suspense fallback={<ServerPending shape="cards" what="The supplier list" rows={3} />}>
           <Suppliers db={db} permissions={permissions} {...api} />
         </Suspense>
       );
     case 'deliveries':
       return (
-        <Suspense fallback={<ServerPending what="The delivery list" rows={3} />}>
+        <Suspense fallback={<ServerPending shape="cards" what="The delivery list" rows={3} />}>
           <Deliveries db={db} permissions={permissions} {...api} />
         </Suspense>
       );
     case 'review':
       return (
-        <Suspense fallback={<ServerPending what="Items needing a decision" rows={3} />}>
+        <Suspense fallback={<ServerPending shape="cards" what="Items needing a decision" rows={3} />}>
           <Review {...api} />
         </Suspense>
       );
     case 'books':
       return (
-        <Suspense fallback={<ServerPending what="The books" rows={4} />}>
+        <Suspense fallback={<ServerPending shape="table" what="The books" rows={4} />}>
           <Books {...api} />
         </Suspense>
       );
     case 'people':
       return (
-        <Suspense fallback={<ServerPending what="People" rows={3} />}>
+        <Suspense fallback={<ServerPending shape="cards" what="People" rows={3} />}>
           <PeopleAdmin {...api} />
         </Suspense>
       );
     case 'devices':
       return (
-        <Suspense fallback={<ServerPending what="Devices" rows={3} />}>
+        <Suspense fallback={<ServerPending shape="cards" what="Devices" rows={3} />}>
           <DevicesAdmin {...api} />
         </Suspense>
       );
     case 'roles':
       return (
-        <Suspense fallback={<ServerPending what="Roles" rows={3} />}>
+        <Suspense fallback={<ServerPending shape="cards" what="Roles" rows={3} />}>
           <RolesAdmin {...api} />
         </Suspense>
       );
     case 'opening':
       return (
-        <Suspense fallback={<ServerPending what="Opening stock" rows={3} />}>
+        <Suspense fallback={<ServerPending shape="cards" what="Opening stock" rows={3} />}>
           <OpeningStock {...api} />
         </Suspense>
       );
     case 'printer':
       return (
-        <Suspense fallback={<ServerPending what="Printer settings" rows={3} />}>
+        <Suspense fallback={<ServerPending shape="rows" what="Printer settings" rows={3} />}>
           <PrinterSettings db={db} />
         </Suspense>
       );

@@ -45,6 +45,7 @@ import {
   asString,
   type ApiCallOptions,
   type ApiFailure,
+  type ApiResult,
 } from './client';
 
 /**
@@ -337,6 +338,26 @@ function mapPermissions(json: unknown): PermissionSnapshot {
 
 /** Device-local, never synced. One row; replaced whole, never merged. */
 export const CONFIG_KEY_PERMISSIONS = 'session_permissions';
+
+/**
+ * The business this session belongs to, by name — the back office masthead.
+ *
+ * The server takes no input: the tenant is the verified token's (CLAUDE.md
+ * §2.1). Not cached: a name remembered on a device that is later re-enrolled
+ * elsewhere would put one company's name over another's books. When it cannot
+ * be asked, the masthead says "Back office" and nothing else.
+ */
+export function fetchTenantName(options: ApiCallOptions = {}): Promise<ApiResult<string | null>> {
+  return apiQuery(
+    'session.tenant',
+    undefined,
+    (json) => {
+      const name = asRecord(json, 'session.tenant')['name'];
+      return typeof name === 'string' && name.trim().length > 0 ? name.trim() : null;
+    },
+    options,
+  );
+}
 
 interface CachedPermissions {
   readonly userId: string;

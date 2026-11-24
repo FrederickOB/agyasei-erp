@@ -370,7 +370,7 @@ describe('the order itself', () => {
     });
     fireEvent.click(await screen.findByRole('button', { name: /Northern Supply/ }));
     // 450000 minor units at the configured scale of 2.
-    expect((await screen.findAllByText(/4500\.00/)).length).toBeGreaterThan(0);
+    expect((await screen.findAllByText(/4,500\.00/)).length).toBeGreaterThan(0);
   });
 });
 
@@ -534,7 +534,7 @@ describe('offline', () => {
     fireEvent.change(screen.getByLabelText('Agreed unit price'), { target: { value: '1000.00' } });
     fireEvent.click(screen.getByRole('button', { name: 'Add to the order' }));
     // The line is priced by the extended amount, rounded once: 2.5 × 1000.00.
-    await waitFor(() => expect(form.textContent).toContain('2500.00'));
+    await waitFor(() => expect(form.textContent).toContain('2,500.00'));
 
     allowSuppliers = false;
     fireEvent.click(screen.getByRole('button', { name: 'Raise as a draft' }));
