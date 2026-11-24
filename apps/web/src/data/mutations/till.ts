@@ -313,9 +313,12 @@ export async function closeTill(db: LocalDb, input: CloseTillInput): Promise<Clo
     const till = mapTill(row);
     if (till.status !== 'OPEN') throw new TillError(`This till is already closed.`);
     if (!autoClosed) {
-      // §8.2a: "A session cannot close while a sale is in flight."
+      // §8.2a: "A session cannot close while a sale is in flight." The sale
+      // on the counter is in flight; a DRAFT set aside is not — no money has
+      // moved — and it waits on this device for the customer to come back.
       const inCart = await tx.getAll(
-        `SELECT 1 AS hit FROM cart_line l JOIN cart c ON c.id = l.cart_id LIMIT 1`,
+        `SELECT 1 AS hit FROM cart_line l JOIN cart c ON c.id = l.cart_id
+          WHERE c.status = 'open' LIMIT 1`,
       );
       if (inCart.length > 0) {
         throw new TillError('A sale is in progress. Finish it or clear the cart before cashing up.');

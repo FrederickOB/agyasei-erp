@@ -15,6 +15,7 @@
  * to go and find.
  */
 import { useState, type ReactNode } from 'react';
+import { parseQtyScaled, QuantityInputError } from '../../lib/quantity';
 import { lineNetMinor } from '@erp/money';
 import type { CartLineRow } from '../../data/queries/cart';
 import {
@@ -25,6 +26,9 @@ import {
 import { formatQtyScaled, oneWholeUnit } from '../../lib/quantity';
 import { Money } from '../../money/Money';
 import { Icon } from '../../ui/Icon';
+
+/** A typed quantity above this many whole units is a slip of the finger, not an order. */
+const MAX_TYPED_WHOLE_UNITS = 100_000n;
 
 export interface RemovedLine {
   readonly line: CartLineRow;
@@ -42,6 +46,8 @@ export function CartPanel({
   variant = 'dock',
   modal = false,
   onClose,
+  onSaveDraft,
+  label = null,
 }: {
   readonly lines: readonly CartLineRow[];
   readonly onSetQty: (lineId: string, qtyScaled: bigint) => void;
@@ -65,6 +71,10 @@ export function CartPanel({
   /** True only when this really is a modal sheet — see ui/use-media-query.ts. */
   readonly modal?: boolean;
   readonly onClose?: () => void;
+  /** Set this sale aside so the next customer can be served (Drafts.tsx). */
+  readonly onSaveDraft?: () => void;
+  /** The name a resumed draft was given, if any. */
+  readonly label?: string | null;
 }): ReactNode {
   const sheet = variant === 'sheet';
   return (
@@ -75,8 +85,24 @@ export function CartPanel({
     >
       {sheet ? <span className="sheet-grip" aria-hidden="true" /> : null}
       <div className="cart-head">
-        <span className="cart-title">Current sale</span>
-        <span className="cart-count tabular">{lines.length}</span>
+        <span className="cart-heading">
+          <span className="cart-title">
+            Current sale <span className="cart-count tabular">{lines.length}</span>
+          </span>
+          {label === null ? null : <span className="cart-label">{label}</span>}
+        </span>
+        {onSaveDraft !== undefined ? (
+          <button
+            type="button"
+            className="cart-draft pressable"
+            disabled={lines.length === 0}
+            onClick={onSaveDraft}
+            aria-label="Save as draft"
+          >
+            <Icon name="draft" size={18} />
+            <span>Save draft</span>
+          </button>
+        ) : null}
         {onClose !== undefined ? (
           <button
             type="button"
@@ -185,7 +211,36 @@ function CartLineItem({
   readonly onRemove: (line: CartLineRow) => void;
 }): ReactNode {
   const [pendingRemove, setPendingRemove] = useState(false);
+  // TYPING A QUANTITY: tapping the count turns it into a field. 40 bags or
+  // 12.5 m is two taps and the number, not forty presses of "+". Parsed exactly
+  // (lib/quantity.ts) — a decimal in a whole-number unit is refused, never
+  // rounded — and 0 removes the line the same way the bin does, with undo.
+  const [editing, setEditing] = useState<string | null>(null);
+  const [qtyError, setQtyError] = useState<string | null>(null);
   const step = oneWholeUnit(line.qtyScale);
+  const shown = formatQtyScaled(line.qtyScaled, line.qtyScale);
+  const commit = (text: string): void => {
+    let next: bigint;
+    try {
+      next = parseQtyScaled(text, line.qtyScale);
+    } catch (err) {
+      setQtyError(err instanceof QuantityInputError ? err.message : 'Enter a quantity.');
+      return;
+    }
+    if (next > MAX_TYPED_WHOLE_UNITS * step) {
+      setQtyError(`That is more than ${MAX_TYPED_WHOLE_UNITS.toLocaleString('en-GB')} — check the quantity.`);
+      return;
+    }
+    setQtyError(null);
+    setEditing(null);
+    if (next === line.qtyScaled) return;
+    if (next === 0n) {
+      setPendingRemove(true);
+      onRemove(line);
+    } else {
+      onSetQty(line.id, next);
+    }
+  };
   // The unit price as the shelf shows it — one whole selling unit, rounded once.
   const unitMinor = lineNetMinor(step, line.qtyScale, line.unitPriceE4, 'half-up');
   return (
@@ -219,9 +274,58 @@ function CartLineItem({
           >
             <Icon name="minus" size={20} />
           </button>
-          <span className="qty-display tabular" aria-label="Quantity">
-            {formatQtyScaled(line.qtyScaled, line.qtyScale)} {line.uomLabel}
-          </span>
+          {editing === null ? (
+            <button
+              type="button"
+              className="qty-display tabular pressable"
+              aria-label={`Quantity ${shown} ${line.uomLabel} — tap to type a quantity`}
+              onClick={() => {
+                setQtyError(null);
+                setEditing(shown);
+              }}
+            >
+              {shown} {line.uomLabel}
+            </button>
+          ) : (
+            <span className="qty-edit">
+              <input
+                className="qty-input tabular"
+                type="text"
+                inputMode={line.qtyScale > 0 ? 'decimal' : 'numeric'}
+                enterKeyHint="done"
+                autoComplete="off"
+                aria-label={`Quantity of ${line.name}, in ${line.uomLabel}`}
+                aria-invalid={qtyError !== null}
+                // The person just asked to type here.
+                autoFocus
+                value={editing}
+                onFocus={(e) => e.currentTarget.select()}
+                onChange={(e) => {
+                  setQtyError(null);
+                  setEditing(e.target.value);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    commit(editing);
+                  } else if (e.key === 'Escape') {
+                    e.stopPropagation();
+                    setQtyError(null);
+                    setEditing(null);
+                  }
+                }}
+                onBlur={() => {
+                  // Leaving the field keeps a good number and drops a bad one —
+                  // with the reason left on screen, so nothing changes silently.
+                  if (qtyError === null) commit(editing);
+                  else setEditing(null);
+                }}
+              />
+              <span className="qty-unit" aria-hidden="true">
+                {line.uomLabel}
+              </span>
+            </span>
+          )}
           <button
             type="button"
             className="qty-button pressable"
@@ -243,6 +347,12 @@ function CartLineItem({
           <Icon name="trash" size={20} />
         </button>
       </div>
+      {qtyError === null ? null : (
+        <p className="qty-error" role="alert">
+          <Icon name="alert" size={16} />
+          {qtyError}
+        </p>
+      )}
     </li>
   );
 }

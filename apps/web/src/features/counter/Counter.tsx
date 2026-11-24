@@ -68,6 +68,9 @@ import { CashUp } from './CashUp';
 import { longDate, OpenTill } from './OpenTill';
 import { ProductSearch, type InCart } from './ProductSearch';
 import { ReceiptView } from './ReceiptView';
+import { DraftsSheet, SaveDraftSheet } from './Drafts';
+import { deleteDraft, resumeDraft, saveCartAsDraft } from '../../data/mutations/drafts';
+import { listDrafts, readOpenCartLabel } from '../../data/queries/drafts';
 import { TenderPanel, type TenderSubmission } from './TenderPanel';
 import { useLeaseGate } from '../auth/lease-gate';
 
@@ -79,6 +82,14 @@ type CounterMode =
   | { readonly step: 'closed'; readonly closed: ClosedTill };
 
 const UNDO_MS = 5000;
+/** How long "saved as a draft · Undo" stays up. */
+const DRAFT_NOTICE_MS = 6000;
+
+interface DraftNotice {
+  readonly text: string;
+  /** The draft that Undo brings straight back, when there is one. */
+  readonly undoId: string | null;
+}
 /** How often an idle counter checks whether local midnight has passed. */
 const MIDNIGHT_CHECK_MS = 30_000;
 
@@ -138,6 +149,10 @@ export function Counter({
   const [removed, setRemoved] = useState<RemovedLine | null>(null);
   const [refusal, setRefusal] = useState<string | null>(null);
   const [cartOpen, setCartOpen] = useState(false);
+  const [savingDraft, setSavingDraft] = useState(false);
+  const [draftsOpen, setDraftsOpen] = useState(false);
+  const [draftNotice, setDraftNotice] = useState<DraftNotice | null>(null);
+  const draftNoticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const undoTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const hlcRef = useRef<ClaimedHlcClock | null>(null);
   const sheetRef = useRef<HTMLDivElement | null>(null);
@@ -205,6 +220,8 @@ export function Counter({
   // has nothing to sell, which is a different sentence on screen.
   const products = useLiveQuery(db, loadActiveProducts, []);
   const cart = useLiveQuery(db, getOpenCart, []);
+  const drafts = useLiveQuery(db, listDrafts, []);
+  const openLabel = useLiveQuery(db, readOpenCartLabel, []);
   const cartId = cart?.id ?? null;
   const lines = useLiveQuery(
     db,
@@ -325,6 +342,30 @@ export function Counter({
       )
       .then(() => db.changes.notify());
   }, [db, removed, cartId]);
+
+  const showDraftNotice = useCallback((notice: DraftNotice | null) => {
+    setDraftNotice(notice);
+    if (draftNoticeTimer.current !== null) clearTimeout(draftNoticeTimer.current);
+    if (notice !== null) draftNoticeTimer.current = setTimeout(() => setDraftNotice(null), DRAFT_NOTICE_MS);
+  }, []);
+  useEffect(() => () => {
+    if (draftNoticeTimer.current !== null) clearTimeout(draftNoticeTimer.current);
+  }, []);
+
+  const onResumeDraft = useCallback(
+    (id: string) => {
+      setDraftsOpen(false);
+      setRefusal(null);
+      void resumeDraft(db, id)
+        .then((r) =>
+          showDraftNotice(
+            r.setAsideCurrent ? { text: 'The sale that was on the counter is saved under Drafts.', undoId: null } : null,
+          ),
+        )
+        .catch((err: unknown) => setRefusal(err instanceof Error ? err.message : String(err)));
+    },
+    [db, showDraftNotice],
+  );
 
   // ONE pricing, shared by the cart footer, the amount due and the payload:
   // three places that must never show three numbers.
@@ -520,6 +561,23 @@ export function Counter({
         Till open · <strong title={longDate(till.businessDate)}>{shortDate(till.businessDate)}</strong>
         {till.openedOffline ? <span className="till-bar-flag"> · opened offline</span> : null}
       </span>
+      {/* Drafts waiting for their customers: shown once there is one, with
+          the count — so the cashier can see at a glance that somebody is
+          coming back. */}
+      {drafts !== undefined && drafts.length > 0 ? (
+        <button
+          type="button"
+          className="secondary-action pressable till-bar-action drafts-action"
+          aria-label={`Drafts — ${String(drafts.length)} saved`}
+          onClick={() => setDraftsOpen(true)}
+        >
+          <Icon name="draft" size={18} />
+          Drafts
+          <span className="drafts-count tabular" key={drafts.length} aria-hidden="true">
+            {drafts.length}
+          </span>
+        </button>
+      ) : null}
       <button
         type="button"
         className="secondary-action pressable till-bar-action"
@@ -529,6 +587,67 @@ export function Counter({
       </button>
     </div>
   );
+
+  // Set the sale aside: a name if the cashier wants one, then the next customer.
+  const draftSheets = (
+    <>
+      {savingDraft && cartId !== null ? (
+        <SaveDraftSheet
+          lineCount={lines?.length ?? 0}
+          totalMinor={pricing.grossMinor}
+          initialLabel={openLabel ?? null}
+          onClose={() => setSavingDraft(false)}
+          onSave={(label) => {
+            const draftId = cartId;
+            setSavingDraft(false);
+            setRefusal(null);
+            void saveCartAsDraft(db, draftId, { label, nowIso: now() })
+              .then(() =>
+                showDraftNotice({
+                  text: label.trim().length > 0 ? `“${label.trim()}” saved as a draft.` : 'Sale saved as a draft.',
+                  undoId: draftId,
+                }),
+              )
+              .catch((err: unknown) => setRefusal(err instanceof Error ? err.message : String(err)));
+          }}
+        />
+      ) : null}
+      {draftsOpen ? (
+        <DraftsSheet
+          drafts={drafts ?? []}
+          onClose={() => setDraftsOpen(false)}
+          onResume={onResumeDraft}
+          onDelete={(id) => {
+            void deleteDraft(db, id).catch((err: unknown) =>
+              setRefusal(err instanceof Error ? err.message : String(err)),
+            );
+          }}
+        />
+      ) : null}
+    </>
+  );
+
+  const draftNoticeBar =
+    draftNotice === null ? null : (
+      <p className="draft-notice" role="status">
+        <Icon name="draft" size={18} />
+        <span>{draftNotice.text}</span>
+        {draftNotice.undoId === null ? null : (
+          <button
+            type="button"
+            className="undo-button pressable"
+            onClick={() => {
+              const id = draftNotice.undoId;
+              showDraftNotice(null);
+              if (id !== null) onResumeDraft(id);
+            }}
+          >
+            <Icon name="undo" size={18} />
+            Undo
+          </button>
+        )}
+      </p>
+    );
 
   const refusalBanner =
     refusal === null ? null : (
@@ -585,6 +704,11 @@ export function Counter({
     removed,
     onTakePayment: takePayment,
     pricing,
+    onSaveDraft: () => {
+      setCartOpen(false);
+      setSavingDraft(true);
+    },
+    label: openLabel ?? null,
     // Preventing the tap beats refusing it: walking someone to the tender
     // screen only to turn them back is a worse way to say the same thing.
     sellable: !cartBlocked && leaseAllowsSale,
@@ -619,8 +743,10 @@ export function Counter({
   // about to reach for.
   return (
     <div className={`counter register${wide ? ' register-wide' : ''}`}>
+      {draftSheets}
       <div className="register-main">
         {wide ? null : tillBar}
+        {draftNoticeBar}
         {refusalBanner}
         {stuckBanner}
         {/* A card is tappable only once there is a cart for the tap to land in.

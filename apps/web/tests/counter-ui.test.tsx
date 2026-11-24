@@ -364,3 +364,147 @@ describe('the counter on a tax-inclusive list', () => {
     expect(money('.cart-total')).toContain('744.00');
   });
 });
+
+/** The sale pane on a tablet, where the lines are always in view. */
+function salePane(): HTMLElement {
+  return screen.getByRole('region', { name: 'Cart' });
+}
+
+describe('typing a quantity into the current sale', () => {
+  beforeEach(() => setLayout(true));
+
+  it('40 bags is the count and Enter — not forty presses of "+"', async () => {
+    const { db } = await tillWithOneProduct();
+    render(renderCounter(db));
+    fireEvent.click(await screen.findByRole('button', { name: /Cement 50kg/ }));
+
+    fireEvent.click(await within(salePane()).findByRole('button', { name: /^Quantity 1 bag/ }));
+    const field = within(salePane()).getByLabelText('Quantity of Cement 50kg, in bag');
+    fireEvent.change(field, { target: { value: '40' } });
+    fireEvent.keyDown(field, { key: 'Enter' });
+
+    await waitFor(() => expect(within(salePane()).getByRole('button', { name: /^Quantity 40 bag/ })).toBeTruthy());
+    await waitFor(() => expect(salePane().querySelector('.cart-total')?.textContent).toMatch(/24,?800\.00/));
+    const cart = await getOpenCart(db);
+    expect((await getCartLines(db, cart!.id))[0]?.qtyScaled).toBe(40n);
+  });
+
+  it('refuses a decimal in a whole-number unit, says why, and changes nothing', async () => {
+    const { db } = await tillWithOneProduct();
+    render(renderCounter(db));
+    fireEvent.click(await screen.findByRole('button', { name: /Cement 50kg/ }));
+    fireEvent.click(await within(salePane()).findByRole('button', { name: /^Quantity 1 bag/ }));
+    const field = within(salePane()).getByLabelText('Quantity of Cement 50kg, in bag');
+    fireEvent.change(field, { target: { value: '2.5' } });
+    fireEvent.keyDown(field, { key: 'Enter' });
+
+    expect((await within(salePane()).findByRole('alert')).textContent).toMatch(/whole numbers/);
+    const cart = await getOpenCart(db);
+    expect((await getCartLines(db, cart!.id))[0]?.qtyScaled).toBe(1n);
+  });
+
+  it('takes 2.5 kg of something sold by weight, exactly', async () => {
+    const { db, priceListId } = await tillWithOneProduct();
+    await seedProduct(db, {
+      code: 'W-1', name: 'Tie wire', uomLabel: 'kg', qtyScale: 3, unitPriceE4: 9_750_000n, priceListId,
+    });
+    render(renderCounter(db));
+    fireEvent.click(await screen.findByRole('button', { name: /Tie wire/ }));
+    fireEvent.click(await within(salePane()).findByRole('button', { name: /^Quantity 1 kg/ }));
+    const field = within(salePane()).getByLabelText('Quantity of Tie wire, in kg');
+    fireEvent.change(field, { target: { value: '2.5' } });
+    fireEvent.keyDown(field, { key: 'Enter' });
+
+    // 2.500 kg × 9.75 = 24.375 → half-up → 24.38
+    await waitFor(() => expect(salePane().querySelector('.cart-total')?.textContent).toMatch(/24\.38/));
+    const cart = await getOpenCart(db);
+    expect((await getCartLines(db, cart!.id))[0]?.qtyScaled).toBe(2500n);
+  });
+
+  it('0 takes the line out the way the bin does — with undo', async () => {
+    const { db } = await tillWithOneProduct();
+    render(renderCounter(db));
+    fireEvent.click(await screen.findByRole('button', { name: /Cement 50kg/ }));
+    fireEvent.click(await within(salePane()).findByRole('button', { name: /^Quantity 1 bag/ }));
+    const field = within(salePane()).getByLabelText('Quantity of Cement 50kg, in bag');
+    fireEvent.change(field, { target: { value: '0' } });
+    fireEvent.keyDown(field, { key: 'Enter' });
+
+    expect(await within(salePane()).findByRole('button', { name: /Undo/ })).toBeTruthy();
+    await waitFor(async () => {
+      const cart = await getOpenCart(db);
+      expect(await getCartLines(db, cart!.id)).toHaveLength(0);
+    });
+  });
+});
+
+describe('saving a sale as a draft at the counter', () => {
+  beforeEach(() => setLayout(true));
+
+  async function saveAsDraft(name: string): Promise<void> {
+    fireEvent.click(within(salePane()).getByRole('button', { name: 'Save as draft' }));
+    const sheet = await screen.findByRole('dialog', { name: 'Save as draft' });
+    fireEvent.change(within(sheet).getByLabelText(/Name or note/), { target: { value: name } });
+    fireEvent.click(within(sheet).getByRole('button', { name: 'Save draft' }));
+  }
+
+  it('sets the sale aside under a name, and the next customer starts on an empty sale', async () => {
+    const { db } = await tillWithOneProduct();
+    render(renderCounter(db));
+    fireEvent.click(await screen.findByRole('button', { name: /Cement 50kg/ }));
+    await waitFor(() => expect(salePane().querySelectorAll('.cart-line')).toHaveLength(1));
+
+    await saveAsDraft('Kofi — collecting at 3pm');
+
+    expect(await screen.findByText('“Kofi — collecting at 3pm” saved as a draft.')).toBeTruthy();
+    await waitFor(() => expect(salePane().querySelectorAll('.cart-line')).toHaveLength(0));
+    expect(await screen.findByRole('button', { name: 'Drafts — 1 saved' })).toBeTruthy();
+    // Nothing was charged: no sale is queued.
+    expect(await db.getAll(`SELECT id FROM outbox WHERE kind = 'sale'`)).toHaveLength(0);
+  });
+
+  it('Undo brings it straight back', async () => {
+    const { db } = await tillWithOneProduct();
+    render(renderCounter(db));
+    fireEvent.click(await screen.findByRole('button', { name: /Cement 50kg/ }));
+    await waitFor(() => expect(salePane().querySelectorAll('.cart-line')).toHaveLength(1));
+    await saveAsDraft('');
+    const notice = await screen.findByText('Sale saved as a draft.');
+    fireEvent.click(within(notice.closest('.draft-notice') as HTMLElement).getByRole('button', { name: /Undo/ }));
+
+    await waitFor(() => expect(salePane().querySelectorAll('.cart-line')).toHaveLength(1));
+    await waitFor(() => expect(screen.queryByRole('button', { name: /^Drafts/ })).toBeNull());
+  });
+
+  it('resumes a draft with its name, setting the sale on the counter aside — then deletes the other', async () => {
+    const { db, priceListId } = await tillWithOneProduct();
+    await seedProduct(db, { code: 'T-1', name: 'Floor tile', uomLabel: 'piece', unitPriceE4: 15_000_000n, priceListId });
+    render(renderCounter(db));
+    fireEvent.click(await screen.findByRole('button', { name: /Cement 50kg/ }));
+    await waitFor(() => expect(salePane().querySelectorAll('.cart-line')).toHaveLength(1));
+    await saveAsDraft('Kofi');
+    await screen.findByRole('button', { name: 'Drafts — 1 saved' });
+
+    // The next customer starts a sale…
+    fireEvent.click(screen.getByRole('button', { name: /Floor tile/ }));
+    await waitFor(() => expect(salePane().textContent).toMatch(/Floor tile/));
+    // …and Kofi comes back.
+    fireEvent.click(screen.getByRole('button', { name: 'Drafts — 1 saved' }));
+    const sheet = await screen.findByRole('dialog', { name: 'Drafts' });
+    expect(within(sheet).getByText('Kofi')).toBeTruthy();
+    fireEvent.click(within(sheet).getByRole('button', { name: 'Resume' }));
+
+    await waitFor(() => expect(salePane().textContent).toMatch(/Cement 50kg/));
+    expect(salePane().querySelector('.cart-label')?.textContent).toBe('Kofi');
+    expect(await screen.findByText('The sale that was on the counter is saved under Drafts.')).toBeTruthy();
+
+    // The floor-tile sale is now the draft; delete it, asked twice.
+    fireEvent.click(await screen.findByRole('button', { name: 'Drafts — 1 saved' }));
+    const again = await screen.findByRole('dialog', { name: 'Drafts' });
+    expect(within(again).getByText(/Floor tile/)).toBeTruthy();
+    fireEvent.click(within(again).getByRole('button', { name: /^Delete / }));
+    fireEvent.click(within(again).getByRole('button', { name: /^Yes, delete/ }));
+    await waitFor(() => expect(screen.queryByRole('button', { name: /^Drafts/ })).toBeNull());
+    expect(salePane().textContent).toMatch(/Cement 50kg/);
+  });
+});
