@@ -50,6 +50,19 @@ function unitPriceMinor(p: ProductWithPrice): bigint {
   return lineNetMinor(oneWholeUnit(p.qtyScale), p.qtyScale, p.unitPriceE4, 'half-up');
 }
 
+/**
+ * The tile's initials: the first letter of each of the name's first two words
+ * ("Aluzinc Roofing Sheets" → "AR"). Read off the tenant's own product name —
+ * something to find by shape before reading, like a numbered key on a till.
+ */
+export function initialsOf(name: string): string {
+  const words = name.split(/[^\p{L}\p{N}]+/u).filter((w) => w.length > 0);
+  return words
+    .slice(0, 2)
+    .map((w) => w.charAt(0).toLocaleUpperCase())
+    .join('');
+}
+
 /** The categories this counter's own catalogue actually uses, busiest first. */
 function categoriesOf(products: readonly ProductWithPrice[]): readonly string[] {
   const counts = new Map<string, number>();
@@ -213,21 +226,25 @@ export function ProductSearch({
                       className={`product-card pressable ${swatchClass(p.category)}${held === undefined ? '' : ' in-cart'}`}
                       onClick={() => add(p)}
                     >
-                      <span className="product-name">{p.name}</span>
-                      <span className="product-foot">
-                        <span className="product-price-line">
-                          <Money amount={unitPriceMinor(p)} className="money product-price" />
-                          <span className="product-unit">/ {p.uomLabel}</span>
-                        </span>
+                      <span className="product-top" aria-hidden="true">
+                        <span className="product-mono">{initialsOf(p.name)}</span>
                         {held === undefined ? null : (
-                          <span className="product-qty tabular">
-                            <span aria-hidden="true">×{formatQtyScaled(held.qtyScaled, held.qtyScale)}</span>
-                            <span className="visually-hidden">
-                              {`, ${formatQtyScaled(held.qtyScaled, held.qtyScale)} ${held.uomLabel} in the sale`}
-                            </span>
+                          // Keyed by the quantity, so each change replays the bump.
+                          <span className="product-qty tabular" key={held.qtyScaled.toString()}>
+                            ×{formatQtyScaled(held.qtyScaled, held.qtyScale)}
                           </span>
                         )}
                       </span>
+                      <span className="product-name">{p.name}</span>
+                      <span className="product-foot">
+                        <Money amount={unitPriceMinor(p)} className="money product-price" />
+                        <span className="product-unit">/ {p.uomLabel}</span>
+                      </span>
+                      {held === undefined ? null : (
+                        <span className="visually-hidden">
+                          {`, ${formatQtyScaled(held.qtyScaled, held.qtyScale)} ${held.uomLabel} in the sale`}
+                        </span>
+                      )}
                       {addedId === p.id ? (
                         <span className="product-added" aria-hidden="true">
                           <Icon name="check" size={22} />

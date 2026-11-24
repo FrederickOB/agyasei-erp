@@ -24,10 +24,15 @@ export async function checkOpenTill(device: Device, where: string): Promise<void
 }
 
 /**
- * "Take payment" is on screen wherever the catalogue is scrolled to. The bar
- * once sat inside a pane that an entrance animation had left transformed, so
- * `position: fixed` pinned it to the pane, not the screen, and it scrolled
- * away with the catalogue on a portrait tablet (24 Nov 2026).
+ * "Take payment" is on screen wherever the catalogue is scrolled to — and with
+ * a bar above the app, as the signed-in device path renders one (AuthGate's
+ * session bar: "name · Lock / switch"). Two bugs this guards:
+ *   - the bar once sat inside a pane an entrance animation had left
+ *     transformed, so `position: fixed` pinned it to the pane, not the screen;
+ *   - the register then locked the SHELL to the screen's height, ignoring the
+ *     session bar above it, which pushed the dock under the pilot tablet's
+ *     taskbar. These tests use the dev path, which has no session bar, so one
+ *     is stood in for here, at the same place in the page.
  */
 export async function expectPayInView(device: Device, where: string): Promise<void> {
   const { page } = device;
@@ -38,19 +43,35 @@ export async function expectPayInView(device: Device, where: string): Promise<vo
       window.scrollTo(0, toEnd ? document.documentElement.scrollHeight : 0);
     }, end);
   const viewport = page.viewportSize();
-  // At the top (where the misplaced bar sat below the fold under a long
-  // catalogue) and at the very end.
-  for (const end of [false, true]) {
-    await scrollTo(end);
-    const box = await device.takePayment.boundingBox();
-    const at = `${where}: take-payment, catalogue scrolled to the ${end ? 'end' : 'top'}`;
-    expect(box, `${at} has a box`).not.toBeNull();
-    if (box !== null && viewport !== null) {
-      expect(box.y, `${at}: top on screen`).toBeGreaterThanOrEqual(0);
-      expect(box.y + box.height, `${at}: bottom on screen`).toBeLessThanOrEqual(viewport.height + 1);
+  const check = async (with_: string): Promise<void> => {
+    // At the top (where the misplaced bar sat below the fold under a long
+    // catalogue) and at the very end.
+    for (const end of [false, true]) {
+      await scrollTo(end);
+      const box = await device.takePayment.boundingBox();
+      const at = `${where}: take-payment ${with_}, catalogue scrolled to the ${end ? 'end' : 'top'}`;
+      expect(box, `${at} has a box`).not.toBeNull();
+      if (box !== null && viewport !== null) {
+        expect(box.y, `${at}: top on screen`).toBeGreaterThanOrEqual(0);
+        expect(box.y + box.height, `${at}: bottom on screen`).toBeLessThanOrEqual(viewport.height + 1);
+      }
     }
+  };
+  await check('as the dev path renders it');
+  await page.evaluate(() => {
+    const bar = document.createElement('div');
+    bar.id = 'e2e-session-bar';
+    bar.className = 'session-bar';
+    bar.style.minHeight = '64px';
+    bar.textContent = 'Stand-in session bar';
+    document.getElementById('root')?.prepend(bar);
+  });
+  try {
+    await check('under a session bar');
+  } finally {
+    await page.evaluate(() => document.getElementById('e2e-session-bar')?.remove());
+    await scrollTo(false);
   }
-  await scrollTo(false);
 }
 
 export async function checkCart(device: Device, where: string): Promise<void> {
