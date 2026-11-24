@@ -87,7 +87,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v4
       - name: api image (also the migrator and the worker)
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: infra/docker/api.Dockerfile
@@ -96,13 +96,13 @@ jobs:
           cache-from: type=gha,scope=api
           cache-to: type=gha,mode=max,scope=api
       - name: powersync image (pinned service + baked sync rules)
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: infra/docker/powersync.Dockerfile
           push: false
       - name: web image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: infra/docker/web.Dockerfile
