@@ -109,6 +109,35 @@ export {
   type ParsedOpeningRow,
   type PreviewOpeningStockInput,
 } from './opening-stock.js';
+export {
+  PRODUCT_CODE_MAX,
+  PRODUCT_IMPORT_MAX_CHARS,
+  PRODUCT_IMPORT_MAX_ROWS,
+  PRODUCT_NAME_MAX,
+  PRODUCT_ROW_ISSUES,
+  PRODUCT_TEXT_MAX,
+  canonicalProductRows,
+  classifyHeader,
+  commitProductImportInput,
+  decimalCell,
+  normaliseHeader,
+  parseCsv,
+  parseProductCsv,
+  previewProductImportInput,
+  productNameKey,
+  productTemplateHeaders,
+  removeAllProductsInput,
+  toCsv,
+  toCsvLine,
+  type CommitProductImportInput,
+  type ParsedProductFile,
+  type ParsedProductRow,
+  type PreviewProductImportInput,
+  type PriceColumn,
+  type ProductColumn,
+  type ProductRowIssue,
+  type RemoveAllProductsInput,
+} from './products.js';
 
 export {
   cashPositionReportInput,
@@ -263,6 +292,7 @@ export {
   type ListPostingExceptionsInput,
   type StatementQueryInput,
 } from './ledger.js';
+export { EXPENSE_PAID_FROM, expenseCategoryRef, expenseRangeInput, listExpensesInput, minorScaleDigits, parseMajorAmount, profitSheetInput, recordExpenseInput, voidExpenseInput, type ExpenseCategoryRef, type ExpensePaidFrom, type ExpenseRangeInput, type ListExpensesInput, type ProfitSheetInput, type RecordExpenseInput, type RecordExpenseParsed, type VoidExpenseInput } from './expenses.js';
 
 export {
   DEVICE_FORM_FACTORS,

@@ -285,6 +285,9 @@ const ACCOUNTS: TemplateRole = {
     // The books. CLAUDE.md's role sketch puts "GL review" here and nowhere
     // else; the owner role reaches it through the owner expansion.
     { code: 'gl.view' },
+    // Business expenses for the management P&L (0033). An operational record,
+    // not a posting: Accounts pays the rent and the electricity bill.
+    { code: 'expense.record' },
     // Accounts owns the supplier master file, because payment terms are an
     // AP fact, and approves the spend — unbounded, unlike the regional
     // manager's ceiling.

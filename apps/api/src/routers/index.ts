@@ -4,10 +4,12 @@ import { cashSessionRouter } from './cash-session.js';
 import { catalogueRouter } from './catalogue.js';
 import { creditRouter } from './credit.js';
 import { inventoryRouter } from './inventory.js';
+import { expensesRouter } from './expenses.js';
 import { ledgerRouter } from './ledger.js';
 import { logisticsRouter } from './logistics.js';
 import { openingStockRouter } from './opening-stock.js';
 import { procurementRouter } from './procurement.js';
+import { productsRouter } from './products.js';
 import { provisioningRouter } from './provisioning.js';
 import { receivingRouter } from './receiving.js';
 import { reportsRouter } from './reports.js';
@@ -24,6 +26,8 @@ export const appRouter = router({
   inventory: inventoryRouter,
   // HQ's one-time bulk load of opening STOCK (0031; Q20). Posts nothing to the GL.
   openingStock: openingStockRouter,
+  // The product list from a spreadsheet, and archiving the catalogue (0032).
+  products: productsRouter,
   sales: salesRouter,
   // Voids and returns: a new document against a sale, never an edit (0030).
   returns: saleReturnsRouter,
@@ -45,6 +49,8 @@ export const appRouter = router({
   // Phase 3 Track A's read surface. Read-only by construction — every
   // procedure is a query, and no write capability exists (see ledger.ts).
   ledger: ledgerRouter,
+  // Business expenses and the MANAGEMENT P&L sheet (0033). Operational records only — nothing posts to the GL.
+  expenses: expensesRouter,
   // Go-live work package B: users, assignments, roles, devices (02 §2.4–§2.7).
   admin: adminRouter,
 });

@@ -3797,6 +3797,106 @@ button {
 }
 .books-exceptions ul { margin: var(--s-1) 0 0; padding-left: 1.2em; font-size: 0.875rem; }
 
+/* ─── THE P&L SHEET AND EXPENSES (Books, first tab) ─────────────────────────
+   The management P&L and the expense list, in the office's light SaaS dress:
+   white 18px cards (.tile, which also gives the rise-in motion), pill period
+   buttons (.office-tab), one violet action (.office-btn). A statement reads
+   top to bottom — sales, cost, gross, expenses, net — with subtotals ruled
+   and the result tinted mint for a profit, red for a loss, always WITH the
+   word, never colour alone. */
+.books-pl { display: flex; flex-direction: column; gap: 16px; }
+.books-pl-controls {
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px;
+}
+.books-pl-period { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.books-pl-period .office-tab[aria-pressed='true'] {
+  background: var(--o-card); border-color: var(--o-line-2); box-shadow: var(--o-shadow);
+  color: var(--o-text); font-weight: 600;
+}
+.books-pl-where {
+  display: inline-flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--o-muted);
+}
+.books-pl-where select {
+  min-height: 36px; max-width: 100%; padding: 0 12px; border: 1px solid var(--o-line-2);
+  border-radius: var(--r-full); background: var(--o-card); color: var(--o-text); font: inherit; font-size: 13px;
+}
+.books-pl-card, .books-expenses-card { max-width: 980px; width: 100%; }
+.books-pl-basis {
+  display: flex; align-items: flex-start; gap: 8px; margin: 0; padding: 10px 12px;
+  border-radius: 12px; background: var(--o-violet-tint); color: var(--o-violet-text); font-size: 12.5px; line-height: 1.5;
+}
+.books-pl-basis .icon { flex: none; margin-top: 1px; }
+.books-pl-period-label { color: var(--o-muted); white-space: nowrap; }
+.books-pl-table { width: 100%; border-collapse: collapse; font-size: 14px; }
+.books-pl-table th, .books-pl-table td {
+  padding: 10px 4px; border-bottom: 1px solid var(--o-line); text-align: left; font-weight: 500; color: var(--o-text-2);
+}
+.books-pl-table td.numeric { text-align: right; font-variant-numeric: tabular-nums; color: var(--o-text); white-space: nowrap; }
+.books-pl-table th small { display: block; margin-top: 2px; font-size: 11.5px; font-weight: 500; color: var(--o-muted); }
+.books-pl-less .money::before { content: '− '; color: var(--o-faint); }
+.books-pl-indent th { padding-left: 18px; font-weight: 400; }
+.books-pl-none { color: var(--o-muted); font-style: italic; }
+.books-pl-section th {
+  padding-top: 16px; font-size: 11.5px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--o-muted);
+}
+.books-pl-subtotal th, .books-pl-subtotal td { font-weight: 600; color: var(--o-text); border-top: 1px solid var(--o-line-2); }
+.books-pl-result th, .books-pl-result td { font-size: 16px; font-weight: 700; color: var(--o-text); border-bottom: 0; }
+.books-pl-result-profit th, .books-pl-result-profit td { background: var(--o-mint-tint); color: var(--o-mint-text); }
+.books-pl-result-loss th, .books-pl-result-loss td { background: var(--o-red-tint); color: var(--o-red-text); }
+.books-pl-result th { border-radius: 10px 0 0 10px; padding-left: 12px; }
+.books-pl-result td { border-radius: 0 10px 10px 0; padding-right: 12px; }
+.books-pl-flag { margin-left: 8px; vertical-align: 1px; }
+.books-pl-notes { display: flex; flex-direction: column; gap: 6px; margin: 0; padding-left: 18px; font-size: 12.5px; color: var(--o-text-2); line-height: 1.5; }
+.books-pl-note-warn { color: var(--o-amber-text); }
+.books-pl-missing { margin: 4px 0 0; padding-left: 16px; color: var(--o-text-2); }
+.books-pl-empty {
+  display: flex; align-items: flex-start; gap: 10px; padding: 14px; border-radius: 14px;
+  background: var(--o-grey-tint); color: var(--o-grey-text); font-size: 13px; line-height: 1.5;
+}
+.books-pl-empty p { margin: 0; }
+.books-expenses-add { margin-left: auto; }
+.books-expense-table td small { display: block; font-size: 11.5px; color: var(--o-muted); }
+.books-expense-voided td { color: var(--o-faint); }
+.books-expense-voided td .money { text-decoration: line-through; }
+.books-expense-void-note { color: var(--o-red-text) !important; }
+.books-expense-act { text-align: right; width: 1%; white-space: nowrap; }
+.books-expense-confirm td { background: var(--o-red-tint); border-radius: 12px; }
+.books-expense-confirm-form { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px; }
+.books-expense-reason { display: flex; flex-direction: column; gap: 4px; flex: 1 1 260px; font-size: 12.5px; font-weight: 600; color: var(--o-red-text); }
+.books-expense-reason input {
+  min-height: 38px; padding: 0 12px; border: 1px solid var(--o-line-2); border-radius: 10px;
+  background: var(--o-card); color: var(--o-text); font: inherit; font-size: 13px;
+}
+.books-expense-void-btn { background: var(--o-red); box-shadow: none; }
+.books-expense-confirm-help { flex-basis: 100%; font-size: 11.5px; color: var(--o-red-text); }
+.books-expense-confirm-failure { flex-basis: 100%; font-size: 12px; font-weight: 600; color: var(--o-red-text); }
+/* The record-an-expense sheet: a bottom sheet on a tablet, a centred card on a laptop. */
+.expense-sheet { background: var(--o-card); color: var(--o-text); }
+.expense-form { gap: 14px; }
+.expense-form-note { margin: 0; font-size: 12.5px; color: var(--o-muted); }
+.expense-form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+@media (max-width: 520px) { .expense-form-grid { grid-template-columns: minmax(0, 1fr); } }
+.expense-form .tender-field { font-size: 12.5px; font-weight: 600; color: var(--o-text-2); }
+.expense-input {
+  width: 100%; min-height: 44px; padding: 0 12px; border: 1px solid var(--o-line-2); border-radius: 12px;
+  background: var(--o-card-2); color: var(--o-text); font: inherit; font-size: 15px; font-weight: 500;
+}
+.expense-input:focus { outline: none; border-color: var(--o-violet); box-shadow: 0 0 0 3px var(--o-violet-tint); background: var(--o-card); }
+.expense-input[aria-invalid='true'] { border-color: var(--o-red); }
+.expense-textarea { min-height: 64px; padding: 10px 12px; resize: vertical; }
+.expense-form-optional { font-weight: 400; color: var(--o-faint); }
+.expense-form-hint { font-size: 11.5px; font-weight: 500; color: var(--o-muted); }
+.expense-form-problem { font-size: 11.5px; font-weight: 600; color: var(--o-red-text); }
+.expense-form-actions { display: flex; justify-content: flex-end; gap: 8px; padding-top: 4px; }
+@media (min-width: 900px) {
+  .expense-sheet {
+    top: 6vh; bottom: auto; max-height: 88vh; border-radius: 18px;
+    box-shadow: 0 24px 60px rgb(20 22 31 / 0.18);
+    animation: rise var(--dur-3) var(--ease) backwards;
+  }
+  .expense-sheet .sheet-grip { display: none; }
+}
+
 /* ─── PRINTING (§8.8) ────────────────────────────────────────────────────────
    Print status, the on-screen receipt, and the per-device printer settings.
    Same rules as the rest of the counter: 48-56px targets, an icon AND words for
@@ -5113,6 +5213,10 @@ button {
 
 /* The locations table. */
 .office-table-scroll {
+  /* Positioned, so an absolutely positioned descendant (a visually-hidden
+     column label) is clipped by this frame instead of escaping it and
+     widening the whole page on a phone. */
+  position: relative;
   overflow-x: auto;
   margin: 0 -20px;
   padding: 0 20px;
@@ -6516,4 +6620,301 @@ button {
 }
 .tile .pending-bars {
   height: 120px;
+}
+
+/* ════════════════════════════════════════════════════════════════════════
+   PRODUCTS — the catalogue from a spreadsheet (features/products)
+   Office look: white cards on the canvas, one violet action per step,
+   status read by colour AND word (never colour alone).
+   ════════════════════════════════════════════════════════════════════════ */
+.products-screen {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-4);
+  max-width: 1200px;
+}
+.pi-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--s-3);
+}
+.pi-head h1 {
+  margin: 0;
+  font-size: var(--t-2xl);
+  letter-spacing: -0.01em;
+}
+.pi-help {
+  margin: var(--s-1) 0 0;
+  color: var(--o-muted, var(--text-muted));
+  font-size: var(--t-sm);
+}
+.pi-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-2);
+  margin-top: var(--s-3);
+}
+.pi-head .pi-actions {
+  margin-top: 0;
+}
+.pi-card {
+  padding: var(--s-5);
+  border: 1px solid var(--o-line, var(--border));
+  border-radius: var(--r-3);
+  background: var(--o-card, var(--surface));
+  box-shadow: var(--o-shadow, none);
+  animation: view-in var(--dur-3) var(--ease) backwards;
+}
+.pi-steps {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: var(--s-5);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.pi-step {
+  display: flex;
+  gap: var(--s-3);
+}
+.pi-step h2,
+.pi-list-head h2 {
+  margin: 0;
+  font-size: var(--t-lg);
+}
+.pi-step-body {
+  flex: 1;
+  min-width: 0;
+}
+.pi-step-no {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--r-full);
+  background: var(--o-violet-tint, var(--brand-tint));
+  color: var(--o-violet-text, var(--brand-text));
+  font-weight: 700;
+}
+.pi-drop {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  margin-top: var(--s-3);
+  padding: var(--s-4);
+  border: 1.5px dashed var(--o-line-2, var(--control-border));
+  border-radius: var(--r-2);
+  background: var(--o-card-2, var(--surface-2));
+  color: var(--o-text-2, var(--text));
+  cursor: pointer;
+  transition:
+    border-color var(--dur-2) var(--ease),
+    background var(--dur-2) var(--ease);
+}
+.pi-drop:hover,
+.pi-drop:focus-within {
+  border-color: var(--o-violet, var(--brand));
+  background: var(--o-violet-tint, var(--brand-tint));
+}
+.pi-drop span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pi-preview {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+  margin-top: var(--s-5);
+  padding-top: var(--s-5);
+  border-top: 1px solid var(--o-line, var(--border));
+  animation: view-in var(--dur-3) var(--ease) backwards;
+}
+.pi-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-2);
+}
+.pi-pill {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 6px 14px;
+  border-radius: var(--r-full);
+  font-size: var(--t-sm);
+}
+.pi-pill strong {
+  font-size: var(--t-lg);
+}
+.pi-ready {
+  background: var(--o-mint-tint, var(--ok-tint));
+  color: var(--o-mint-text, var(--ok-ink));
+}
+.pi-duplicate {
+  background: var(--o-amber-tint, var(--wait-tint));
+  color: var(--o-amber-text, var(--wait-ink));
+}
+.pi-problem {
+  background: var(--o-red-tint, var(--attn-tint));
+  color: var(--o-red-text, var(--attn-ink));
+}
+.pi-notes {
+  margin: 0;
+  padding-left: 1.2em;
+  color: var(--o-text-2, var(--text));
+  font-size: var(--t-sm);
+  line-height: 1.6;
+}
+.pi-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-2);
+}
+.pi-table-wrap {
+  position: relative;
+  max-height: 60vh;
+  overflow: auto;
+  border: 1px solid var(--o-line, var(--border));
+  border-radius: var(--r-2);
+}
+.pi-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--t-sm);
+}
+.pi-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--o-line, var(--border));
+  background: var(--o-card-2, var(--surface-2));
+  color: var(--o-muted, var(--text-muted));
+  font-weight: 600;
+  text-align: left;
+  white-space: nowrap;
+}
+.pi-table td {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--o-line, var(--border));
+  vertical-align: top;
+}
+.pi-table tr:last-child td {
+  border-bottom: 0;
+}
+.pi-table .numeric {
+  text-align: right;
+  white-space: nowrap;
+}
+.pi-table .muted {
+  color: var(--o-faint, var(--text-muted));
+}
+.pi-row-duplicate td {
+  background: color-mix(in srgb, var(--o-amber-tint, var(--wait-tint)) 45%, transparent);
+}
+.pi-row-problem td {
+  background: color-mix(in srgb, var(--o-red-tint, var(--attn-tint)) 45%, transparent);
+}
+.pi-name {
+  display: block;
+  min-width: 11em;
+  font-weight: 600;
+}
+.pi-sub {
+  display: block;
+  color: var(--o-muted, var(--text-muted));
+  font-size: var(--t-xs);
+}
+.pi-new {
+  margin-left: 6px;
+  padding: 1px 7px;
+  border-radius: var(--r-full);
+  background: var(--o-blue-tint, var(--brand-tint));
+  color: var(--o-blue-text, var(--brand-text));
+  font-size: var(--t-xs);
+  font-weight: 600;
+}
+.pi-prices {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-end;
+}
+.pi-status {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: var(--r-full);
+  font-size: var(--t-xs);
+  font-weight: 700;
+}
+.pi-status-ready {
+  background: var(--o-mint-tint, var(--ok-tint));
+  color: var(--o-mint-text, var(--ok-ink));
+}
+.pi-status-duplicate {
+  background: var(--o-amber-tint, var(--wait-tint));
+  color: var(--o-amber-text, var(--wait-ink));
+}
+.pi-status-problem {
+  background: var(--o-red-tint, var(--attn-tint));
+  color: var(--o-red-text, var(--attn-ink));
+}
+.pi-reason {
+  display: block;
+  min-width: 13em;
+  margin-top: 4px;
+  color: var(--o-text-2, var(--text));
+}
+.pi-empty {
+  padding: var(--s-4);
+  text-align: center;
+}
+.pi-commit {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-3);
+}
+.pi-commit .pi-actions {
+  margin-top: 0;
+}
+.pi-result,
+.pi-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s-3);
+  margin: var(--s-4) 0 0;
+  padding: var(--s-4);
+  border-radius: var(--r-2);
+  background: var(--o-mint-tint, var(--ok-tint));
+  color: var(--o-mint-text, var(--ok-ink));
+  animation: view-in var(--dur-3) var(--ease) backwards;
+}
+.pi-notice {
+  margin: 0;
+  align-items: center;
+}
+.pi-result .pi-help {
+  color: inherit;
+}
+.pi-list-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-3);
+  margin-bottom: var(--s-3);
+}
+.pi-search {
+  flex: 0 1 360px;
+}
+.secondary-action.danger-outline {
+  border-color: color-mix(in srgb, var(--attn) 45%, transparent);
+  color: var(--o-red-text, var(--attn-ink));
+}
+.pi-dialog {
+  max-width: 520px;
 }
