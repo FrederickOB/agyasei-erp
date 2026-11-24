@@ -36,6 +36,7 @@ export type IconName =
   | 'sync'
   | 'live'
   | 'back'
+  | 'forward'
   | 'close'
   | 'download'
   | 'pin'
@@ -43,6 +44,11 @@ export type IconName =
   | 'undo'
   | 'edit'
   | 'printer'
+  // Tender methods, drawn from the method's platform FLAGS (cash in the
+  // drawer, on account, other) — never from its code or name (§8.9).
+  | 'cash'
+  | 'card'
+  | 'user'
   // The back office's rail (features/office). Same grid, same weight.
   | 'grid'
   | 'chart'
@@ -113,6 +119,26 @@ const PATHS: Record<IconName, ReactNode> = {
     </>
   ),
   back: <path d="M11 5l-7 7 7 7M4 12h16" />,
+  forward: <path d="M13 5l7 7-7 7M20 12H4" />,
+  cash: (
+    <>
+      <rect x="2.5" y="6" width="19" height="12" rx="2" />
+      <circle cx="12" cy="12" r="2.6" />
+      <path d="M6 9.5v5M18 9.5v5" />
+    </>
+  ),
+  card: (
+    <>
+      <rect x="2.5" y="5.5" width="19" height="13" rx="2" />
+      <path d="M2.5 10h19M6.5 14.5h4" />
+    </>
+  ),
+  user: (
+    <>
+      <circle cx="12" cy="8" r="3.6" />
+      <path d="M4.5 20c.9-3.6 3.9-5.6 7.5-5.6s6.6 2 7.5 5.6" />
+    </>
+  ),
   close: <path d="M6 6l12 12M18 6L6 18" />,
   download: (
     <>

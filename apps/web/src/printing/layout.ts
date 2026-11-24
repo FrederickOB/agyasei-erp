@@ -13,7 +13,13 @@
  */
 import { format } from '@erp/money';
 import { canEncode, toPrintable, type CodePage } from './codepage';
-import { documentHeading, rateBpText, type ReceiptCurrency, type ReceiptDocument } from './document';
+import {
+  DEFAULT_RECEIPT_LABELS,
+  documentHeading,
+  rateBpText,
+  type ReceiptCurrency,
+  type ReceiptDocument,
+} from './document';
 
 export type Align = 'left' | 'center' | 'right';
 
@@ -187,6 +193,11 @@ export function layoutReceipt(doc: ReceiptDocument, options: LayoutOptions): Lay
   for (const t of doc.tenders) {
     pairs(t.method, money(t.amountMinor));
     if (t.reference !== null && t.reference.length > 0) text(`  ${l.reference}: ${t.reference}`);
+  }
+  // What was handed over, then what went back (document.ts: cashReceivedMinor).
+  const received = doc.cashReceivedMinor ?? null;
+  if (received !== null && received > 0n) {
+    pairs(l.cashReceived ?? DEFAULT_RECEIPT_LABELS.cashReceived, money(received));
   }
   if (doc.changeMinor > 0n) pairs(l.change, money(doc.changeMinor), { bold: true });
 

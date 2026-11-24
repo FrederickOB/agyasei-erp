@@ -24,6 +24,7 @@ import { UUID_RE, uuidv7 } from '../src/lib/uuidv7';
 import { addProductToCart, createCart, setCartLineQty } from '../src/data/mutations/cart';
 import {
   buildSalePayload,
+  CartChangedError,
   checkout,
   DuplicateSaleError,
   EmptyCartError,
@@ -169,6 +170,54 @@ describe('checkout', () => {
     // with everything else, so the next sale gets the number this one nearly
     // took. Numbers are consumed by recorded sales, not by attempts.
     expect(await db.getAll('SELECT id FROM sequence_block')).toHaveLength(0);
+  });
+
+  // THE RACE: a tap still being written when payment is taken lands in the
+  // cart a moment later. The screen said one amount; the cart comes to more.
+  it('refuses a cart that no longer comes to the amount the cashier was shown — recording nothing', async () => {
+    const db = openTestDb();
+    const { cartId } = await cartWithTwoLines(db);
+    const shown = EXPECTED_TOTAL - 62_000n; // the screen was one bag behind
+
+    const refused = checkout(db, {
+      cartId,
+      expectedTotalMinor: shown,
+      tenderedMinor: 2_000_000n,
+      hlc: fixedHlc(),
+    });
+    await expect(refused).rejects.toThrow(CartChangedError);
+    await refused.catch((err: unknown) => {
+      expect((err as CartChangedError).shownMinor).toBe(shown);
+      expect((err as CartChangedError).cartMinor).toBe(EXPECTED_TOTAL);
+    });
+
+    // Nothing written: no sale, the cart intact, no receipt number burned.
+    expect(await db.getAll('SELECT id FROM outbox')).toHaveLength(0);
+    expect(await getCartLines(db, cartId)).toHaveLength(2);
+    expect(await db.getAll('SELECT id FROM sequence_block')).toHaveLength(0);
+
+    // Against the real figure it goes through, at exactly that figure.
+    const ok = await checkout(db, {
+      cartId,
+      expectedTotalMinor: EXPECTED_TOTAL,
+      tenderedMinor: 2_000_000n,
+      hlc: fixedHlc(),
+    });
+    expect(ok.totalMinor).toBe(EXPECTED_TOTAL);
+    expect(ok.changeMinor).toBe(2_000_000n - EXPECTED_TOTAL);
+  });
+
+  it('returns the lines and pricing basis the sale was RECORDED with — what the receipt is built from', async () => {
+    const db = openTestDb();
+    const { cartId } = await cartWithTwoLines(db);
+    const before = await getCartLines(db, cartId);
+    const result = await checkout(db, { cartId, tenderedMinor: 2_000_000n, hlc: fixedHlc() });
+    expect(result.lines.map((l) => [l.productId, l.qtyScaled, l.unitPriceE4])).toEqual(
+      before.map((l) => [l.productId, l.qtyScaled, l.unitPriceE4]),
+    );
+    expect(cartTotalMinor(result.lines, result.pricingBasis)).toBe(result.totalMinor);
+    // The cart itself is gone — the lines returned are the record of it.
+    expect(await getCartLines(db, cartId)).toHaveLength(0);
   });
 
   it('refuses a replayed idempotency key and leaves the cart untouched', async () => {

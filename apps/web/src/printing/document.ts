@@ -39,6 +39,8 @@ export interface ReceiptLabels {
   readonly subtotal: string;
   readonly total: string;
   readonly change: string;
+  /** What the customer handed over in cash. Absent on snapshots made before it existed. */
+  readonly cashReceived: string;
   readonly copy: string;
   readonly includesTax: string;
   readonly reference: string;
@@ -57,6 +59,7 @@ export const DEFAULT_RECEIPT_LABELS: ReceiptLabels = {
   subtotal: 'Subtotal',
   total: 'TOTAL',
   change: 'Change',
+  cashReceived: 'Cash received',
   copy: 'COPY - REPRINT',
   includesTax: 'Includes',
   reference: 'Ref',
@@ -141,6 +144,16 @@ export interface ReceiptDocument {
   /** What the customer owed. */
   readonly totalMinor: bigint;
   readonly tenders: readonly ReceiptTender[];
+  /**
+   * The notes and coins the customer handed over for the sale's cash lines —
+   * the device's own record of the moment (`outbox.tendered_minor`), never a
+   * recomputation. Printed between the tenders and the change, so the slip
+   * reads "Cash 1,245.00 / Cash received 2,000.00 / Change 755.00": what the
+   * cash settled, what was handed over, what went back. Null when no cash
+   * changed hands; absent on snapshots queued before it existed, which print
+   * exactly as they always did.
+   */
+  readonly cashReceivedMinor?: bigint | null;
   readonly changeMinor: bigint;
   readonly pack: ReceiptPackSlot;
   readonly footerLines: readonly string[];
@@ -185,6 +198,7 @@ export interface ReceiptDocumentInput {
   readonly taxLines: readonly ReceiptTaxLine[];
   readonly totalMinor: bigint;
   readonly tenders: readonly ReceiptTender[];
+  readonly cashReceivedMinor?: bigint | null;
   readonly changeMinor: bigint;
   readonly pack?: ReceiptPackSlot;
   readonly footerLines?: readonly string[];
@@ -219,6 +233,11 @@ export function formatIssuedAt(iso: string, timeZone: string | null): string {
   return (timeZone === null ? null : attempt(timeZone)) ?? attempt('UTC') ?? iso;
 }
 
+/** A cash figure worth printing: present and above zero. */
+function positiveOrNull(v: bigint | null | undefined): bigint | null {
+  return v !== undefined && v !== null && v > 0n ? v : null;
+}
+
 export function buildReceiptDocument(input: ReceiptDocumentInput): ReceiptDocument {
   assertCurrencySpec(input.currency);
   return {
@@ -251,6 +270,7 @@ export function buildReceiptDocument(input: ReceiptDocumentInput): ReceiptDocume
     taxLines: input.taxLines,
     totalMinor: input.totalMinor,
     tenders: input.tenders,
+    cashReceivedMinor: positiveOrNull(input.cashReceivedMinor),
     changeMinor: input.changeMinor,
     pack: input.pack ?? UNCONFIGURED_PACK_SLOT,
     footerLines: input.footerLines ?? [],
@@ -290,6 +310,8 @@ export function reversingDocument(
     taxLines: original.taxLines.map((t) => ({ ...t, baseMinor: -t.baseMinor, taxMinor: -t.taxMinor })),
     totalMinor: -original.totalMinor,
     tenders: original.tenders.map((t) => ({ ...t, amountMinor: -t.amountMinor })),
+    // Nothing is handed over on a refund, and no change goes back.
+    cashReceivedMinor: null,
     changeMinor: 0n,
   };
 }
@@ -303,9 +325,10 @@ export function reversingDocument(
  * defined methods: cash, mobile money, bank transfer, cheque, on account …).
  *
  * The amounts are what each method SETTLED, so they always sum to the total —
- * the identity the server enforces on `sale_tender`. Change is shown on its
- * own line, never folded into a tender. The method's name is the tenant's own
- * word and is rendered, never compared (CLAUDE.md §2.9).
+ * the identity the server enforces on `sale_tender`. The cash handed over and
+ * the change are each on their own line, never folded into a tender. The
+ * method's name is the tenant's own word and is rendered, never compared
+ * (CLAUDE.md §2.9).
  */
 export interface RecordedReceiptTender {
   readonly name: string;
@@ -316,9 +339,15 @@ export interface RecordedReceiptTender {
 export function receiptTenders(
   recorded: readonly RecordedReceiptTender[],
   changeMinor: bigint | null,
-): { readonly tenders: readonly ReceiptTender[]; readonly changeMinor: bigint } {
+  cashReceivedMinor: bigint | null = null,
+): {
+  readonly tenders: readonly ReceiptTender[];
+  readonly cashReceivedMinor: bigint | null;
+  readonly changeMinor: bigint;
+} {
   return {
     tenders: recorded.map((t) => ({ method: t.name, amountMinor: t.amountMinor, reference: t.reference })),
+    cashReceivedMinor: positiveOrNull(cashReceivedMinor),
     changeMinor: changeMinor !== null && changeMinor > 0n ? changeMinor : 0n,
   };
 }

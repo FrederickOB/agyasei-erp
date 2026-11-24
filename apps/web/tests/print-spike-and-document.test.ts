@@ -7,12 +7,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   buildReceiptDocument,
   deserializeDocument,
+  DEFAULT_RECEIPT_LABELS,
   formatIssuedAt,
   rateBpText,
+  reversingDocument,
   serializeDocument,
   receiptTenders,
+  type ReceiptDocument,
 } from '../src/printing/document';
+import { SCREEN_PAGE } from '../src/printing/codepage';
 import { escapeHtml, renderReceiptHtml } from '../src/printing/html';
+import { layoutReceipt } from '../src/printing/layout';
 import { DEFAULT_PRINTER_SETTINGS, sanitizeSettings } from '../src/printing/settings';
 import { bpText, runSpike, summarize, toCsv, type SpikeSample } from '../src/printing/spike';
 import type { PrintAttempt, PrintJob, ReceiptTransport } from '../src/printing/transports/types';
@@ -255,13 +260,102 @@ describe('the receipt document snapshot', () => {
         { method: 'Mobile Money', amountMinor: 12_000n, reference: 'MP2611181234' },
         { method: 'Cash', amountMinor: 6_000n, reference: null },
       ],
+      cashReceivedMinor: null,
       changeMinor: 4_000n,
     });
     // On account: never "Cash", and no change.
     expect(receiptTenders([{ name: 'On Account', amountMinor: 18_000n, reference: null }], null)).toEqual({
       tenders: [{ method: 'On Account', amountMinor: 18_000n, reference: null }],
+      cashReceivedMinor: null,
       changeMinor: 0n,
     });
+    // The notes handed over ride along beside the tenders, never inside one.
+    expect(receiptTenders([{ name: 'Cash', amountMinor: 6_000n, reference: null }], 4_000n, 10_000n)).toEqual({
+      tenders: [{ method: 'Cash', amountMinor: 6_000n, reference: null }],
+      cashReceivedMinor: 10_000n,
+      changeMinor: 4_000n,
+    });
+    // Nothing handed over is nothing to print.
+    expect(receiptTenders([], null, 0n).cashReceivedMinor).toBeNull();
+  });
+});
+
+/** The slip's text lines, as the printer and the on-screen receipt both get them. */
+function slipText(doc: ReceiptDocument): string[] {
+  return layoutReceipt(doc, { columns: 48, page: SCREEN_PAGE }).flatMap((l) => (l.kind === 'text' ? [l.text] : []));
+}
+
+describe('cash received on the receipt', () => {
+  // 14,260.00 owed, all of it cash; 15,000.00 handed over; 740.00 back.
+  const cashSale = (): ReceiptDocument =>
+    sampleDoc({
+      tenders: [{ method: 'Cash', amountMinor: 1_426_000n, reference: null }],
+      cashReceivedMinor: 1_500_000n,
+      changeMinor: 74_000n,
+    });
+
+  it('prints what was handed over between what the cash settled and the change', () => {
+    const text = slipText(cashSale());
+    const at = (re: RegExp): number => text.findIndex((t) => re.test(t));
+    const total = at(/^TOTAL/);
+    const settled = at(/^Cash\s+.*14,?260\.00$/);
+    const received = at(/^Cash received\s+.*15,?000\.00$/);
+    const change = at(/^Change\s+.*740\.00$/);
+    expect([total, settled, received, change].every((i) => i >= 0)).toBe(true);
+    expect(total).toBeLessThan(settled);
+    expect(settled).toBeLessThan(received);
+    expect(received).toBeLessThan(change);
+  });
+
+  it('says nothing about cash received when no cash changed hands, or none is known', () => {
+    expect(slipText(sampleDoc()).some((t) => t.startsWith('Cash received'))).toBe(false);
+    expect(slipText(sampleDoc({ cashReceivedMinor: 0n })).some((t) => t.startsWith('Cash received'))).toBe(false);
+    expect(sampleDoc({ cashReceivedMinor: 0n }).cashReceivedMinor).toBeNull();
+  });
+
+  it('is on the A4 invoice too, in the same place', () => {
+    const a4 = renderReceiptHtml(cashSale(), 'a4');
+    const settled = a4.indexOf('Cash</td>');
+    const received = a4.indexOf('Cash received</td>');
+    const change = a4.indexOf('Change</td>');
+    expect(settled).toBeGreaterThan(-1);
+    expect(received).toBeGreaterThan(settled);
+    expect(change).toBeGreaterThan(received);
+    expect(a4.slice(received, change)).toMatch(/15,?000\.00/);
+    expect(renderReceiptHtml(sampleDoc(), 'a4')).not.toContain('Cash received');
+  });
+
+  it('survives the snapshot kept for reprint, as an exact bigint', () => {
+    const back = deserializeDocument(serializeDocument(cashSale()));
+    expect(back?.cashReceivedMinor).toBe(1_500_000n);
+    expect(slipText(back!).some((t) => /^Cash received\s+.*15,?000\.00$/.test(t))).toBe(true);
+  });
+
+  it('a snapshot queued before the figure existed still deserialises and prints as it always did', () => {
+    const { cashReceivedMinor: _gone, ...old } = sampleDoc();
+    const { cashReceived: _label, ...oldLabels } = old.labels;
+    const legacy = deserializeDocument(serializeDocument({ ...old, labels: oldLabels } as ReceiptDocument));
+    expect(legacy).not.toBeNull();
+    expect(slipText(legacy!)).toEqual(slipText(sampleDoc()));
+  });
+
+  it('a snapshot without the label (queued earlier, reprinted later) falls back to the default wording', () => {
+    const { cashReceived: _label, ...oldLabels } = cashSale().labels;
+    const doc = { ...cashSale(), labels: oldLabels } as ReceiptDocument;
+    expect(slipText(doc).some((t) => t.startsWith(DEFAULT_RECEIPT_LABELS.cashReceived))).toBe(true);
+  });
+
+  it('a refund slip never claims cash was received', () => {
+    const slip = reversingDocument(cashSale(), {
+      kind: 'RETURN',
+      returnId: 'ret-1',
+      returnNo: 'RT-0001',
+      issuedAtIso: '2026-12-02T09:00:00.000Z',
+      issuedAtText: '2026-12-02 09:00',
+      businessDate: '2026-12-02',
+    });
+    expect(slip.cashReceivedMinor).toBeNull();
+    expect(slipText(slip).some((t) => t.startsWith('Cash received'))).toBe(false);
   });
 });
 

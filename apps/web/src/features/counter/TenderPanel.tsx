@@ -25,14 +25,16 @@
 import { useMemo, useState, type ReactNode } from 'react';
 import { compare, format, sub } from '@erp/money';
 import { settleTenders, type TenderDraft } from '../../data/mutations/checkout';
-import type { CartPricing } from '../../data/pricing/cart-pricing';
+import { lineTotalMinor, type CartPricing } from '../../data/pricing/cart-pricing';
+import type { CartLineRow } from '../../data/queries/cart';
 import type { CreditCustomer } from '../../data/queries/customers';
 import type { TenderMethod } from '../../data/queries/tender-methods';
 import { useCurrencySpec } from '../../money/CurrencyContext';
 import { Money } from '../../money/Money';
 import { parseMoneyOrNull } from '../../money/parse-input';
 import { suggestedTenders } from '../../money/quick-cash';
-import { Icon } from '../../ui/Icon';
+import { formatQtyScaled } from '../../lib/quantity';
+import { Icon, type IconName } from '../../ui/Icon';
 
 export interface TenderSubmission {
   readonly tenders: readonly TenderDraft[];
@@ -49,6 +51,13 @@ interface LineState {
   readonly receivedText: string;
 }
 
+/** Drawn from the method's platform flags — never its code or name (§8.9). */
+function methodIcon(m: TenderMethod): IconName {
+  if (m.isCash) return 'cash';
+  if (m.isOnAccount) return 'user';
+  return 'card';
+}
+
 let lineKey = 0;
 function newLine(methodId: string): LineState {
   lineKey += 1;
@@ -63,6 +72,7 @@ export function TenderPanel({
   onAccountCeilingMinor = null,
   onComplete,
   onBack,
+  summaryLines,
 }: {
   /**
    * What the customer hands over, and the tax split when this device can state
@@ -84,6 +94,12 @@ export function TenderPanel({
   readonly onAccountCeilingMinor?: bigint | null;
   readonly onComplete: (submission: TenderSubmission) => void;
   readonly onBack: () => void;
+  /**
+   * The sale's lines, for a read-only summary beside the payment on a wide
+   * screen — what the customer is paying for, in view while the cash is
+   * counted. Omitted on a narrow screen, where the payment needs the room.
+   */
+  readonly summaryLines?: readonly CartLineRow[];
 }): ReactNode {
   const spec = useCurrencySpec();
   const totalMinor = pricing.grossMinor;
@@ -169,201 +185,230 @@ export function TenderPanel({
     );
   }
 
+  const hint =
+    problem !== null
+      ? problem
+      : needsCustomer && customerId.length === 0
+        ? 'Choose the customer this goes on account to.'
+        : incomplete
+          ? lines.length === 1
+            ? 'Tap an amount, or type what the customer handed over.'
+            : 'Enter an amount for each payment except the last, which takes the rest.'
+          : 'Ready when the payments cover the amount due.';
+
   return (
-    <section className="tender-panel" aria-label="Payment">
-      <div className="tender-due">
-        <span className="total-label">Amount due</span>
-        <Money amount={totalMinor} className="money total-value tender-total" />
-        {/* On an inclusive list the shelf price IS the amount due; saying so
-            here is what lets a cashier answer "is tax on top of that?". */}
-        {taxNoted !== null ? (
-          <p className="total-note">
-            Includes tax <Money amount={taxNoted} className="money tender-tax" />
-          </p>
-        ) : null}
-      </div>
-
-      {lines.map((l, i) => {
-        const method = byId.get(l.methodId);
-        const last = i === lines.length - 1;
-        const appliedMinor = last ? restMinor : (parseMoneyOrNull(l.amountText, spec) ?? 0n);
-        const received = method?.isCash === true ? parseMoneyOrNull(l.receivedText, spec) : null;
-        const change =
-          received !== null && compare(received, appliedMinor) >= 0 ? sub(received, appliedMinor) : null;
-        const quick = method?.isCash === true ? suggestedTenders(appliedMinor, spec.scale) : [];
-        const labelId = `tender-line-${l.key}`;
-        return (
-          <fieldset key={l.key} className="tender-line" aria-labelledby={labelId}>
-            <legend id={labelId} className="tender-label">
-              {lines.length === 1 ? 'Paying by' : `Payment ${String(i + 1)}`}
-            </legend>
-            <div className="chip-row tender-methods" role="group" aria-label="Payment method">
-              {offered.map((m) => (
-                <button
-                  key={m.id}
-                  type="button"
-                  className="chip pressable"
-                  aria-pressed={m.id === l.methodId}
-                  onClick={() => update(l.key, { methodId: m.id })}
-                >
-                  {m.name}
-                </button>
-              ))}
-            </div>
-
-            {last ? (
-              <p className="tender-rest">
-                <span>{lines.length === 1 ? 'Amount' : 'Takes the rest'}</span>
-                <Money amount={restMinor < 0n ? 0n : restMinor} className="money" />
-              </p>
-            ) : (
-              <label className="tender-field">
-                <span>Amount</span>
-                <input
-                  className="tender-input money"
-                  type="text"
-                  inputMode="decimal"
-                  autoComplete="off"
-                  placeholder={format(0n, spec)}
-                  value={l.amountText}
-                  onChange={(e) => update(l.key, { amountText: e.target.value })}
-                />
-              </label>
-            )}
-
-            {method?.requiresReference === true ? (
-              <label className="tender-field">
-                <span>Reference (transaction id or cheque number)</span>
-                <input
-                  className="tender-reference"
-                  type="text"
-                  autoComplete="off"
-                  autoCapitalize="characters"
-                  maxLength={64}
-                  value={l.reference}
-                  onChange={(e) => update(l.key, { reference: e.target.value })}
-                />
-              </label>
-            ) : null}
-
-            {method?.isCash === true ? (
-              <>
-                <label className="tender-field">
-                  <span>Cash received</span>
-                  <input
-                    className="tender-input money"
-                    type="text"
-                    inputMode="decimal"
-                    autoComplete="off"
-                    placeholder={format(0n, spec)}
-                    value={l.receivedText}
-                    onChange={(e) => update(l.key, { receivedText: e.target.value })}
-                  />
-                </label>
-                <div className="tender-quick" role="group" aria-label="Quick amounts">
-                  <button
-                    type="button"
-                    className="chip pressable"
-                    onClick={() => update(l.key, { receivedText: format(appliedMinor < 0n ? 0n : appliedMinor, spec) })}
-                  >
-                    Exact
-                  </button>
-                  {quick.map((amount) => (
-                    <button
-                      key={amount.toString()}
-                      type="button"
-                      className="chip pressable money"
-                      onClick={() => update(l.key, { receivedText: format(amount, spec) })}
-                    >
-                      {format(amount, spec)}
-                    </button>
-                  ))}
-                </div>
-                <div className={`tender-change${change !== null ? ' ready' : ''}`}>
-                  <span className="total-label">Change</span>
-                  {change !== null ? (
-                    <Money amount={change} className="money total-value tender-change-value" />
-                  ) : (
-                    <span className="total-value tender-change-placeholder" aria-label="No change yet">
-                      —
-                    </span>
-                  )}
-                </div>
-              </>
-            ) : null}
-
-            {method?.isOnAccount === true ? (
-              <label className="tender-field">
-                <span>Customer</span>
-                <select
-                  className="tender-customer"
-                  value={customerId}
-                  onChange={(e) => setCustomerId(e.target.value)}
-                >
-                  <option value="">Choose the customer…</option>
-                  {customers.map((c) => (
-                    <option key={c.id} value={c.id}>
-                      {c.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            ) : null}
-
-            {lines.length > 1 ? (
-              <button
-                type="button"
-                className="secondary-action pressable tender-remove"
-                onClick={() => setLines((ls) => ls.filter((x) => x.key !== l.key))}
-              >
-                <Icon name="trash" size={18} />
-                Remove this payment
-              </button>
-            ) : null}
-          </fieldset>
-        );
-      })}
-
-      {firstMethod !== undefined ? (
-        <button
-          type="button"
-          className="secondary-action pressable"
-          onClick={() => setLines((ls) => [...ls, newLine(firstMethod.id)])}
-        >
-          <Icon name="plus" size={20} />
-          Split the payment
-        </button>
-      ) : null}
-
-      {/* Helper text that persists, rather than a placeholder that vanishes
-          the moment it is needed (§ input-helper-text). */}
-      <p className="tender-hint" role="status">
-        {problem !== null
-          ? problem
-          : needsCustomer && customerId.length === 0
-            ? 'Choose the customer this goes on account to.'
-            : incomplete
-              ? lines.length === 1
-                ? 'Tap an amount, or type what the customer handed over.'
-                : 'Enter an amount for each payment except the last, which takes the rest.'
-              : 'Ready when the payments cover the amount due.'}
-      </p>
-
-      <div className="tender-actions">
-        <button type="button" className="secondary-action pressable" onClick={onBack}>
+    <section className={`tender-panel pay-panel${summaryLines === undefined ? '' : ' with-summary'}`} aria-label="Payment">
+      <header className="tender-head">
+        <button type="button" className="tender-back pressable" onClick={onBack}>
           <Icon name="back" size={20} />
           Back to cart
         </button>
+        <h2 className="tender-title">Payment</h2>
+      </header>
+
+      <div className="tender-body">
+        <div className="tender-summary">
+          <div className="tender-due">
+            <span className="total-label">Amount due</span>
+            <Money amount={totalMinor} className="money total-value tender-total" />
+            {/* On an inclusive list the shelf price IS the amount due; saying so
+                here is what lets a cashier answer "is tax on top of that?". */}
+            {taxNoted !== null ? (
+              <p className="total-note">
+                Includes tax <Money amount={taxNoted} className="money tender-tax" />
+              </p>
+            ) : null}
+          </div>
+          {summaryLines === undefined || summaryLines.length === 0 ? null : (
+            <ul className="tender-order" aria-label="In this sale">
+              {summaryLines.map((line) => (
+                <li key={line.id} className="tender-order-line">
+                  <span className="tender-order-qty tabular">
+                    {formatQtyScaled(line.qtyScaled, line.qtyScale)} {line.uomLabel}
+                  </span>
+                  <span className="tender-order-name">{line.name}</span>
+                  <Money amount={lineTotalMinor(line)} className="money tender-order-amount" />
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+
+        <div className="tender-pay">
+          {lines.map((l, i) => {
+            const method = byId.get(l.methodId);
+            const last = i === lines.length - 1;
+            const appliedMinor = last ? restMinor : (parseMoneyOrNull(l.amountText, spec) ?? 0n);
+            const received = method?.isCash === true ? parseMoneyOrNull(l.receivedText, spec) : null;
+            const change =
+              received !== null && compare(received, appliedMinor) >= 0 ? sub(received, appliedMinor) : null;
+            const quick = method?.isCash === true ? suggestedTenders(appliedMinor, spec.scale) : [];
+            const labelId = `tender-line-${l.key}`;
+            return (
+              <fieldset key={l.key} className="tender-line" aria-labelledby={labelId}>
+                <legend id={labelId} className="tender-label">
+                  {lines.length === 1 ? 'Paying by' : `Payment ${String(i + 1)}`}
+                </legend>
+                <div className="tender-methods" role="group" aria-label="Payment method">
+                  {offered.map((m) => (
+                    <button
+                      key={m.id}
+                      type="button"
+                      className="method-tile pressable"
+                      aria-pressed={m.id === l.methodId}
+                      onClick={() => update(l.key, { methodId: m.id })}
+                    >
+                      <Icon name={methodIcon(m)} size={24} />
+                      <span>{m.name}</span>
+                    </button>
+                  ))}
+                </div>
+
+                {last ? (
+                  <p className="tender-rest">
+                    <span>{lines.length === 1 ? 'Amount' : 'Takes the rest'}</span>
+                    <Money amount={restMinor < 0n ? 0n : restMinor} className="money" />
+                  </p>
+                ) : (
+                  <label className="tender-field">
+                    <span>Amount</span>
+                    <input
+                      className="tender-input money"
+                      type="text"
+                      inputMode="decimal"
+                      autoComplete="off"
+                      placeholder={format(0n, spec)}
+                      value={l.amountText}
+                      onChange={(e) => update(l.key, { amountText: e.target.value })}
+                    />
+                  </label>
+                )}
+
+                {method?.requiresReference === true ? (
+                  <label className="tender-field">
+                    <span>Reference (transaction id or cheque number)</span>
+                    <input
+                      className="tender-reference"
+                      type="text"
+                      autoComplete="off"
+                      autoCapitalize="characters"
+                      maxLength={64}
+                      value={l.reference}
+                      onChange={(e) => update(l.key, { reference: e.target.value })}
+                    />
+                  </label>
+                ) : null}
+
+                {method?.isCash === true ? (
+                  <>
+                    <label className="tender-field">
+                      <span>Cash received</span>
+                      <input
+                        className="tender-input money"
+                        type="text"
+                        inputMode="decimal"
+                        autoComplete="off"
+                        placeholder={format(0n, spec)}
+                        value={l.receivedText}
+                        onChange={(e) => update(l.key, { receivedText: e.target.value })}
+                      />
+                    </label>
+                    <div className="tender-quick" role="group" aria-label="Quick amounts">
+                      <button
+                        type="button"
+                        className="quick-tile quick-exact pressable"
+                        aria-pressed={received !== null && received === (appliedMinor < 0n ? 0n : appliedMinor)}
+                        onClick={() => update(l.key, { receivedText: format(appliedMinor < 0n ? 0n : appliedMinor, spec) })}
+                      >
+                        Exact
+                      </button>
+                      {quick.map((amount) => (
+                        <button
+                          key={amount.toString()}
+                          type="button"
+                          aria-pressed={received !== null && received === amount}
+                          className="quick-tile pressable money"
+                          onClick={() => update(l.key, { receivedText: format(amount, spec) })}
+                        >
+                          {format(amount, spec)}
+                        </button>
+                      ))}
+                    </div>
+                    <div className={`tender-change${change !== null ? ' ready' : ''}`}>
+                      <span className="total-label">Change</span>
+                      {change !== null ? (
+                        <Money amount={change} className="money total-value tender-change-value" />
+                      ) : (
+                        <span className="total-value tender-change-placeholder" aria-label="No change yet">
+                          —
+                        </span>
+                      )}
+                    </div>
+                  </>
+                ) : null}
+
+                {method?.isOnAccount === true ? (
+                  <label className="tender-field">
+                    <span>Customer</span>
+                    <select
+                      className="tender-customer"
+                      value={customerId}
+                      onChange={(e) => setCustomerId(e.target.value)}
+                    >
+                      <option value="">Choose the customer…</option>
+                      {customers.map((c) => (
+                        <option key={c.id} value={c.id}>
+                          {c.name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                ) : null}
+
+                {lines.length > 1 ? (
+                  <button
+                    type="button"
+                    className="secondary-action pressable tender-remove"
+                    onClick={() => setLines((ls) => ls.filter((x) => x.key !== l.key))}
+                  >
+                    <Icon name="trash" size={18} />
+                    Remove this payment
+                  </button>
+                ) : null}
+              </fieldset>
+            );
+          })}
+
+          {firstMethod !== undefined ? (
+            <button
+              type="button"
+              className="secondary-action tender-split pressable"
+              onClick={() => setLines((ls) => [...ls, newLine(firstMethod.id)])}
+            >
+              <Icon name="plus" size={20} />
+              Split the payment
+            </button>
+          ) : null}
+        </div>
+      </div>
+
+      {/* The one action, always in view however long a split grows, with the
+          reason it is not ready yet sitting right above it — helper text that
+          persists, rather than a placeholder that vanishes (§ input-helper-text). */}
+      <div className="tender-actions">
+        <p className={`tender-hint${ready ? ' ready' : ''}`} role="status">
+          {hint}
+        </p>
         <button
           type="button"
-          className="primary-action pressable"
+          className="primary-action complete-action pressable"
           disabled={!ready}
           onClick={() => {
             if (!ready) return;
             onComplete({ tenders: drafts, ...(needsCustomer ? { customerId } : {}) });
           }}
         >
-          <Icon name="check" size={20} />
+          <Icon name="check" size={22} />
           Complete sale
         </button>
       </div>

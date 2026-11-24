@@ -13,7 +13,7 @@
  */
 import { SCREEN_PAGE } from './codepage';
 import type { ReceiptDocument } from './document';
-import { documentHeading, rateBpText } from './document';
+import { DEFAULT_RECEIPT_LABELS, documentHeading, rateBpText } from './document';
 import { COLUMNS_FOR_PAPER_MM, labelledAmount, layoutReceipt, plainAmount, type LayoutLine } from './layout';
 
 export type PrintLayout = '58' | '80' | 'a4';
@@ -99,6 +99,11 @@ function a4Html(doc: ReceiptDocument, isCopy: boolean): string {
         `<tr><td colspan="3" class="n">${escapeHtml(t.method)}${t.reference !== null && t.reference.length > 0 ? ` (${escapeHtml(l.reference)}: ${escapeHtml(t.reference)})` : ''}</td><td class="n">${money(t.amountMinor)}</td></tr>`,
     )
     .join('');
+  const received = doc.cashReceivedMinor ?? null;
+  const cashReceived =
+    received !== null && received > 0n
+      ? `<tr><td colspan="3" class="n">${escapeHtml(l.cashReceived ?? DEFAULT_RECEIPT_LABELS.cashReceived)}</td><td class="n">${money(received)}</td></tr>`
+      : '';
   const change =
     doc.changeMinor > 0n ? `<tr><td colspan="3" class="n">${escapeHtml(l.change)}</td><td class="n">${money(doc.changeMinor)}</td></tr>` : '';
   const pack = doc.pack.fields
@@ -121,7 +126,7 @@ ${header}
 ${heading === null ? '' : `<h1 class="heading">${escapeHtml(heading)}</h1>`}
 <p><strong>${escapeHtml(l.receipt)} ${escapeHtml(doc.receiptNo)}</strong><br>${escapeHtml(l.date)}: ${escapeHtml(doc.issuedAtText)}${doc.originalReceiptNo === undefined || doc.originalReceiptNo === null ? '' : `<br>${escapeHtml(l.originalReceipt ?? 'Original receipt')}: ${escapeHtml(doc.originalReceiptNo)}`}${doc.customerName === null ? '' : `<br>${escapeHtml(l.customer)}: ${escapeHtml(doc.customerName)}`}</p>
 <table><thead><tr><th>Item</th><th class="n">Qty</th><th class="n">Unit</th><th class="n">Amount</th></tr></thead><tbody>${rows}
-${net}${tax}<tr><td colspan="3" class="n"><strong>${escapeHtml(l.total)}</strong></td><td class="n"><strong>${money(doc.totalMinor)}</strong></td></tr>${tenders}${change}</tbody></table>
+${net}${tax}<tr><td colspan="3" class="n"><strong>${escapeHtml(l.total)}</strong></td><td class="n"><strong>${money(doc.totalMinor)}</strong></td></tr>${tenders}${cashReceived}${change}</tbody></table>
 ${pack}${doc.footerLines.map((f) => `<p>${escapeHtml(f)}</p>`).join('')}
 </body></html>`;
 }
