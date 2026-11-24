@@ -4,6 +4,13 @@
  * cart after a slow tap is the single most reliable way to manufacture a
  * duplicate (§8.5).
  *
+ * WHAT GOES BACK, FIRST. When cash changed hands the screen leads with the
+ * change to give and the cash it came out of ("755.00 change, out of
+ * 2,000.00 received") — the two figures a cashier reads aloud while counting
+ * it out, and the two a customer disputes. Both are the device's own record
+ * of the moment (`tendered_minor`, `change_minor` on the outbox row), not a
+ * recomputation; the tender rows beneath say what each method SETTLED.
+ *
  * The number shown is the DEVICE-ALLOCATED receipt number (03 §3.7.5): the
  * one the customer's copy carries, allocated offline from this device's block,
  * and the one to quote when a sale is queried. The short form of the sale id
@@ -54,21 +61,37 @@ export function ReceiptView({
   const heading =
     sale === undefined || sale === null ? shortSaleNumber(saleId) : saleNumberLabel(sale);
 
+  // The record's own figures win; the prop (what checkout just returned) is
+  // the fallback for a row written without a change figure.
+  const receivedMinor = sale === undefined || sale === null ? null : sale.tenderedMinor;
+  const givenMinor = sale !== undefined && sale !== null && sale.changeMinor !== null ? sale.changeMinor : changeMinor;
+  const changeDue = givenMinor !== null && givenMinor > 0n ? givenMinor : null;
+
   return (
     <section className="receipt-view" aria-label="Sale recorded">
-      {/* The affirmative moment, and the number to quote, are the two things
-          this screen exists for — so they are the two biggest things on it. */}
-      <span className="receipt-crest">
-        <Icon name="check" size={30} />
-      </span>
-      <h2 className="receipt-heading">
-        Sale recorded
-        <span className="receipt-number tabular">{heading}</span>
-      </h2>
+      {/* The affirmative moment and the number to quote: the sale is safe. */}
+      <div className="receipt-top">
+        <span className="receipt-crest">
+          <Icon name="check" size={30} />
+        </span>
+        <h2 className="receipt-heading">
+          Sale recorded
+          <span className="receipt-number tabular">{heading}</span>
+        </h2>
+      </div>
       {sale === undefined || sale === null ? null : (
         <>
+          {receivedMinor !== null && receivedMinor > 0n ? (
+            <div className={`receipt-change${changeDue === null ? ' none-due' : ''}`}>
+              <span className="receipt-change-label">{changeDue === null ? 'No change due' : 'Change to give'}</span>
+              {changeDue === null ? null : <Money amount={changeDue} className="money receipt-change-value" />}
+              <span className="receipt-received">
+                out of <Money amount={receivedMinor} className="money receipt-received-value" /> cash received
+              </span>
+            </div>
+          ) : null}
           <div className="receipt-rows">
-            <div className="total-row">
+            <div className="total-row receipt-total-row">
               <span className="total-label">Total</span>
               <Money amount={sale.totalMinor} className="money receipt-total" />
             </div>
@@ -83,12 +106,6 @@ export function ReceiptView({
                 <Money amount={t.amountMinor} className="money" />
               </div>
             ))}
-            {changeMinor !== null ? (
-              <div className="total-row">
-                <span className="total-label">Change given</span>
-                <Money amount={changeMinor} className="money" />
-              </div>
-            ) : null}
           </div>
           <p className={`sync-badge badge-${sale.syncState}`}>
             <Icon name={sale.syncState === 'synced' ? 'check' : sale.syncState === 'pending' ? 'clock' : 'alert'} size={16} />
@@ -100,8 +117,8 @@ export function ReceiptView({
           paper copy, said as weakly as it is known, with a way to retry or to
           show the receipt on screen. The sale above is already saved. */}
       <PrintStatus db={db} saleId={saleId} onOpenSettings={onOpenPrinterSettings} autoOpen={showReceiptNow} />
-      <button type="button" className="primary-action pressable" onClick={onNewSale}>
-        <Icon name="cart" size={20} />
+      <button type="button" className="primary-action new-sale-action pressable" onClick={onNewSale}>
+        <Icon name="cart" size={22} />
         New sale
       </button>
     </section>

@@ -96,6 +96,13 @@ const PAIRS: readonly (readonly [string, string, string, number])[] = [
   ['the second chart series on an office card', 'chart-2', 'o-card', 3],
   ['the office primary button label', 'brand-ink', 'o-violet', 4.5],
   ['the office primary button label, gradient end', 'brand-ink', 'o-violet-2', 4.5],
+  // The counter's category key: a card's leading edge and a chip's dot. Marks,
+  // not text — but they are how a department is told apart across the grid.
+  ...[0, 1, 2, 3, 4, 5, 6, 7].map(
+    (i) => [`category colour ${String(i)} as a mark on a surface`, `cat-${String(i)}`, 'surface', 3] as const,
+  ),
+  // The complete-sale button is green with white words, at large-text size.
+  ['the complete-sale label', 'brand-ink', 'ok', 3],
 ];
 
 describe('the counter’s colour tokens', () => {

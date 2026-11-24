@@ -1,22 +1,21 @@
 /**
- * The draft cart. Quantities are scaled integers stepped in whole selling
+ * The sale ticket. Quantities are scaled integers stepped in whole selling
  * units; line and cart totals are bigint arithmetic rendered only through
  * the Money boundary. Removing a line is immediate with undo — confirmation
  * dialogs train people to tap through dialogs (§8.7).
  *
- * TWO SHAPES, ONE PANEL. On a tablet it is a column docked beside the
- * catalogue and always in view. On a phone it is a sheet raised from the cart
- * bar, because a phone cannot show both and the catalogue is what the hands
- * are working in. The previous layout stacked the cart BELOW the whole
- * catalogue: on a phone the running total and the pay button were a full
- * scroll away from every tap that changed them, which is how a counter loses
- * track of what it has rung.
+ * TWO SHAPES, ONE PANEL. On a wide screen it is the right-hand column of the
+ * register, the full height of the screen, always in view — the layout every
+ * serious counter app converges on. On a phone or a portrait tablet it is a
+ * sheet raised from the checkout dock, because the catalogue is what the
+ * hands are working in.
  *
  * The line list scrolls inside the panel; the total and the primary action
  * never do. What someone is about to charge should not be something they have
  * to go and find.
  */
 import { useState, type ReactNode } from 'react';
+import { lineNetMinor } from '@erp/money';
 import type { CartLineRow } from '../../data/queries/cart';
 import {
   lineTotalMinor,
@@ -74,10 +73,10 @@ export function CartPanel({
       aria-label="Cart"
       {...(modal ? { role: 'dialog' as const, 'aria-modal': true } : {})}
     >
+      {sheet ? <span className="sheet-grip" aria-hidden="true" /> : null}
       <div className="cart-head">
-        <Icon name="cart" size={22} />
-        <span>Cart</span>
-        <span className="cart-count">{lines.length}</span>
+        <span className="cart-title">Current sale</span>
+        <span className="cart-count tabular">{lines.length}</span>
         {onClose !== undefined ? (
           <button
             type="button"
@@ -91,7 +90,7 @@ export function CartPanel({
       </div>
 
       {lines.length === 0 ? (
-        <div className="empty-state">
+        <div className="empty-state cart-empty">
           <Icon name="cart" size={36} />
           <span className="empty-title">Cart is empty</span>
           <p className="empty-body">Tap a product to add it.</p>
@@ -118,11 +117,12 @@ export function CartPanel({
         <CartTotals pricing={pricing ?? priceCart(lines)} />
         <button
           type="button"
-          className="primary-action pressable"
+          className="primary-action pay-action pressable"
           disabled={lines.length === 0 || !sellable}
           onClick={onTakePayment}
         >
           Take payment
+          <Icon name="forward" size={22} />
         </button>
       </footer>
     </section>
@@ -145,7 +145,7 @@ function CartTotals({ pricing }: { readonly pricing: CartPricing }): ReactNode {
   const breakdown = pricing.breakdown;
   const showsTax = breakdown !== null && breakdown.taxTotalMinor !== 0n;
   return (
-    <>
+    <div className="cart-totals">
       {showsTax && !pricing.isTaxInclusive ? (
         <>
           <div className="total-row subtotal-row">
@@ -158,7 +158,7 @@ function CartTotals({ pricing }: { readonly pricing: CartPricing }): ReactNode {
           </div>
         </>
       ) : null}
-      <div className="total-row">
+      <div className="total-row grand-row">
         <span className="total-label">Total</span>
         {/* Keyed by the amount: each change remounts the wrapper and replays
             a short tick, so a cashier sees the total MOVE as lines go in. */}
@@ -171,7 +171,7 @@ function CartTotals({ pricing }: { readonly pricing: CartPricing }): ReactNode {
           Includes tax <Money amount={breakdown.taxTotalMinor} className="money cart-tax" />
         </p>
       ) : null}
-    </>
+    </div>
   );
 }
 
@@ -186,40 +186,49 @@ function CartLineItem({
 }): ReactNode {
   const [pendingRemove, setPendingRemove] = useState(false);
   const step = oneWholeUnit(line.qtyScale);
+  // The unit price as the shelf shows it — one whole selling unit, rounded once.
+  const unitMinor = lineNetMinor(step, line.qtyScale, line.unitPriceE4, 'half-up');
   return (
     <li className={`cart-line${pendingRemove ? ' removing' : ''}`}>
       <div className="cart-line-main">
-        <span className="cart-line-name">{line.name}</span>
+        <span className="cart-line-info">
+          <span className="cart-line-name">{line.name}</span>
+          <span className="cart-line-each">
+            <Money amount={unitMinor} className="money" /> / {line.uomLabel}
+          </span>
+        </span>
         <Money amount={lineTotalMinor(line)} className="money cart-line-total" />
       </div>
       <div className="cart-line-controls">
-        <button
-          type="button"
-          className="qty-button pressable"
-          aria-label={`One ${line.uomLabel} less`}
-          onClick={() => {
-            const next = line.qtyScaled - step;
-            if (next <= 0n) {
-              setPendingRemove(true);
-              onRemove(line);
-            } else {
-              onSetQty(line.id, next);
-            }
-          }}
-        >
-          <Icon name="minus" size={22} />
-        </button>
-        <span className="qty-display tabular" aria-label="Quantity">
-          {formatQtyScaled(line.qtyScaled, line.qtyScale)} {line.uomLabel}
-        </span>
-        <button
-          type="button"
-          className="qty-button pressable"
-          aria-label={`One ${line.uomLabel} more`}
-          onClick={() => onSetQty(line.id, line.qtyScaled + step)}
-        >
-          <Icon name="plus" size={22} />
-        </button>
+        <div className="qty-stepper">
+          <button
+            type="button"
+            className="qty-button pressable"
+            aria-label={`One ${line.uomLabel} less`}
+            onClick={() => {
+              const next = line.qtyScaled - step;
+              if (next <= 0n) {
+                setPendingRemove(true);
+                onRemove(line);
+              } else {
+                onSetQty(line.id, next);
+              }
+            }}
+          >
+            <Icon name="minus" size={20} />
+          </button>
+          <span className="qty-display tabular" aria-label="Quantity">
+            {formatQtyScaled(line.qtyScaled, line.qtyScale)} {line.uomLabel}
+          </span>
+          <button
+            type="button"
+            className="qty-button pressable"
+            aria-label={`One ${line.uomLabel} more`}
+            onClick={() => onSetQty(line.id, line.qtyScaled + step)}
+          >
+            <Icon name="plus" size={20} />
+          </button>
+        </div>
         <button
           type="button"
           className="line-remove pressable"

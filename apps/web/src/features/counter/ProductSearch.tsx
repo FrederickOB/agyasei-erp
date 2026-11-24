@@ -3,32 +3,47 @@
  * results are effectively instant; the input is debounced so the main thread
  * never chases keystrokes. Empty query shows the catalogue — the quick grid.
  *
- * THREE THINGS THIS SCREEN OWES A PERSON IN A QUEUE, which it did not pay:
+ * WHAT THIS SCREEN OWES A PERSON IN A QUEUE:
  *
- *   1. A WAY TO BROWSE WITHOUT TYPING. 219 products behind a text box is a
- *      catalogue only findable by someone who already knows what it is called.
- *      The chips are the tenant's OWN categories, read off the rows the sync
- *      stream delivered — not a list anybody typed into this file (§8.9).
- *   2. SOMETHING ON SCREEN WHILE THE READ RESOLVES. `undefined` used to render
- *      as nothing, and a blank counter reads as a broken till, not as a fast
- *      one. Skeletons in the shape of the thing that is coming.
- *   3. CONFIRMATION THAT THE TAP LANDED. The card flashes what it did, where
- *      the finger already is — the cart total moving at the bottom of the
- *      screen is the wrong place to look for it, and in a queue nobody does.
+ *   1. A WAY TO BROWSE WITHOUT TYPING. The chips are the tenant's OWN
+ *      categories, read off the rows the sync stream delivered — not a list
+ *      anybody typed into this file (§8.9). Browsing shows the WHOLE of what
+ *      was chosen: an earlier cap of 30 hid most of a 219-line catalogue from
+ *      anybody who did not already know what to type.
+ *   2. SOMETHING ON SCREEN WHILE THE READ RESOLVES. Skeletons in the shape of
+ *      the thing that is coming; a blank counter reads as a broken till.
+ *   3. CONFIRMATION THAT THE TAP LANDED, where the finger already is: the card
+ *      flashes, and from then on carries how many of it are in the sale. The
+ *      grid itself answers "did I already ring that?" — the question a
+ *      cashier otherwise answers by opening the cart.
+ *
+ * THE SCROLL. Only the grid scrolls (`.catalogue-scroll`); the search and the
+ * chips stay where the hand left them, so changing department halfway down a
+ * long list is one tap rather than a scroll back to the top.
  */
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { lineNetMinor } from '@erp/money';
 import { searchProducts } from '../../lib/search';
-import { oneWholeUnit } from '../../lib/quantity';
+import { formatQtyScaled, oneWholeUnit } from '../../lib/quantity';
 import type { ProductWithPrice } from '../../data/queries/products';
 import { Money } from '../../money/Money';
 import { Icon } from '../../ui/Icon';
 
 const DEBOUNCE_MS = 120;
-const MAX_RESULTS = 30;
+/** A typed search narrows; past this many matches, typing more is faster than scrolling. */
+const MAX_SEARCH_RESULTS = 60;
 const ADDED_MS = 700;
 /** Enough to browse by, few enough to stay one thumb-swipe from the start. */
 const MAX_CHIPS = 8;
+/** How many colours the category key cycles through (app.css `.cat-0` …). */
+const CATEGORY_SWATCHES = 8;
+
+/** What is already in the sale, per product — the badge on its card. */
+export interface InCart {
+  readonly qtyScaled: bigint;
+  readonly qtyScale: number;
+  readonly uomLabel: string;
+}
 
 /** Display price for one whole selling unit, rounded once. */
 function unitPriceMinor(p: ProductWithPrice): bigint {
@@ -48,19 +63,40 @@ function categoriesOf(products: readonly ProductWithPrice[]): readonly string[] 
     .map(([name]) => name);
 }
 
+/**
+ * A colour per category, so a department reads at a glance across the grid
+ * and matches its chip. Assigned by the category's place in the alphabet of
+ * the tenant's own categories — never by its name — so no tenant's word is
+ * ever looked up, and two categories in the first eight never share a colour.
+ */
+function swatchesOf(products: readonly ProductWithPrice[]): ReadonlyMap<string, number> {
+  const names = [...new Set(products.map((p) => p.category).filter((c): c is string => c !== null))].sort(
+    (a, b) => a.localeCompare(b),
+  );
+  return new Map(names.map((name, i) => [name, i % CATEGORY_SWATCHES]));
+}
+
 export function ProductSearch({
   products,
   onAdd,
+  inCart,
+  toolbar,
 }: {
   /** `undefined` means the local read has not resolved — not "no products". */
   readonly products: readonly ProductWithPrice[] | undefined;
   readonly onAdd: (product: ProductWithPrice) => void;
+  /** Quantity already in the open sale, by product id. */
+  readonly inCart?: ReadonlyMap<string, InCart>;
+  /** Shown beside the search on a wide screen (the till's state). */
+  readonly toolbar?: ReactNode;
 }): ReactNode {
   const [query, setQuery] = useState('');
   const [debounced, setDebounced] = useState('');
   const [category, setCategory] = useState<string | null>(null);
   const [addedId, setAddedId] = useState<string | null>(null);
   const addedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+  const scrollRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     const timer = setTimeout(() => setDebounced(query), DEBOUNCE_MS);
@@ -71,12 +107,20 @@ export function ProductSearch({
     if (addedTimer.current !== null) clearTimeout(addedTimer.current);
   }, []);
 
+  // A new department or a new search starts at the top of its own list.
+  useEffect(() => {
+    scrollRef.current?.scrollTo?.({ top: 0 });
+  }, [category, debounced]);
+
   const all = products ?? [];
   const categories = useMemo(() => categoriesOf(all), [all]);
-  const results = useMemo(() => {
+  const swatches = useMemo(() => swatchesOf(all), [all]);
+  const matched = useMemo(() => {
     const scoped = category === null ? all : all.filter((p) => p.category === category);
-    return searchProducts(scoped, debounced).slice(0, MAX_RESULTS);
+    return searchProducts(scoped, debounced);
   }, [all, category, debounced]);
+  const searching = debounced.trim().length > 0;
+  const results = searching ? matched.slice(0, MAX_SEARCH_RESULTS) : matched;
 
   const add = (product: ProductWithPrice): void => {
     onAdd(product);
@@ -85,105 +129,153 @@ export function ProductSearch({
     addedTimer.current = setTimeout(() => setAddedId(null), ADDED_MS);
   };
 
+  const swatchClass = (name: string | null): string => {
+    const i = name === null ? undefined : swatches.get(name);
+    return i === undefined ? 'cat-none' : `cat-${String(i)}`;
+  };
+
   return (
     <section className="product-search" aria-label="Catalogue">
-      <div className="search-field">
-        <Icon name="search" size={22} className="search-icon" />
-        <input
-          className="search-input"
-          type="search"
-          inputMode="search"
-          placeholder="Search products"
-          aria-label="Search products"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-        />
-      </div>
-
-      {categories.length > 0 ? (
-        <div className="chip-row" role="group" aria-label="Filter by category">
-          <button
-            type="button"
-            className="chip pressable"
-            aria-pressed={category === null}
-            onClick={() => setCategory(null)}
-          >
-            All
-          </button>
-          {categories.map((name) => (
-            <button
-              key={name}
-              type="button"
-              className="chip pressable"
-              aria-pressed={category === name}
-              onClick={() => setCategory(category === name ? null : name)}
-            >
-              {name}
-            </button>
-          ))}
-        </div>
-      ) : null}
-
-      {products === undefined ? (
-        <ul className="product-grid" aria-hidden="true">
-          {Array.from({ length: 8 }, (_, i) => (
-            <li key={i} className="skeleton skeleton-card" />
-          ))}
-        </ul>
-      ) : results.length > 0 ? (
-        <ul className="product-grid" aria-label="Products">
-          {results.map((p) => (
-            <li key={p.id}>
+      <div className="catalogue-head">
+        <div className="search-row">
+          <div className="search-field">
+            <Icon name="search" size={22} className="search-icon" />
+            <input
+              ref={inputRef}
+              className="search-input"
+              type="search"
+              inputMode="search"
+              placeholder="Search products"
+              aria-label="Search products"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+            />
+            {query.length > 0 ? (
               <button
                 type="button"
-                className="product-card pressable"
-                onClick={() => add(p)}
+                className="search-clear pressable"
+                aria-label="Clear search"
+                onClick={() => {
+                  setQuery('');
+                  setDebounced('');
+                  inputRef.current?.focus();
+                }}
               >
-                <span className="product-name">{p.name}</span>
-                <span className="product-foot">
-                  <Money amount={unitPriceMinor(p)} className="money product-price" />
-                  <span className="product-unit">{p.uomLabel}</span>
-                </span>
-                {addedId === p.id ? (
-                  <span className="product-added" aria-hidden="true">
-                    <Icon name="check" size={22} />
-                    Added
-                  </span>
-                ) : null}
+                <Icon name="close" size={18} />
               </button>
-            </li>
-          ))}
-        </ul>
-      ) : all.length === 0 ? (
-        <div className="empty-state">
-          <Icon name="tag" size={40} />
-          <span className="empty-title">No products priced yet</span>
-          <p className="empty-body">
-            This counter has no prices for the list it sells from. It will fill in as they arrive —
-            leave the device connected.
-          </p>
+            ) : null}
+          </div>
+          {toolbar}
         </div>
-      ) : (
-        <div className="empty-state">
-          <Icon name="search" size={40} />
-          <span className="empty-title">Nothing found</span>
-          <p className="empty-body">
-            {debounced.length > 0
-              ? `No product matches “${debounced}”. Try a shorter word, or a local name.`
-              : 'No products in this category.'}
-          </p>
-          <button
-            type="button"
-            className="secondary-action pressable"
-            onClick={() => {
-              setQuery('');
-              setCategory(null);
-            }}
-          >
-            Show everything
-          </button>
-        </div>
-      )}
+
+        {categories.length > 0 ? (
+          <div className="chip-row" role="group" aria-label="Filter by category">
+            <button
+              type="button"
+              className="chip pressable"
+              aria-pressed={category === null}
+              onClick={() => setCategory(null)}
+            >
+              All
+            </button>
+            {categories.map((name) => (
+              <button
+                key={name}
+                type="button"
+                className={`chip chip-cat pressable ${swatchClass(name)}`}
+                aria-pressed={category === name}
+                onClick={() => setCategory(category === name ? null : name)}
+              >
+                <span className="chip-swatch" aria-hidden="true" />
+                {name}
+              </button>
+            ))}
+          </div>
+        ) : null}
+      </div>
+
+      <div className="catalogue-scroll" ref={scrollRef}>
+        {products === undefined ? (
+          <ul className="product-grid" aria-hidden="true">
+            {Array.from({ length: 12 }, (_, i) => (
+              <li key={i} className="skeleton skeleton-card" />
+            ))}
+          </ul>
+        ) : results.length > 0 ? (
+          <>
+            <ul className="product-grid" aria-label="Products">
+              {results.map((p) => {
+                const held = inCart?.get(p.id);
+                return (
+                  <li key={p.id}>
+                    <button
+                      type="button"
+                      className={`product-card pressable ${swatchClass(p.category)}${held === undefined ? '' : ' in-cart'}`}
+                      onClick={() => add(p)}
+                    >
+                      <span className="product-name">{p.name}</span>
+                      <span className="product-foot">
+                        <span className="product-price-line">
+                          <Money amount={unitPriceMinor(p)} className="money product-price" />
+                          <span className="product-unit">/ {p.uomLabel}</span>
+                        </span>
+                        {held === undefined ? null : (
+                          <span className="product-qty tabular">
+                            <span aria-hidden="true">×{formatQtyScaled(held.qtyScaled, held.qtyScale)}</span>
+                            <span className="visually-hidden">
+                              {`, ${formatQtyScaled(held.qtyScaled, held.qtyScale)} ${held.uomLabel} in the sale`}
+                            </span>
+                          </span>
+                        )}
+                      </span>
+                      {addedId === p.id ? (
+                        <span className="product-added" aria-hidden="true">
+                          <Icon name="check" size={22} />
+                          Added
+                        </span>
+                      ) : null}
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+            {searching && matched.length > results.length ? (
+              <p className="catalogue-more">
+                Showing {results.length} of {matched.length} matches — keep typing to narrow it down.
+              </p>
+            ) : null}
+          </>
+        ) : all.length === 0 ? (
+          <div className="empty-state">
+            <Icon name="tag" size={40} />
+            <span className="empty-title">No products priced yet</span>
+            <p className="empty-body">
+              This counter has no prices for the list it sells from. It will fill in as they arrive —
+              leave the device connected.
+            </p>
+          </div>
+        ) : (
+          <div className="empty-state">
+            <Icon name="search" size={40} />
+            <span className="empty-title">Nothing found</span>
+            <p className="empty-body">
+              {debounced.length > 0
+                ? `No product matches “${debounced}”. Try a shorter word, or a local name.`
+                : 'No products in this category.'}
+            </p>
+            <button
+              type="button"
+              className="secondary-action pressable"
+              onClick={() => {
+                setQuery('');
+                setCategory(null);
+              }}
+            >
+              Show everything
+            </button>
+          </div>
+        )}
+      </div>
     </section>
   );
 }

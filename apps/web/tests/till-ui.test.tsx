@@ -213,6 +213,55 @@ describe('tender lines at the counter', () => {
     expect(await screen.findByText(/W-1/)).toBeTruthy();
   });
 
+  // The completion screen states what was HANDED OVER and what goes back —
+  // the device's own record of the moment, not a recomputation. (It showed
+  // only the amount each method settled, so "1,000 handed over" vanished.)
+  it('after a cash sale the completion screen leads with the change, out of the cash received', async () => {
+    const { db } = await device({ till: DAY });
+    const panel = await toTender(db);
+    fireEvent.change(within(panel).getByLabelText('Cash received'), { target: { value: '1000.00' } });
+    fireEvent.click(within(panel).getByRole('button', { name: 'Complete sale' }));
+
+    const done = await screen.findByRole('region', { name: 'Sale recorded' });
+    const change = await waitFor(() => {
+      const el = done.querySelector('.receipt-change');
+      expect(el).not.toBeNull();
+      return el as HTMLElement;
+    });
+    expect(change.textContent).toMatch(/Change to give/);
+    expect(done.querySelector('.receipt-change-value')?.textContent).toMatch(/380\.00/);
+    expect(done.querySelector('.receipt-received-value')?.textContent).toMatch(/1,?000\.00/);
+    expect(change.textContent).toMatch(/cash received/);
+    // What the cash SETTLED is still its own row, and it is the total, not the notes.
+    const cashRow = within(done).getByText('Notes and coins').closest('.receipt-tender');
+    expect(cashRow?.textContent).toMatch(/620\.00/);
+  });
+
+  it('exact cash says no change is due, and still states the cash received', async () => {
+    const { db } = await device({ till: DAY });
+    const panel = await toTender(db);
+    fireEvent.click(within(panel).getByRole('button', { name: 'Exact' }));
+    fireEvent.click(within(panel).getByRole('button', { name: 'Complete sale' }));
+
+    const done = await screen.findByRole('region', { name: 'Sale recorded' });
+    await waitFor(() => expect(done.querySelector('.receipt-change')?.textContent).toMatch(/No change due/));
+    expect(done.querySelector('.receipt-change-value')).toBeNull();
+    expect(done.querySelector('.receipt-received-value')?.textContent).toMatch(/620\.00/);
+  });
+
+  it('a sale with no cash in it shows no cash-received or change block', async () => {
+    const { db } = await device({ till: DAY });
+    const panel = await toTender(db);
+    fireEvent.click(within(panel).getByRole('button', { name: 'Phone wallet' }));
+    fireEvent.change(within(panel).getByLabelText(/Reference/), { target: { value: 'W-9' } });
+    fireEvent.click(within(panel).getByRole('button', { name: 'Complete sale' }));
+
+    const done = await screen.findByRole('region', { name: 'Sale recorded' });
+    await within(done).findByText(/W-9/);
+    expect(done.querySelector('.receipt-change')).toBeNull();
+    expect(done.textContent).not.toMatch(/cash received/i);
+  });
+
   it('does NOT offer an on-account method to a session not known to hold the credit capability', async () => {
     const { db } = await device({ till: DAY });
     const panel = await toTender(db);

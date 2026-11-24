@@ -90,6 +90,22 @@ describe('the counter on a phone', () => {
     await waitFor(() => expect(card.textContent).toContain('Added'));
   });
 
+  it('a card carries how many of it are already in the sale', async () => {
+    const { db } = await tillWithOneProduct();
+    render(renderCounter(db));
+    const card = await screen.findByRole('button', { name: /Cement 50kg/ });
+    expect(card.querySelector('.product-qty')).toBeNull();
+
+    fireEvent.click(card);
+    await waitFor(() => expect(screen.getByRole('button', { name: /Cement 50kg/ }).querySelector('.product-qty')).not.toBeNull());
+    fireEvent.click(screen.getByRole('button', { name: /Cement 50kg/ }));
+
+    // Said to a screen reader too, after the product's own name.
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /^Cement 50kg.*2 bag in the sale$/ })).toBeTruthy(),
+    );
+  });
+
   it('opens the cart as a real modal, and offers three ways out of it', async () => {
     const { db } = await tillWithOneProduct();
     render(renderCounter(db));

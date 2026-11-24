@@ -65,7 +65,7 @@ import { useMediaQuery, WIDE_LAYOUT } from '../../ui/use-media-query';
 import { CartPanel, type RemovedLine } from './CartPanel';
 import { CashUp } from './CashUp';
 import { longDate, OpenTill } from './OpenTill';
-import { ProductSearch } from './ProductSearch';
+import { ProductSearch, type InCart } from './ProductSearch';
 import { ReceiptView } from './ReceiptView';
 import { TenderPanel, type TenderSubmission } from './TenderPanel';
 import { useLeaseGate } from '../auth/lease-gate';
@@ -80,6 +80,18 @@ type CounterMode =
 const UNDO_MS = 5000;
 /** How often an idle counter checks whether local midnight has passed. */
 const MIDNIGHT_CHECK_MS = 30_000;
+
+/** "Tue 24 Nov" — the till's date as the counter's chrome shows it. */
+function shortDate(ymd: string): string {
+  const ms = Date.parse(`${ymd}T00:00:00Z`);
+  if (Number.isNaN(ms)) return ymd;
+  return new Intl.DateTimeFormat('en-GB', {
+    weekday: 'short',
+    day: 'numeric',
+    month: 'short',
+    timeZone: 'UTC',
+  }).format(new Date(ms));
+}
 
 /**
  * A refused sale is WORK, not a toast (§8.5, and the frontend brief: conflicts
@@ -317,6 +329,20 @@ export function Counter({
   );
   const totalMinor = pricing.grossMinor;
 
+  // What is already in the sale, by product — the badge on each card.
+  const inCart = useMemo(() => {
+    const held = new Map<string, InCart>();
+    for (const line of lines ?? []) {
+      const prior = held.get(line.productId);
+      held.set(line.productId, {
+        qtyScaled: (prior?.qtyScaled ?? 0n) + line.qtyScaled,
+        qtyScale: line.qtyScale,
+        uomLabel: line.uomLabel,
+      });
+    }
+    return held;
+  }, [lines]);
+
   const onCompleteSale = useCallback(
     (submission: TenderSubmission) => {
       const hlc = hlcRef.current;
@@ -406,8 +432,10 @@ export function Counter({
     // of the counter, never a blank screen — and nothing tappable, because
     // whether this device may sell is exactly what is not known yet.
     return (
-      <div className="counter" aria-busy="true">
-        <ProductSearch products={undefined} onAdd={() => undefined} />
+      <div className="counter register" aria-busy="true">
+        <div className="register-main">
+          <ProductSearch products={undefined} onAdd={() => undefined} />
+        </div>
       </div>
     );
   }
@@ -472,10 +500,10 @@ export function Counter({
 
   // The till's state, in the counter's own chrome — always in view while selling.
   const tillBar = (
-    <div className="till-bar" role="status">
-      <Icon name="clock" size={18} />
+    <div className={`till-bar${till.openedOffline ? ' offline' : ''}`} role="status">
+      <span className="till-bar-dot" aria-hidden="true" />
       <span className="till-bar-text">
-        Till open · <strong>{longDate(till.businessDate)}</strong>
+        Till open · <strong title={longDate(till.businessDate)}>{shortDate(till.businessDate)}</strong>
         {till.openedOffline ? <span className="till-bar-flag"> · opened offline</span> : null}
       </span>
       <button
@@ -561,6 +589,7 @@ export function Counter({
           onAccountCeilingMinor={typeof ceiling === 'bigint' ? ceiling : null}
           onBack={() => setMode({ step: 'cart' })}
           onComplete={onCompleteSale}
+          {...(wide ? { summaryLines: lines ?? [] } : {})}
         />
       </>
     );
@@ -568,32 +597,43 @@ export function Counter({
 
   const lineCount = lines?.length ?? 0;
 
+  // THE REGISTER. The till, the search and the departments stay put; only the
+  // catalogue scrolls (app.css locks the page to the screen while this is the
+  // visible view). Wide: the sale ticket is a full-height column beside it.
+  // Narrow: a checkout dock is the last row of the screen — in view whatever
+  // the scroll position, because it is the one thing a cashier is always
+  // about to reach for.
   return (
-    <div className="counter">
-      {tillBar}
-      {refusalBanner}
-      {stuckBanner}
-      {/* A card is tappable only once there is a cart for the tap to land in.
-          In the instant before the effect above mints one, a card that looked
-          live would swallow the tap — and a dropped tap at a till is a
-          mis-ring. The skeleton is the honest frame for that instant. */}
-      <ProductSearch products={cartId === null ? undefined : products} onAdd={onAdd} />
+    <div className={`counter register${wide ? ' register-wide' : ''}`}>
+      <div className="register-main">
+        {wide ? null : tillBar}
+        {refusalBanner}
+        {stuckBanner}
+        {/* A card is tappable only once there is a cart for the tap to land in.
+            In the instant before the effect above mints one, a card that looked
+            live would swallow the tap — and a dropped tap at a till is a
+            mis-ring. The skeleton is the honest frame for that instant. */}
+        <ProductSearch
+          products={cartId === null ? undefined : products}
+          onAdd={onAdd}
+          inCart={inCart}
+          {...(wide ? { toolbar: tillBar } : {})}
+        />
+      </div>
 
       {wide ? (
-        <div className="cart-dock">
+        <aside className="register-ticket" aria-label="Sale">
           <CartPanel {...cartProps} />
-        </div>
+        </aside>
       ) : (
         <>
-          {/* The phone's cart lives in the thumb zone and never scrolls away:
-              what is in it, what it comes to, and the one action that matters.
-              Two targets, because "check the cart" and "charge for it" are
+          {/* Two targets, because "check the cart" and "charge for it" are
               different intentions and a single control would guess. */}
-          <div className="cart-bar">
+          <div className="cart-bar checkout-dock">
             {cartBlocked ? (
-              // The banner at the top of the page scrolls away; this bar does
-              // not. Somebody halfway down a catalogue, reaching for a pay
-              // button that is dead, needs the reason WHERE THE BUTTON IS.
+              // The banner at the top of the page may be out of sight; this
+              // dock never is. Somebody reaching for a pay button that is dead
+              // needs the reason WHERE THE BUTTON IS.
               <p className="cart-bar-blocked">
                 <Icon name="alert" size={18} />
                 These prices are out of date
@@ -607,22 +647,27 @@ export function Counter({
                 aria-expanded={cartOpen}
                 onClick={() => setCartOpen(true)}
               >
-                <Icon name="cart" size={22} />
-                <span>
+                <span className="cart-bar-icon" aria-hidden="true">
+                  <Icon name="cart" size={22} />
+                  {lineCount > 0 ? <span className="cart-bar-badge tabular">{lineCount}</span> : null}
+                </span>
+                <span className="cart-bar-text">
                   <span className="cart-bar-lines">
                     {lineCount === 1 ? '1 line' : `${lineCount} lines`}
                   </span>
-                  <br />
-                  <Money amount={totalMinor} className="money cart-bar-total" />
+                  <span className="total-tick" key={totalMinor.toString()}>
+                    <Money amount={totalMinor} className="money cart-bar-total" />
+                  </span>
                 </span>
               </button>
               <button
                 type="button"
-                className="primary-action pressable"
+                className="primary-action pay-action pressable"
                 disabled={lineCount === 0 || cartBlocked}
                 onClick={takePayment}
               >
                 Take payment
+                <Icon name="forward" size={22} />
               </button>
             </div>
           </div>

@@ -23,9 +23,40 @@ export async function checkOpenTill(device: Device, where: string): Promise<void
   }
 }
 
+/**
+ * "Take payment" is on screen wherever the catalogue is scrolled to. The bar
+ * once sat inside a pane that an entrance animation had left transformed, so
+ * `position: fixed` pinned it to the pane, not the screen, and it scrolled
+ * away with the catalogue on a portrait tablet (24 Nov 2026).
+ */
+export async function expectPayInView(device: Device, where: string): Promise<void> {
+  const { page } = device;
+  const scrollTo = (end: boolean) =>
+    page.evaluate((toEnd) => {
+      const grid = document.querySelector('.catalogue-scroll');
+      if (grid !== null) grid.scrollTop = toEnd ? grid.scrollHeight : 0;
+      window.scrollTo(0, toEnd ? document.documentElement.scrollHeight : 0);
+    }, end);
+  const viewport = page.viewportSize();
+  // At the top (where the misplaced bar sat below the fold under a long
+  // catalogue) and at the very end.
+  for (const end of [false, true]) {
+    await scrollTo(end);
+    const box = await device.takePayment.boundingBox();
+    const at = `${where}: take-payment, catalogue scrolled to the ${end ? 'end' : 'top'}`;
+    expect(box, `${at} has a box`).not.toBeNull();
+    if (box !== null && viewport !== null) {
+      expect(box.y, `${at}: top on screen`).toBeGreaterThanOrEqual(0);
+      expect(box.y + box.height, `${at}: bottom on screen`).toBeLessThanOrEqual(viewport.height + 1);
+    }
+  }
+  await scrollTo(false);
+}
+
 export async function checkCart(device: Device, where: string): Promise<void> {
   const { page } = device;
   await expectNoHorizontalScroll(page, `${where}: cart`);
+  await expectPayInView(device, where);
   await expectNotClipped(device.tillBar, `${where}: till bar`);
   await expectNotClipped(device.tillBar.getByRole('button', { name: 'Cash up' }), `${where}: cash-up button`);
   await expectNotClipped(device.takePayment, `${where}: take-payment button`);
