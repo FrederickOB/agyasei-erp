@@ -48,7 +48,7 @@ The hostnames below assume Render gives you `erp-poc-api.onrender.com` and
 2. **SQL editor** → paste all of `infra/supabase/roles.sql` → Run. It creates the roles and stops
 
    with an error if any has more privilege than the isolation model allows. (Skip its last comment
-    block about `powersync_storage` — PowerSync Cloud keeps its own storage.)
+      block about `powersync_storage` — PowerSync Cloud keeps its own storage.)
 3. **Passwords**, from your Mac — psql hashes them locally, so the plaintext never reaches the server.
 
    Copy the **Session pooler** host from Supabase's _Connect_ dialog (`aws-…pooler.supabase.com`):
@@ -72,18 +72,18 @@ Each is `postgresql://<user>:<password>@<host>:<port>/postgres`, with **no** `ss
 1. **Projects → Create** "ERP POC" → **New application** → type **User Agent**, authentication
 
    **PKCE**.
-    Redirect URI `https://agyasei-erp-web.onrender.com/auth/callback`; post-logout URI
-    `https://agyasei-erp-web.onrender.com/`. Note the **Client ID**.
+      Redirect URI `https://agyasei-erp-web.onrender.com/auth/callback`; post-logout URI
+      `https://agyasei-erp-web.onrender.com/`. Note the **Client ID**.
 2. **Issuer**: open `https://<your-instance-domain>/.well-known/openid-configuration` and copy
 
    `issuer` exactly — that string is `OIDC_ISSUER`.
 3. **Signing algorithm.** The API accepts ES256 and EdDSA by default (02-security §2.2). Open
 
    `https://<your-instance-domain>/oauth/v2/keys`: if the active key says `"alg":"ES256"`, you are
-    done. If it says `RS256`, either create and activate an **ECDSA P-256 web key** in Zitadel
-    (wait 5 minutes after creating it before activating), or — **POC only** — add
-    `OIDC_ID_TOKEN_ALGS=RS256` to the API on Render. That is a deviation from §2.2 and must not
-    reach production.
+      done. If it says `RS256`, either create and activate an **ECDSA P-256 web key** in Zitadel
+      (wait 5 minutes after creating it before activating), or — **POC only** — add
+      `OIDC_ID_TOKEN_ALGS=RS256` to the API on Render. That is a deviation from §2.2 and must not
+      reach production.
 4. **Users →** your user → copy its **User ID**. That is your `sub`, used in step 8.
 
 ## 3. Identity keys
@@ -131,17 +131,17 @@ The API's first deploy migrates the empty database, converges the grants and cre
 1. **Database connection:** host `db.<ref>.supabase.co`, port `5432`, database `postgres`, user
 
    `powersync_repl` and its password, SSL **verify-full** (PowerSync already trusts Supabase's CA).
-    Press **Test connection**.
-    _If this fails, stop here._ A free Supabase project's direct host is IPv6-only; PowerSync
-    publishes an IPv6 range, but its docs don't promise this case. The fallback is a different free
-    Postgres reachable over IPv4 — a decision to take together, not to improvise.
+      Press **Test connection**.
+      _If this fails, stop here._ A free Supabase project's direct host is IPv6-only; PowerSync
+      publishes an IPv6 range, but its docs don't promise this case. The fallback is a different free
+      Postgres reachable over IPv4 — a decision to take together, not to improvise.
 2. **Client auth:** JWKS URI `https://erp-poc-api.onrender.com/.well-known/jwks.json`; audience
 
    `erp-sync`. If a "Supabase Auth" option is offered, leave it **off**.
 3. **Sync rules:** paste the **whole** of `infra/powersync/sync_rules.yaml`, validate, deploy. Do not
 
    edit it in the dashboard — it is the tenant isolation boundary (03 §3.2), reviewed by two people
-    (§3.9). A change is made in the repository and pasted again.
+      (§3.9). A change is made in the repository and pasted again.
 4. **Done when** the instance shows replication active (initial snapshot complete).
 
 ## 7. Keep it awake, and know when it breaks
@@ -149,7 +149,7 @@ The API's first deploy migrates the empty database, converges the grants and cre
 1. **UptimeRobot** (free): an HTTP monitor on `https://erp-poc-api.onrender.com/readyz` every
 
    5 minutes. It keeps the free container from sleeping (it sleeps after 15 idle minutes, and the
-    first request then waits about a minute) and tells you when the API is down.
+      first request then waits about a minute) and tells you when the API is down.
 2. **healthchecks.io** (free): a check with period 5 min, grace 10 min. Add its ping URL to the API
 
    on Render as `JOBS_HEARTBEAT_URL`. It is the only thing that notices if the worker dies.
