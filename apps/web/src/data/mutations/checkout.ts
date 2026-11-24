@@ -140,6 +140,24 @@ export class TillClosedAtMidnightError extends SaleContextIncompleteError {
   }
 }
 
+/**
+ * The cart is not what the cashier was looking at. A tap that was still being
+ * written when payment was taken lands in the cart a moment later: recording
+ * it would charge the customer for more (or less) than the amount due on the
+ * screen, and the change the screen worked out would be wrong. Refused BEFORE
+ * anything is written — the cart survives, the screen catches up, and the
+ * cashier takes payment against the real figure.
+ */
+export class CartChangedError extends Error {
+  constructor(
+    readonly shownMinor: bigint,
+    readonly cartMinor: bigint,
+  ) {
+    super('The cart changed while payment was being taken.');
+    this.name = 'CartChangedError';
+  }
+}
+
 /** The tender lines do not settle the sale — too little, too much, or a missing reference. */
 export class TenderError extends Error {
   constructor(message: string) {
@@ -466,6 +484,12 @@ export interface CheckoutInput {
   readonly tenderedMinor?: bigint;
   /** Required for an on-account line; the customer the sale is charged to. */
   readonly customerId?: string;
+  /**
+   * The amount due the cashier was SHOWN. When given, a cart that no longer
+   * comes to it is refused (`CartChangedError`) instead of recorded. The
+   * counter always passes it; omitted only by callers with no screen.
+   */
+  readonly expectedTotalMinor?: bigint;
   /** Id minter for a newly issued sequence block. Injected for deterministic tests. */
   readonly newId?: () => string;
 }
@@ -478,6 +502,13 @@ export interface CheckoutResult {
   readonly changeMinor: bigint;
   readonly cashSessionId: string;
   readonly businessDate: string;
+  /**
+   * The lines and the pricing basis this sale was RECORDED with — read inside
+   * the transaction that wrote it. The receipt is built from these, never from
+   * a screen's copy of the cart, which can be a tap behind.
+   */
+  readonly lines: readonly CartLineRow[];
+  readonly pricingBasis: CartPricingBasis;
 }
 
 export async function checkout(db: LocalDb, input: CheckoutInput): Promise<CheckoutResult> {
@@ -502,6 +533,14 @@ export async function checkout(db: LocalDb, input: CheckoutInput): Promise<Check
     if (duplicate.length > 0) throw new DuplicateSaleError(input.cartId);
 
     const context = await loadSaleContext(tx, cart, nowIso);
+
+    // The amount on the cashier's screen is the amount the customer agreed
+    // to. Checked FIRST — before tenders are judged against a figure nobody
+    // was shown, and before a receipt number is drawn.
+    if (input.expectedTotalMinor !== undefined) {
+      const cartMinor = cartTotalMinor(lines, context.pricingBasis);
+      if (cartMinor !== input.expectedTotalMinor) throw new CartChangedError(input.expectedTotalMinor, cartMinor);
+    }
 
     let tenders = input.tenders;
     if (tenders === undefined) {
@@ -586,6 +625,8 @@ export async function checkout(db: LocalDb, input: CheckoutInput): Promise<Check
       changeMinor: built.settled.changeMinor,
       cashSessionId: context.till.id,
       businessDate: context.businessDate,
+      lines,
+      pricingBasis: context.pricingBasis,
     };
   });
 

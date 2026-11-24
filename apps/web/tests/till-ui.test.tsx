@@ -262,6 +262,35 @@ describe('tender lines at the counter', () => {
     expect(done.textContent).not.toMatch(/cash received/i);
   });
 
+  it('a tap still going in when payment is taken is refused, not charged — then the screen catches up', async () => {
+    const { db } = await device({ till: DAY });
+    const panel = await toTender(db);
+    expect(panel.querySelector('.tender-total')?.textContent).toMatch(/620\.00/);
+    // A second bag lands in the cart without the screen having caught up yet
+    // (written, but not yet re-read) — the race, held still.
+    await db.execute('UPDATE cart_line SET qty_scaled = qty_scaled + 1');
+    fireEvent.change(within(panel).getByLabelText('Cash received'), { target: { value: '1000.00' } });
+    fireEvent.click(within(panel).getByRole('button', { name: 'Complete sale' }));
+
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toMatch(/Nothing was recorded/);
+    expect(alert.textContent).toMatch(/cart changed/);
+    expect(screen.queryByRole('region', { name: 'Sale recorded' })).toBeNull();
+    expect((await readPendingOps(db)).filter((o) => o.kind === 'sale')).toHaveLength(0);
+
+    // The screen catches up to the real cart, and the sale goes through at it.
+    db.changes.notify();
+    await waitFor(() => expect(panel.querySelector('.tender-total')?.textContent).toMatch(/1,?240\.00/));
+    // 1,000 no longer covers it, and the screen now says so — Complete is dead.
+    const complete = within(panel).getByRole('button', { name: 'Complete sale' }) as HTMLButtonElement;
+    expect(complete.disabled).toBe(true);
+    fireEvent.change(within(panel).getByLabelText('Cash received'), { target: { value: '2000.00' } });
+    expect(complete.disabled).toBe(false);
+    fireEvent.click(complete);
+    const done = await screen.findByRole('region', { name: 'Sale recorded' });
+    await waitFor(() => expect(done.querySelector('.receipt-total')?.textContent).toMatch(/1,?240\.00/));
+  });
+
   it('does NOT offer an on-account method to a session not known to hold the credit capability', async () => {
     const { db } = await device({ till: DAY });
     const panel = await toTender(db);

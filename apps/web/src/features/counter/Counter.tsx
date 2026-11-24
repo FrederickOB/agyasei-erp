@@ -40,6 +40,7 @@ import {
   type CartPricingBasis,
 } from '../../data/pricing/cart-pricing';
 import {
+  CartChangedError,
   checkout,
   DuplicateSaleError,
   SaleContextIncompleteError,
@@ -100,6 +101,10 @@ function shortDate(ymd: string): string {
  * re-rung or the device fixed; nothing has been dropped.
  */
 function refusalMessage(err: unknown): string {
+  if (err instanceof CartChangedError) {
+    // Said without figures: the amount due below has already caught up.
+    return 'Nothing was recorded — the cart changed while payment was being taken (an item was still going in). Check the amount due below, then take payment again.';
+  }
   if (err instanceof SaleContextIncompleteError) return err.message;
   if (err instanceof TenderError) return err.message;
   if (err instanceof SalePayloadInvalidError) {
@@ -352,6 +357,9 @@ export function Counter({
         cartId,
         tenders: submission.tenders,
         ...(submission.customerId === undefined ? {} : { customerId: submission.customerId }),
+        // What the customer was told. A cart that moved under the screen —
+        // a tap still being written — is refused, not charged.
+        expectedTotalMinor: pricing.grossMinor,
         hlc,
         nowIso: now(),
       })
@@ -360,10 +368,16 @@ export function Counter({
           // The sale is COMMITTED here. Only now is a receipt queued, and
           // nothing below can fail the sale, delay the next customer, or be
           // awaited: it is fire-and-forget by design (printing/service.ts).
+          // Built from the lines the sale was RECORDED with, not this screen's
+          // copy of the cart, so the slip can never be a tap behind the sale.
           if (printing !== null) {
             void printing.afterSale(
               result.saleId,
-              { lines: lines ?? [], pricing, basis: basis ?? UNTAXED_BASIS },
+              {
+                lines: result.lines,
+                pricing: priceCart(result.lines, result.pricingBasis),
+                basis: result.pricingBasis,
+              },
               currency,
             );
           }
@@ -389,7 +403,7 @@ export function Counter({
           setRefusal(refusalMessage(err));
         });
     },
-    [db, cartId, now, printing, lines, pricing, basis, currency],
+    [db, cartId, now, printing, pricing, currency],
   );
 
   // ── THE TILL GATES EVERYTHING BELOW ─────────────────────────────────────
