@@ -38,6 +38,7 @@ export type IconName =
   | 'back'
   | 'forward'
   | 'up'
+  | 'draft'
   | 'close'
   | 'download'
   | 'pin'
@@ -122,6 +123,8 @@ const PATHS: Record<IconName, ReactNode> = {
   back: <path d="M11 5l-7 7 7 7M4 12h16" />,
   forward: <path d="M13 5l7 7-7 7M20 12H4" />,
   up: <path d="M6 15l6-6 6 6" />,
+  // A sale set aside: a bookmark.
+  draft: <path d="M7 4h10a1 1 0 011 1v15l-6-4-6 4V5a1 1 0 011-1z" />,
   cash: (
     <>
       <rect x="2.5" y="6" width="19" height="12" rx="2" />

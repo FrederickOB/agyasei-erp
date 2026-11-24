@@ -679,6 +679,191 @@ button {
   font-weight: 700;
 }
 
+/* Drafts waiting for their customers, beside Cash up. */
+.till-bar .drafts-action {
+  gap: var(--s-2);
+  background: var(--brand-tint);
+  color: var(--brand-text);
+  animation: pop var(--dur-3) var(--ease) backwards;
+}
+.drafts-count {
+  min-width: 22px;
+  height: 22px;
+  padding: 0 6px;
+  border-radius: var(--r-full);
+  background: var(--brand);
+  color: var(--brand-ink);
+  font-size: var(--t-xs);
+  font-weight: 800;
+  line-height: 22px;
+  text-align: center;
+  animation: bump var(--dur-3) var(--ease);
+}
+/* "Saved as a draft · Undo" — the next customer's cart is already open. */
+.draft-notice {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  margin: 0;
+  padding: var(--s-2) var(--s-2) var(--s-2) var(--s-4);
+  border-radius: var(--r-2);
+  background: var(--text);
+  color: var(--surface);
+  font-size: var(--t-sm);
+  font-weight: 600;
+  animation: rise var(--dur-3) var(--ease) backwards;
+}
+.draft-notice span {
+  flex: 1;
+  min-width: 0;
+}
+.draft-notice .undo-button {
+  border: 0;
+  background: transparent;
+  color: var(--surface);
+}
+
+/* ─── MODAL SHEETS (drafts) ── same rise, scrim and ways out as the cart's. */
+.modal-sheet {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: var(--z-sheet);
+  display: flex;
+  flex-direction: column;
+  max-width: 34rem;
+  max-height: 86dvh;
+  margin: 0 auto;
+  border-radius: var(--r-4) var(--r-4) 0 0;
+  background: var(--surface);
+  box-shadow: var(--shadow-2);
+  padding-bottom: env(safe-area-inset-bottom);
+  animation: sheet-up var(--dur-3) var(--ease);
+}
+.modal-sheet-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  padding: var(--s-2) var(--s-4) var(--s-2) var(--s-5);
+}
+.modal-sheet-title {
+  flex: 1;
+  font-size: var(--t-lg);
+  font-weight: 700;
+}
+.modal-sheet-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-4);
+  padding: var(--s-2) var(--s-5) var(--s-5);
+  overflow-y: auto;
+}
+.modal-sheet-actions {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: var(--s-3);
+}
+.draft-what {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin: 0;
+  padding: var(--s-3) var(--s-4);
+  border-radius: var(--r-2);
+  background: var(--tile);
+  color: var(--text-muted);
+  font-weight: 650;
+}
+.draft-what-total {
+  color: var(--text);
+  font-size: var(--t-xl);
+  font-weight: 800;
+}
+.draft-name-input {
+  min-height: var(--tap);
+  padding: 0 var(--s-4);
+  border: 1px solid transparent;
+  border-radius: var(--r-2);
+  background: var(--tile);
+  font-size: var(--t-md);
+}
+.draft-name-input:focus {
+  border-color: var(--brand);
+  background: var(--surface);
+  box-shadow: 0 0 0 4px var(--brand-tint);
+  outline: none;
+}
+.draft-list {
+  list-style: none;
+  margin: 0;
+  padding: 0 var(--s-5) var(--s-4);
+  overflow-y: auto;
+}
+.draft-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--s-1) var(--s-3);
+  padding: var(--s-4) 0;
+  border-bottom: 1px solid var(--border);
+  animation: line-in var(--dur-3) var(--ease) backwards;
+}
+.draft-row:last-child {
+  border-bottom: 0;
+}
+.draft-row:nth-child(2) { animation-delay: 40ms; }
+.draft-row:nth-child(3) { animation-delay: 80ms; }
+.draft-row:nth-child(n + 4) { animation-delay: 120ms; }
+.draft-row-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.draft-row-name {
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+.draft-row-meta,
+.draft-row-items {
+  color: var(--text-muted);
+  font-size: var(--t-xs);
+  font-weight: 600;
+}
+.draft-row-items {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.draft-row-total {
+  font-size: var(--t-lg);
+  font-weight: 800;
+}
+.draft-row-actions {
+  grid-column: 1 / -1;
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--s-2);
+  margin-top: var(--s-2);
+}
+.draft-row-actions .primary-action,
+.draft-row-actions .secondary-action {
+  min-height: var(--tap-min);
+  padding: 0 var(--s-5);
+  font-size: var(--t-md);
+}
+.draft-delete {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: var(--tap-min);
+  min-height: var(--tap-min);
+  border: 0;
+  border-radius: var(--r-2);
+  background: var(--tile);
+  color: var(--text-muted);
+}
+
 /* ─── SEARCH + DEPARTMENTS ───────────────────────────────────────────────── */
 .product-search {
   display: flex;
@@ -1063,10 +1248,47 @@ button {
   padding: var(--s-2) var(--s-4) var(--s-2) var(--s-5);
   border-bottom: 1px solid var(--border);
 }
+.cart-heading {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+}
 .cart-title {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
   font-size: var(--t-lg);
   font-weight: 700;
   letter-spacing: -0.01em;
+}
+/* A resumed draft keeps its name in view: whose sale this is. */
+.cart-label {
+  overflow: hidden;
+  color: var(--brand-text);
+  font-size: var(--t-sm);
+  font-weight: 650;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  animation: rise var(--dur-2) var(--ease) backwards;
+}
+/* Set the sale aside — quiet until there is something to set aside. */
+.cart-draft {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-2);
+  min-height: var(--tap-min);
+  padding: 0 var(--s-3);
+  border: 0;
+  border-radius: var(--r-2);
+  background: var(--tile);
+  color: var(--text);
+  font-size: var(--t-sm);
+  font-weight: 650;
+}
+.cart-draft:disabled {
+  color: var(--text-muted);
+  cursor: not-allowed;
 }
 .cart-count {
   min-width: 26px;
@@ -1166,11 +1388,69 @@ button {
 }
 .qty-display {
   min-width: 5rem;
-  padding: 0 var(--s-1);
+  min-height: var(--tap-min);
+  padding: 0 var(--s-2);
+  border: 1px dashed transparent;
+  border-radius: var(--r-2);
+  background: transparent;
+  color: var(--text);
   text-align: center;
   font-size: var(--t-sm);
   font-weight: 750;
   white-space: nowrap;
+}
+/* The count can be typed: it shows a field's edge on hover and on focus. */
+.qty-display:focus-visible {
+  border-color: var(--brand);
+}
+@media (hover: hover) {
+  .qty-display:hover {
+    border-color: var(--control-border);
+  }
+}
+.qty-edit {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  animation: pop var(--dur-2) var(--ease) backwards;
+}
+.qty-input {
+  width: 6.5rem;
+  min-height: var(--tap-min);
+  padding: 0 3.25rem 0 var(--s-3);
+  border: 2px solid var(--brand);
+  border-radius: var(--r-2);
+  background: var(--surface);
+  box-shadow: 0 0 0 4px var(--brand-tint);
+  font-size: var(--t-md);
+  font-weight: 750;
+  text-align: right;
+  outline: none;
+}
+.qty-input[aria-invalid='true'] {
+  border-color: var(--attn);
+  box-shadow: 0 0 0 4px var(--attn-tint);
+}
+.qty-unit {
+  position: absolute;
+  right: var(--s-3);
+  color: var(--text-muted);
+  font-size: var(--t-xs);
+  font-weight: 650;
+  pointer-events: none;
+}
+.qty-error {
+  display: flex;
+  align-items: center;
+  gap: var(--s-1);
+  margin: var(--s-2) 0 0;
+  color: var(--attn-ink);
+  font-size: var(--t-xs);
+  font-weight: 650;
+  animation: rise var(--dur-2) var(--ease) backwards;
+}
+.qty-error .icon {
+  color: var(--attn);
 }
 .line-remove {
   display: flex;

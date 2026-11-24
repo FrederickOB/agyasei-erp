@@ -712,7 +712,10 @@ export const LOCAL_TABLES: readonly LocalTableDef[] = [
     name: 'cart',
     localOnly: true,
     // id = UUIDv7 = the future sale id = the idempotency key (§8.2).
-    columns: [t('created_at'), t('price_list_id'), t('status')],
+    // status: 'open' (the one being rung — at most one) or 'parked' (a draft
+    // set aside so the next customer can be served). A draft keeps its id, so
+    // it keeps its idempotency key: resuming it continues the SAME sale.
+    columns: [t('created_at'), t('price_list_id'), t('status'), t('label'), t('parked_at')],
   },
   {
     name: 'cart_line',
