@@ -239,12 +239,24 @@ async function till(): Promise<LocalDb> {
   return db;
 }
 
-function renderReports(db: LocalDb, permissions: PermissionsState, apiOptions: ApiCallOptions) {
+function mountReports(db: LocalDb, permissions: PermissionsState, apiOptions: ApiCallOptions) {
   return render(
     <CurrencyProvider spec={DEV_PLACEHOLDER_CURRENCY}>
       <Reports db={db} permissions={permissions} apiOptions={apiOptions} />
     </CurrencyProvider>,
   );
+}
+
+/**
+ * The whole page, every panel at once — the "Everything" section. Most claims
+ * below are about how each panel behaves BESIDE the others (a refusal takes
+ * no other panel down; offline, every panel says so), so they are made there.
+ * The sections themselves are tested in their own block at the end.
+ */
+async function renderReports(db: LocalDb, permissions: PermissionsState, apiOptions: ApiCallOptions) {
+  const view = mountReports(db, permissions, apiOptions);
+  fireEvent.click(await screen.findByRole('button', { name: 'Everything' }));
+  return view;
 }
 
 afterEach(cleanup);
@@ -260,7 +272,7 @@ describe('whose total is it', () => {
         'reports.stockOnHand': stockPayload(false),
       }),
     };
-    renderReports(db, holding([CAPABILITY.reportLocation]), opts);
+    await renderReports(db, holding([CAPABILITY.reportLocation]), opts);
 
     expect(await screen.findAllByText(/not the whole organisation/i)).not.toHaveLength(0);
     expect(screen.getAllByText(/Total of your locations only/).length).toBeGreaterThan(0);
@@ -277,7 +289,7 @@ describe('whose total is it', () => {
         'reports.stockOnHand': stockPayload(true),
       }),
     };
-    renderReports(db, holding([CAPABILITY.reportLocation]), opts);
+    await renderReports(db, holding([CAPABILITY.reportLocation]), opts);
 
     expect(await screen.findAllByText(/Whole organisation · 4 locations/)).not.toHaveLength(0);
     expect(screen.getAllByText(/Total, whole organisation/).length).toBeGreaterThan(0);
@@ -296,7 +308,7 @@ describe('cash position by the tenant’s own payment methods, and the tills beh
         'reports.stockOnHand': stockPayload(false),
       }),
     };
-    renderReports(db, holding([CAPABILITY.reportLocation]), opts);
+    await renderReports(db, holding([CAPABILITY.reportLocation]), opts);
     const table = await screen.findByRole('table', { name: 'By payment method' });
     // The names are the tenant's rows, rendered — "Phone wallet" is visible
     // as itself, not folded into "settled at the counter".
@@ -321,11 +333,11 @@ describe('money on a report', () => {
         'reports.stockOnHand': stockPayload(false),
       }),
     };
-    renderReports(db, holding([CAPABILITY.reportLocation]), opts);
+    await renderReports(db, holding([CAPABILITY.reportLocation]), opts);
 
     // 115000 minor units at the configured scale of 2 — formatted by
     // @erp/money, with the configured symbol, not by this screen.
-    const cells = await screen.findAllByText((t) => t.includes('1150.00'));
+    const cells = await screen.findAllByText((t) => t.includes('1,150.00'));
     expect(cells.length).toBeGreaterThan(0);
     expect(cells[0]?.textContent).toContain(DEV_PLACEHOLDER_CURRENCY.symbol);
   });
@@ -340,7 +352,7 @@ describe('money on a report', () => {
         'reports.stockOnHand': stockPayload(false),
       }),
     };
-    renderReports(db, holding([CAPABILITY.reportLocation]), opts);
+    await renderReports(db, holding([CAPABILITY.reportLocation]), opts);
     // 2500 at scale 3 is 2.5, trailing zeros trimmed, in the server's unit.
     expect(await screen.findByText(/2\.5 KG/)).toBeDefined();
   });
@@ -361,7 +373,7 @@ describe('cost and margin are a narrower audience', () => {
         asked,
       ),
     };
-    renderReports(db, holding([CAPABILITY.reportLocation]), opts);
+    await renderReports(db, holding([CAPABILITY.reportLocation]), opts);
 
     await screen.findAllByText(/Total of your locations only/);
     // Three margin-gated panels now: stock cover, the distribution ratio, and
@@ -387,7 +399,7 @@ describe('cost and margin are a narrower audience', () => {
         'reports.distributionCostRatio': distributionPayload(),
       }),
     };
-    renderReports(db, holding([CAPABILITY.reportLocation, CAPABILITY.reportMargin]), opts);
+    await renderReports(db, holding([CAPABILITY.reportLocation, CAPABILITY.reportMargin]), opts);
 
     // 350000 e4 days -> 35; 200000 e4 percent -> 20%.
     expect(await screen.findAllByText('35')).not.toHaveLength(0);
@@ -419,7 +431,7 @@ describe('cost and margin are a narrower audience', () => {
         }),
       }),
     };
-    renderReports(db, holding([CAPABILITY.reportLocation, CAPABILITY.reportMargin]), opts);
+    await renderReports(db, holding([CAPABILITY.reportLocation, CAPABILITY.reportMargin]), opts);
 
     expect(await screen.findAllByText(/not recorded anywhere yet/)).not.toHaveLength(0);
   });
@@ -436,7 +448,7 @@ describe('cost and margin are a narrower audience', () => {
         'reports.stockOnHand': stockPayload(false),
       }),
     };
-    renderReports(db, holding([CAPABILITY.reportLocation, CAPABILITY.reportMargin]), opts);
+    await renderReports(db, holding([CAPABILITY.reportLocation, CAPABILITY.reportMargin]), opts);
 
     expect(await screen.findAllByText(/This is not part of what you are allowed to see/)).not.toHaveLength(0);
     expect(screen.getAllByText(/PERMISSION_DENIED: reports.inventoryDays/).length).toBeGreaterThan(0);
@@ -450,10 +462,10 @@ describe('offline', () => {
       endpoint: ENDPOINT,
       fetchFn: () => Promise.reject(new Error('no radio')),
     };
-    renderReports(db, holding([CAPABILITY.reportLocation, CAPABILITY.reportMargin]), opts);
+    await renderReports(db, holding([CAPABILITY.reportLocation, CAPABILITY.reportMargin]), opts);
 
-    const notices = await screen.findAllByText(/Not available offline\./);
-    expect(notices.length).toBe(6);
+    // Every panel answers on its own; wait for all six, not the first.
+    await waitFor(() => expect(screen.getAllByText(/Not available offline\./).length).toBe(6));
     expect(screen.queryByRole('table')).toBeNull();
     // The words that matter: not an old figure, not an empty list.
     expect(
@@ -473,7 +485,7 @@ describe('the date range', () => {
         'reports.stockOnHand': stockPayload(false),
       }),
     };
-    const { container } = renderReports(db, holding([CAPABILITY.reportLocation]), opts);
+    const { container } = await renderReports(db, holding([CAPABILITY.reportLocation]), opts);
     await screen.findAllByText(/Total of your locations only/);
 
     const inputs = container.querySelectorAll('input[type="date"]');
@@ -507,7 +519,7 @@ function withDistribution(payload: unknown): ApiCallOptions {
 describe('distribution cost as a percentage of revenue', () => {
   it('shows the ratio per location and a headline for whatever the scope is', async () => {
     const db = await till();
-    renderReports(
+    await renderReports(
       db,
       holding([CAPABILITY.reportLocation, CAPABILITY.reportMargin]),
       withDistribution(distributionPayload()),
@@ -524,7 +536,7 @@ describe('distribution cost as a percentage of revenue', () => {
 
   it('rolls the same ratio up to the tenant’s own grouping nodes', async () => {
     const db = await till();
-    renderReports(
+    await renderReports(
       db,
       holding([CAPABILITY.reportLocation, CAPABILITY.reportMargin]),
       withDistribution(distributionPayload()),
@@ -540,7 +552,7 @@ describe('distribution cost as a percentage of revenue', () => {
 
   it('prints a real zero when nothing moved, and says so beside it', async () => {
     const db = await till();
-    renderReports(
+    await renderReports(
       db,
       holding([CAPABILITY.reportLocation, CAPABILITY.reportMargin]),
       withDistribution(
@@ -572,7 +584,7 @@ describe('distribution cost as a percentage of revenue', () => {
 
   it('says the figure is a floor when freight was never agreed', async () => {
     const db = await till();
-    renderReports(
+    await renderReports(
       db,
       holding([CAPABILITY.reportLocation, CAPABILITY.reportMargin]),
       withDistribution(
@@ -603,7 +615,7 @@ describe('distribution cost as a percentage of revenue', () => {
 
   it('reports the cost of a location that took nothing, and refuses to call it a percentage', async () => {
     const db = await till();
-    renderReports(
+    await renderReports(
       db,
       holding([CAPABILITY.reportLocation, CAPABILITY.reportMargin]),
       withDistribution(
@@ -634,7 +646,7 @@ describe('distribution cost as a percentage of revenue', () => {
 
   it('warns when a delivery was dated by a clock rather than by a person', async () => {
     const db = await till();
-    renderReports(
+    await renderReports(
       db,
       holding([CAPABILITY.reportLocation, CAPABILITY.reportMargin]),
       withDistribution(
@@ -657,7 +669,7 @@ describe('distribution cost as a percentage of revenue', () => {
 
   it('stays quiet about the dating when every delivery carries an asserted date', async () => {
     const db = await till();
-    renderReports(
+    await renderReports(
       db,
       holding([CAPABILITY.reportLocation, CAPABILITY.reportMargin]),
       withDistribution(distributionPayload()),
@@ -669,7 +681,7 @@ describe('distribution cost as a percentage of revenue', () => {
 
   it('invents no target curve, because a target belongs to a tenant and not to this code', async () => {
     const db = await till();
-    renderReports(
+    await renderReports(
       db,
       holding([CAPABILITY.reportLocation, CAPABILITY.reportMargin]),
       withDistribution(distributionPayload()),
@@ -771,7 +783,7 @@ describe('what each haulier has been agreed', () => {
   it('asks the server for it and names every carrier, with its share of the spend', async () => {
     const db = await till();
     const asked: string[] = [];
-    renderReports(db, holding([CAPABILITY.reportLocation, CAPABILITY.reportMargin]), {
+    await renderReports(db, holding([CAPABILITY.reportLocation, CAPABILITY.reportMargin]), {
       endpoint: ENDPOINT,
       fetchFn: router(MARGIN_READY, asked),
     });
@@ -790,7 +802,7 @@ describe('what each haulier has been agreed', () => {
 
   it('says a carrier’s figure is a FLOOR when some of its loads had nothing agreed', async () => {
     const db = await till();
-    renderReports(db, holding([CAPABILITY.reportLocation, CAPABILITY.reportMargin]), {
+    await renderReports(db, holding([CAPABILITY.reportLocation, CAPABILITY.reportMargin]), {
       endpoint: ENDPOINT,
       fetchFn: router({
         ...MARGIN_READY,
@@ -818,7 +830,7 @@ describe('what each haulier has been agreed', () => {
 
   it('says nothing moved rather than showing an empty table', async () => {
     const db = await till();
-    renderReports(db, holding([CAPABILITY.reportLocation, CAPABILITY.reportMargin]), {
+    await renderReports(db, holding([CAPABILITY.reportLocation, CAPABILITY.reportMargin]), {
       endpoint: ENDPOINT,
       fetchFn: router({
         ...MARGIN_READY,
@@ -838,7 +850,7 @@ describe('what each haulier has been agreed', () => {
     const db = await till();
     const answers = { ...MARGIN_READY };
     delete (answers as Record<string, unknown>)['logistics.haulageSpend'];
-    renderReports(db, holding([CAPABILITY.reportLocation, CAPABILITY.reportMargin]), {
+    await renderReports(db, holding([CAPABILITY.reportLocation, CAPABILITY.reportMargin]), {
       endpoint: ENDPOINT,
       fetchFn: router(answers),
     });
@@ -851,3 +863,63 @@ describe('what each haulier has been agreed', () => {
     expect(screen.getAllByText(/Total of your locations only/).length).toBeGreaterThan(0);
   });
 });
+
+describe('one section at a time', () => {
+  const answers = {
+    'reports.salesByLocation': salesPayload(false),
+    'reports.cashPosition': cashPayload(false),
+    'reports.stockOnHand': stockPayload(false),
+  };
+
+  it('opens on Sales and asks the server for sales only', async () => {
+    const db = await till();
+    const asked: string[] = [];
+    mountReports(db, holding([CAPABILITY.reportLocation, CAPABILITY.reportMargin]), {
+      endpoint: ENDPOINT,
+      fetchFn: router(answers, asked),
+    });
+    expect(await screen.findByRole('button', { name: 'Sales', pressed: true })).toBeTruthy();
+    await screen.findAllByText(/Total of your locations only/);
+    expect(asked).toEqual(['reports.salesByLocation']);
+    expect(screen.queryByRole('table', { name: 'By payment method' })).toBeNull();
+  });
+
+  it('asks for a section only when it is opened', async () => {
+    const db = await till();
+    const asked: string[] = [];
+    mountReports(db, holding([CAPABILITY.reportLocation]), {
+      endpoint: ENDPOINT,
+      fetchFn: router(answers, asked),
+    });
+    fireEvent.click(await screen.findByRole('button', { name: 'Cash' }));
+    expect(await screen.findByRole('table', { name: 'By payment method' })).toBeTruthy();
+    expect(asked).toContain('reports.cashPosition');
+    expect(asked).not.toContain('reports.stockOnHand');
+  });
+
+  it('drops the date range for stock, which is "now" rather than a period', async () => {
+    const db = await till();
+    mountReports(db, holding([CAPABILITY.reportLocation]), {
+      endpoint: ENDPOINT,
+      fetchFn: router(answers),
+    });
+    expect(await screen.findByLabelText('From')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Stock' }));
+    expect(await screen.findByText(/2\.5 KG/)).toBeDefined();
+    expect(screen.queryByLabelText('From')).toBeNull();
+  });
+
+  it('still says what is not yours inside a gated section, and asks nothing for it', async () => {
+    const db = await till();
+    const asked: string[] = [];
+    mountReports(db, holding([CAPABILITY.reportLocation]), {
+      endpoint: ENDPOINT,
+      fetchFn: router(answers, asked),
+    });
+    fireEvent.click(await screen.findByRole('button', { name: 'Moving goods' }));
+    expect(await screen.findAllByText(/Not part of what you can see/)).toHaveLength(2);
+    expect(asked).not.toContain('reports.distributionCostRatio');
+    expect(asked).not.toContain('logistics.haulageSpend');
+  });
+});
+

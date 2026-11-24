@@ -92,6 +92,7 @@ import { uuidv7 } from '../../lib/uuidv7';
 import { useCurrencySpec } from '../../money/CurrencyContext';
 import { Money } from '../../money/Money';
 import { Icon } from '../../ui/Icon';
+import { Unit } from '../../ui/Unit';
 import { FetchedAt, ServerPending, ServerUnavailable } from '../shell/ServerAnswer';
 
 const WHAT_ORDERS = 'The order list';
@@ -425,7 +426,7 @@ function DraftOrderForm({
         </label>
         {unit === null ? null : (
           <p className="adjust-kind-note">
-            One {unit.uomCode} is{' '}
+            One <Unit code={unit.uomCode} /> is{' '}
             {unit.factorDen === 1n
               ? unit.factorNum.toString()
               : `${unit.factorNum.toString()}/${unit.factorDen.toString()}`}{' '}
@@ -473,7 +474,7 @@ function DraftOrderForm({
                 <span className="report-loc-code tabular">{l.product.code}</span>
               </span>
               <span className="tabular">
-                {formatQtyScaled(l.qtyOrdered, l.unit.buyScale)} {l.unit.uomCode} ×{' '}
+                {formatQtyScaled(l.qtyOrdered, l.unit.buyScale)} <Unit code={l.unit.uomCode} /> ×{' '}
                 <Money amount={priceOfOneUnit(l.unitPriceE4, l.unit.buyScale)} />
               </span>
               <span className="order-line-net tabular">
@@ -829,7 +830,7 @@ function AmendDraftForm({
                         patch(r.key, { qtyText: e.currentTarget.value, qtyEdited: true })
                       }
                     />
-                    <span className="threshold-form-uom">{r.line.uomCode}</span>
+                    <span className="threshold-form-uom"><Unit code={r.line.uomCode} /></span>
                   </span>
                 </label>
                 <label className="threshold-form-field">
@@ -978,7 +979,7 @@ function OrderDetail({
       </button>
 
       {state.status === 'loading' ? (
-        <ServerPending what={WHAT_ORDER} slow={state.slow} rows={4} />
+        <ServerPending shape="cards" what={WHAT_ORDER} slow={state.slow} rows={4} />
       ) : null}
       {state.status === 'failed' ? (
         <ServerUnavailable what={WHAT_ORDER} failure={state.failure} onRetry={refresh} />
@@ -1131,10 +1132,10 @@ function OrderBody({
                   <span className="report-loc-code tabular">{l.skuCode}</span>
                 </th>
                 <td className="numeric tabular">
-                  {formatQtyScaled(l.qtyOrdered, l.qtyScale)} {l.uomCode}
+                  {formatQtyScaled(l.qtyOrdered, l.qtyScale)} <Unit code={l.uomCode} />
                 </td>
                 <td className="numeric tabular">
-                  {formatQtyScaled(l.qtyReceived, l.qtyScale)} {l.uomCode}
+                  {formatQtyScaled(l.qtyReceived, l.qtyScale)} <Unit code={l.uomCode} />
                 </td>
                 {/* SIGNED, and deliberately not clamped: a negative is an
                     over-delivery, and hiding it hides the one an invoice will
@@ -1142,7 +1143,7 @@ function OrderBody({
                 <td className="numeric tabular">
                   {l.qtyOutstanding < 0n ? (
                     <span className="over-delivered">
-                      {formatQtyScaled(-l.qtyOutstanding, l.qtyScale)} {l.uomCode} over
+                      {formatQtyScaled(-l.qtyOutstanding, l.qtyScale)} <Unit code={l.uomCode} /> over
                     </span>
                   ) : (
                     `${formatQtyScaled(l.qtyOutstanding, l.qtyScale)} ${l.uomCode}`
@@ -1282,7 +1283,7 @@ function AlternativeList({
               <span className="figure-withheld">no price on file</span>
             ) : (
               <>
-                <Money amount={priceOfOneUnit(a.pricePerStockUnitE4, stockScale)} /> per {uomCode}
+                <Money amount={priceOfOneUnit(a.pricePerStockUnitE4, stockScale)} /> per <Unit code={uomCode} />
               </>
             )}
           </span>
@@ -1312,13 +1313,13 @@ function SuggestionRow({
         <div>
           <dt>On hand</dt>
           <dd className="tabular">
-            {formatQtyScaled(suggestion.qtyOnHand, suggestion.qtyScale)} {suggestion.uomCode}
+            {formatQtyScaled(suggestion.qtyOnHand, suggestion.qtyScale)} <Unit code={suggestion.uomCode} />
           </dd>
         </div>
         <div>
           <dt>Threshold</dt>
           <dd className="tabular">
-            {formatQtyScaled(suggestion.reorderPointQty, suggestion.qtyScale)} {suggestion.uomCode}
+            {formatQtyScaled(suggestion.reorderPointQty, suggestion.qtyScale)} <Unit code={suggestion.uomCode} />
           </dd>
         </div>
         <div>
@@ -1413,7 +1414,7 @@ function SuggestionsPanel({
         {state.status === 'ready' ? <FetchedAt atMs={state.fetchedAtMs} /> : null}
       </header>
       {state.status === 'loading' ? (
-        <ServerPending what={WHAT_SUGGESTIONS} slow={state.slow} rows={3} />
+        <ServerPending shape="cards" what={WHAT_SUGGESTIONS} slow={state.slow} rows={3} />
       ) : null}
       {state.status === 'failed' ? (
         <ServerUnavailable what={WHAT_SUGGESTIONS} failure={state.failure} onRetry={refresh} />
@@ -1435,7 +1436,7 @@ function SuggestionsPanel({
             </div>
           ) : null}
           {state.data.state === 'NOTHING_BELOW_REORDER_POINT' ? (
-            <div className="empty-state">
+            <div className="empty-state empty-good">
               <Icon name="check" size={40} />
               <span className="empty-title">Nothing is below its threshold</span>
               <p className="empty-body">
@@ -1532,13 +1533,13 @@ export function Purchasing({ db, permissions, apiOptions }: PurchasingProps): Re
     // A local read, so this is a frame or two, not a spinner.
     return (
       <div className="buying-screen">
-        <ServerPending what={WHAT_ORDERS} rows={3} />
+        <ServerPending shape="cards" what={WHAT_ORDERS} rows={3} />
       </div>
     );
   }
   if (location === null) {
     return (
-      <div className="empty-state">
+      <div className="empty-state empty-attn">
         <Icon name="pin" size={40} />
         <span className="empty-title">This device does not know where it is</span>
         <p className="empty-body">
@@ -1621,7 +1622,7 @@ function PurchasingAt({
             <h2>New order · {locationCode}</h2>
           </header>
           {supplierQuery.state.status === 'loading' ? (
-            <ServerPending what="The supplier list" slow={supplierQuery.state.slow} rows={2} />
+            <ServerPending shape="cards" what="The supplier list" slow={supplierQuery.state.slow} rows={2} />
           ) : null}
           {supplierQuery.state.status === 'failed' ? (
             <ServerUnavailable
@@ -1675,7 +1676,7 @@ function PurchasingAt({
         ) : null}
 
         {state.status === 'loading' ? (
-          <ServerPending what={WHAT_ORDERS} slow={state.slow} rows={4} />
+          <ServerPending shape="cards" what={WHAT_ORDERS} slow={state.slow} rows={4} />
         ) : null}
         {state.status === 'failed' ? (
           <ServerUnavailable what={WHAT_ORDERS} failure={state.failure} onRetry={refresh} />

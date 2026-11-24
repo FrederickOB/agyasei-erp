@@ -28,13 +28,21 @@ import { Money } from '../../money/Money';
 import type { SyncedCreditPosition } from '../../data/queries/credit-position';
 import { Icon } from '../../ui/Icon';
 
-/** "as at 14:07 today" / "as at 2026-08-21" — never a bare clock time. */
-function asAtPhrase(position: SyncedCreditPosition, nowMs: number): string {
-  if (position.computedAtMs === null) return `as at ${position.asOf}`;
-  const at = new Date(position.computedAtMs);
+/**
+ * "as at 14:07 today" / "as at 2026-08-21, 14:07" — never a bare clock time.
+ * Shared by every place a SYNCED credit figure is shown, so the debtors list
+ * and this panel cannot word the same staleness two ways.
+ */
+export function asAtWords(computedAtMs: number | null, asOf: string, nowMs: number): string {
+  if (computedAtMs === null) return `as at ${asOf}`;
+  const at = new Date(computedAtMs);
   const sameDay = new Date(nowMs).toDateString() === at.toDateString();
   const hhmm = `${String(at.getHours()).padStart(2, '0')}:${String(at.getMinutes()).padStart(2, '0')}`;
-  return sameDay ? `as at ${hhmm} today` : `as at ${position.asOf}, ${hhmm}`;
+  return sameDay ? `as at ${hhmm} today` : `as at ${asOf}, ${hhmm}`;
+}
+
+function asAtPhrase(position: SyncedCreditPosition, nowMs: number): string {
+  return asAtWords(position.computedAtMs, position.asOf, nowMs);
 }
 
 export interface SyncedPositionPanelProps {

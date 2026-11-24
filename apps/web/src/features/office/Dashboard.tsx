@@ -56,8 +56,11 @@ import { DailyBars } from '../../ui/charts/DailyBars';
 import { bpToPercent, maxOf, shareBp } from '../../ui/charts/scale';
 import { SplitBars } from '../../ui/charts/SplitBars';
 import { Icon } from '../../ui/Icon';
+import { Unit } from '../../ui/Unit';
+import { withheldSentence } from '../reports/withheld';
+import { conflictTitle, entityLabel, escalationLabel } from '../review/labels';
 import type { DestinationId } from '../shell/destinations';
-import { FetchedAt, ServerPending, ServerUnavailable } from '../shell/ServerAnswer';
+import { FetchedAt, ServerPending, ServerUnavailable, type PendingShape } from '../shell/ServerAnswer';
 import { averageBasket, byWeek, byWeekday, changeBp, formatChangeBp, shiftYmd, shortDay, topN } from './aggregate';
 
 export interface DashboardProps {
@@ -122,8 +125,11 @@ function Tile({
   tinted = false,
   pill,
   link,
+  pending = 'figures',
   children,
 }: {
+  /** What the skeleton looks like while the answer is on its way. */
+  readonly pending?: PendingShape;
   readonly title: string;
   readonly what: string;
   readonly state: ApiQueryState<unknown>;
@@ -145,7 +151,7 @@ function Tile({
           </button>
         )}
       </header>
-      {state.status === 'loading' ? <ServerPending what={what} slow={state.slow} rows={2} /> : null}
+      {state.status === 'loading' ? <ServerPending shape={pending} what={what} slow={state.slow} rows={pending === 'figures' ? 1 : 3} /> : null}
       {state.status === 'failed' ? <ServerUnavailable what={what} failure={state.failure} onRetry={onRetry} /> : null}
       {state.status === 'ready' ? children : null}
       {state.status === 'ready' ? (
@@ -188,7 +194,7 @@ function Unavailable({ reason, children }: { readonly reason: string | null; rea
   return (
     <div className="tile-unavailable" role="status">
       <b>Unavailable</b>
-      {reason === null ? null : <span>{reason}</span>}
+      {reason === null ? null : <span>{withheldSentence(reason)}</span>}
       {children}
     </div>
   );
@@ -261,7 +267,7 @@ function Body({
   const bestWeekday = weekdays.reduce((best, w) => (w.averageMinor > best.averageMinor ? w : best), weekdays[0]!);
 
   const decisions = canDecide ? (
-    <Tile
+    <Tile pending="cards"
       title="Decisions"
       what="Items needing a decision"
       state={reviews.state}
@@ -290,9 +296,9 @@ function Body({
                     <Icon name="alert" size={16} />
                   </span>
                   <span className="office-row-text">
-                    <b>{words(r.conflictClass)}</b>
+                    <b title={r.conflictClass}>{conflictTitle(r.conflictClass)}</b>
                     <small>
-                      {words(r.entityTable)} · escalates {r.escalateAt.slice(0, 16).replace('T', ' ')}
+                      {entityLabel(r.entityTable)} · {escalationLabel(r.escalateAt, Date.now())}
                     </small>
                   </span>
                   <span className="tile-pill">{words(r.status)}</span>
@@ -405,7 +411,7 @@ function Body({
             </Row>
             <Row>
               {canReport ? (
-                <Tile title="Sales" what="Sales by day" state={byDay.state} onRetry={byDay.refresh} link={link(onOpen, 'reports', 'Open reports')}>
+                <Tile pending="chart" title="Sales" what="Sales by day" state={byDay.state} onRetry={byDay.refresh} link={link(onOpen, 'reports', 'Open reports')}>
                   {byDay.state.status === 'ready' ? (
                     <div className="hero">
                       <div className="hero-side">
@@ -446,6 +452,7 @@ function Body({
                           labels={series.map((d) => shortDay(d.date))}
                           reference={perDay}
                           endLabel={series.length > 0 ? <M amount={series[series.length - 1]!.netRevenueMinor} symbol={false} /> : undefined}
+                          format={(v) => <M amount={v} />}
                         />
                       </div>
                     </div>
@@ -462,7 +469,7 @@ function Body({
 
       <Row>
         {canReport ? (
-          <Tile
+          <Tile pending="chart"
             title="Week on week"
             what="Revenue by week"
             state={byDay.state}
@@ -516,7 +523,7 @@ function Body({
           </Tile>
         ) : null}
         {canReport ? (
-          <Tile title="By weekday" what="Revenue by weekday" state={byDay.state} onRetry={byDay.refresh}>
+          <Tile pending="chart" title="By weekday" what="Revenue by weekday" state={byDay.state} onRetry={byDay.refresh}>
             {byDay.state.status === 'ready' ? (
               <>
                 <p className="tile-sowhat">
@@ -541,7 +548,7 @@ function Body({
           </Tile>
         ) : null}
         {canReport ? (
-          <Tile
+          <Tile pending="chart"
             title="Average basket"
             what="Average sale"
             state={byDay.state}
@@ -573,6 +580,7 @@ function Body({
                         averageWindow={0}
                         reference={basket}
                         endLabel={lastBasket === null ? undefined : <M amount={lastBasket} symbol={false} />}
+                        format={(v) => <M amount={v} />}
                         width={360}
                         height={120}
                       />
@@ -586,7 +594,7 @@ function Body({
 
       <Row cols="2-1">
         {canReport ? (
-          <Tile title="Locations" what="Sales by location" state={byLoc.state} onRetry={byLoc.refresh} link={link(onOpen, 'reports', 'Reports')}>
+          <Tile pending="table" title="Locations" what="Sales by location" state={byLoc.state} onRetry={byLoc.refresh} link={link(onOpen, 'reports', 'Reports')}>
             {byLoc.state.status === 'ready'
               ? (() => {
                   const ranked = [...byLoc.state.data.locations].sort((a, b) =>
@@ -677,7 +685,7 @@ function Body({
           </Tile>
         ) : null}
         {canStock ? (
-          <Tile
+          <Tile pending="cards"
             title="Low stock"
             what="The low-stock alert"
             state={low.state}
@@ -705,7 +713,7 @@ function Body({
                       <span className="office-mini-text">
                         <b>{a.productName}</b>
                         <small>
-                          {formatQtyScaled(a.qtyOnHand, a.qtyScale)} {a.uomCode} on hand · reorder at{' '}
+                          {formatQtyScaled(a.qtyOnHand, a.qtyScale)} <Unit code={a.uomCode} /> on hand · reorder at{' '}
                           {formatQtyScaled(a.reorderPointQty, a.qtyScale)}
                         </small>
                       </span>
@@ -783,7 +791,7 @@ function Body({
           </Tile>
         ) : null}
         {canMargin ? (
-          <Tile title="Gross margin by location" what="Gross margin by location" state={days.state} onRetry={days.refresh}>
+          <Tile pending="table" title="Gross margin by location" what="Gross margin by location" state={days.state} onRetry={days.refresh}>
             {days.state.status === 'ready' ? (
               <>
                 <p className="tile-sowhat">
@@ -936,7 +944,7 @@ export function Dashboard({ db, permissions, apiOptions, onOpen }: DashboardProp
   if (location === undefined) {
     return (
       <div className="dashboard">
-        <ServerPending what="The dashboard" rows={4} />
+        <ServerPending shape="tiles" what="The dashboard" rows={4} />
       </div>
     );
   }

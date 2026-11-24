@@ -260,7 +260,7 @@ describe('freight that nobody agreed is an absence, never a zero', () => {
       fetchFn: router(ready([delivery()])),
     });
     const list = await screen.findByRole('list', { name: 'Deliveries' });
-    expect(list.textContent).toContain('1200.00');
+    expect(list.textContent).toContain('1,200.00');
   });
 });
 

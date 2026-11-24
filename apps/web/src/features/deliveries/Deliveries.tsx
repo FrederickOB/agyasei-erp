@@ -249,7 +249,7 @@ function DeliveryRow({
           a load somebody is standing in front of, and a screen that quietly
           re-asked the server for every row would be unusable on a bad link. */}
       {office === undefined ? null : office.status === 'checking' ? (
-        <ServerPending what={WHAT_ONE_DELIVERY} rows={1} />
+        <ServerPending shape="cards" what={WHAT_ONE_DELIVERY} rows={1} />
       ) : office.status === 'refused' ? (
         <ServerUnavailable
           what={WHAT_ONE_DELIVERY}
@@ -583,13 +583,13 @@ export function Deliveries({ db, permissions, apiOptions }: DeliveriesProps): Re
   if (location === undefined) {
     return (
       <div className="buying-screen">
-        <ServerPending what={WHAT_DELIVERIES} rows={3} />
+        <ServerPending shape="cards" what={WHAT_DELIVERIES} rows={3} />
       </div>
     );
   }
   if (location === null) {
     return (
-      <div className="empty-state">
+      <div className="empty-state empty-attn">
         <Icon name="pin" size={40} />
         <span className="empty-title">This device does not know where it is</span>
         <p className="empty-body">
@@ -786,7 +786,7 @@ function DeliveriesAt({
             <h2>Hand a load to a haulier · {locationCode}</h2>
           </header>
           {carriers.state.status === 'loading' || orders.state.status === 'loading' ? (
-            <ServerPending what="Hauliers and orders" rows={2} />
+            <ServerPending shape="cards" what="Hauliers and orders" rows={2} />
           ) : null}
           {carriers.state.status === 'failed' ? (
             <ServerUnavailable
@@ -847,7 +847,7 @@ function DeliveriesAt({
         )}
 
         {state.status === 'loading' ? (
-          <ServerPending what={WHAT_DELIVERIES} slow={state.slow} rows={3} />
+          <ServerPending shape="cards" what={WHAT_DELIVERIES} slow={state.slow} rows={3} />
         ) : null}
 
         {/* OFFLINE. The list lives on the server, so it says so — never an

@@ -38,6 +38,7 @@ import type { ApiCallOptions } from '../../data/api/client';
 import { useApiQuery } from '../../data/api/use-api-query';
 import { uuidv7 } from '../../lib/uuidv7';
 import { Icon } from '../../ui/Icon';
+import { conflictSummary, conflictTitle, entityLabel, escalationLabel } from './labels';
 import { FetchedAt, ServerPending, ServerUnavailable } from '../shell/ServerAnswer';
 
 const WHAT = 'Items needing a decision';
@@ -58,11 +59,6 @@ function severityLabel(severity: number): string {
     default:
       return 'For information';
   }
-}
-
-/** A conflict class is a CODE. Shown as itself, with the spacing softened. */
-function classLabel(conflictClass: string): string {
-  return conflictClass.replace(/_/g, ' ').toLowerCase();
 }
 
 function whenLabel(iso: string): string {
@@ -169,13 +165,20 @@ function ReviewCard({
         <span className={`review-severity review-severity-${review.severity}`}>
           {severityLabel(review.severity)}
         </span>
-        <span className="review-class">{classLabel(review.conflictClass)}</span>
+        <span className="review-class">{conflictTitle(review.conflictClass)}</span>
         <span className="review-when">{whenLabel(review.openedAt)}</span>
       </div>
 
-      <p className="review-entity tabular">
-        {review.entityTable}
-        {review.fieldPath === null ? '' : ` · ${review.fieldPath}`}
+      {conflictSummary(review.conflictClass) === null ? null : (
+        <p className="review-summary">{conflictSummary(review.conflictClass)}</p>
+      )}
+
+      <p className="review-entity">
+        {entityLabel(review.entityTable)} · {escalationLabel(review.escalateAt, Date.now())}
+        <span className="review-code tabular">
+          {review.conflictClass}
+          {review.fieldPath === null ? '' : ` · ${review.fieldPath}`}
+        </span>
       </p>
 
       {claimed ? (
@@ -318,10 +321,18 @@ function ReviewCard({
   );
 }
 
-export function Review({ apiOptions = {} }: { readonly apiOptions?: ApiCallOptions }): ReactNode {
+/**
+ * Stable identity for the default. An inline `= {}` default is a NEW object
+ * every render, the query below lists it as a dependency, so every answer
+ * re-rendered, re-fetched and re-rendered again — thousands of requests a
+ * minute on a metered connection while this screen was open.
+ */
+const NO_OPTIONS: ApiCallOptions = {};
+
+export function Review({ apiOptions = NO_OPTIONS }: { readonly apiOptions?: ApiCallOptions }): ReactNode {
   const { state, refresh } = useApiQuery(() => fetchReviews({}, apiOptions), [apiOptions]);
 
-  if (state.status === 'loading') return <ServerPending what={WHAT} rows={3} slow={state.slow} />;
+  if (state.status === 'loading') return <ServerPending shape="cards" what={WHAT} rows={3} slow={state.slow} />;
   if (state.status === 'failed') {
     return <ServerUnavailable what={WHAT} failure={state.failure} onRetry={refresh} />;
   }
@@ -339,9 +350,14 @@ export function Review({ apiOptions = {} }: { readonly apiOptions?: ApiCallOptio
       </header>
 
       {reviews.length === 0 ? (
-        <p className="review-empty" role="status">
-          <Icon name="tag" size={20} /> Nothing is waiting on you.
-        </p>
+        <div className="empty-state empty-good" role="status">
+          <Icon name="check" size={40} />
+          <span className="empty-title">All clear</span>
+          <p className="empty-body">
+            Nothing is waiting on you. When the system meets something it cannot settle on its own,
+            it lands here.
+          </p>
+        </div>
       ) : (
         <ul className="review-list">
           {reviews.map((review) => (

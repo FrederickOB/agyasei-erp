@@ -94,7 +94,7 @@ function StatementTable({ rows }: { readonly rows: readonly StatementRow[] }): R
 
 function TrialBalanceView({ apiOptions }: { readonly apiOptions: ApiCallOptions }): ReactNode {
   const { state, refresh } = useApiQuery(() => fetchTrialBalance({}, apiOptions), [apiOptions]);
-  if (state.status === 'loading') return <ServerPending what={WHAT} rows={4} slow={state.slow} />;
+  if (state.status === 'loading') return <ServerPending shape="table" what={WHAT} rows={4} slow={state.slow} />;
   if (state.status === 'failed') {
     return <ServerUnavailable what={WHAT} failure={state.failure} onRetry={refresh} />;
   }
@@ -127,7 +127,7 @@ function TrialBalanceView({ apiOptions }: { readonly apiOptions: ApiCallOptions 
 
 function ProfitAndLossView({ apiOptions }: { readonly apiOptions: ApiCallOptions }): ReactNode {
   const { state, refresh } = useApiQuery(() => fetchProfitAndLoss({}, apiOptions), [apiOptions]);
-  if (state.status === 'loading') return <ServerPending what={WHAT} rows={4} slow={state.slow} />;
+  if (state.status === 'loading') return <ServerPending shape="table" what={WHAT} rows={4} slow={state.slow} />;
   if (state.status === 'failed') {
     return <ServerUnavailable what={WHAT} failure={state.failure} onRetry={refresh} />;
   }
@@ -163,7 +163,7 @@ function ProfitAndLossView({ apiOptions }: { readonly apiOptions: ApiCallOptions
 
 function BalanceSheetView({ apiOptions }: { readonly apiOptions: ApiCallOptions }): ReactNode {
   const { state, refresh } = useApiQuery(() => fetchBalanceSheet({}, apiOptions), [apiOptions]);
-  if (state.status === 'loading') return <ServerPending what={WHAT} rows={4} slow={state.slow} />;
+  if (state.status === 'loading') return <ServerPending shape="table" what={WHAT} rows={4} slow={state.slow} />;
   if (state.status === 'failed') {
     return <ServerUnavailable what={WHAT} failure={state.failure} onRetry={refresh} />;
   }
@@ -214,7 +214,15 @@ function BalanceSheetView({ apiOptions }: { readonly apiOptions: ApiCallOptions 
   );
 }
 
-export function Books({ apiOptions = {} }: { readonly apiOptions?: ApiCallOptions }): ReactNode {
+/**
+ * Stable identity for the default. An inline `= {}` default is a NEW object
+ * every render, the query below lists it as a dependency, so every answer
+ * re-rendered, re-fetched and re-rendered again — thousands of requests a
+ * minute on a metered connection while this screen was open.
+ */
+const NO_OPTIONS: ApiCallOptions = {};
+
+export function Books({ apiOptions = NO_OPTIONS }: { readonly apiOptions?: ApiCallOptions }): ReactNode {
   const [tab, setTab] = useState<Tab>('trial-balance');
   const exceptions = useApiQuery(() => fetchPostingExceptions(apiOptions), [apiOptions]);
 

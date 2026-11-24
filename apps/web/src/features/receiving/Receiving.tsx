@@ -120,6 +120,7 @@ import { uuidv7 } from '../../lib/uuidv7';
 import { useCurrencySpec } from '../../money/CurrencyContext';
 import { Money } from '../../money/Money';
 import { Icon } from '../../ui/Icon';
+import { Unit } from '../../ui/Unit';
 import { FetchedAt, ServerPending, ServerUnavailable } from '../shell/ServerAnswer';
 
 const WHAT_EXPECTED = 'What is expected here';
@@ -251,7 +252,7 @@ function ReceiptLineFields({
         <p className="adjust-kind-note">
           Outstanding when this was taken down:{' '}
           <span className="tabular">
-            {formatQtyScaled(line.qtyExpected, line.unit.buyScale)} {line.unit.uomCode}
+            {formatQtyScaled(line.qtyExpected, line.unit.buyScale)} <Unit code={line.unit.uomCode} />
           </span>
         </p>
       )}
@@ -267,7 +268,7 @@ function ReceiptLineFields({
             aria-label={`Quantity invoiced for ${line.productName}`}
             onChange={(e) => onChange({ ...line, qtyText: e.currentTarget.value })}
           />
-          <span className="threshold-form-uom">{line.unit.uomCode}</span>
+          <span className="threshold-form-uom"><Unit code={line.unit.uomCode} /></span>
         </span>
       </label>
 
@@ -294,7 +295,7 @@ function ReceiptLineFields({
                       : line.qtyExpected - figures.qtyReceived,
                     line.unit.buyScale,
                   )}{' '}
-                  {line.unit.uomCode}
+                  <Unit code={line.unit.uomCode} />
                 </span>
                 . That is recorded as it stands — nothing here has to balance.
               </>
@@ -359,7 +360,7 @@ function ReceiptLineFields({
       ) : null}
 
       <label className="threshold-form-field">
-        <span>Invoiced price for one {line.unit.uomCode}</span>
+        <span>Invoiced price for one <Unit code={line.unit.uomCode} /></span>
         <span className="threshold-form-input">
           <input
             type="text"
@@ -850,7 +851,7 @@ function ReceiptDetailPanel({
       </button>
 
       {state.status === 'loading' ? (
-        <ServerPending what={WHAT_ONE_RECEIPT} slow={state.slow} rows={3} />
+        <ServerPending shape="cards" what={WHAT_ONE_RECEIPT} slow={state.slow} rows={3} />
       ) : null}
       {state.status === 'failed' ? (
         <ServerUnavailable what={WHAT_ONE_RECEIPT} failure={state.failure} onRetry={refresh} />
@@ -905,7 +906,7 @@ function ReceiptDetailPanel({
                       <span className="report-loc-code tabular">{l.skuCode}</span>
                     </th>
                     <td className="numeric tabular">
-                      {formatQtyScaled(l.qtyReceived, l.qtyReceivedScale)} {l.uomCode}
+                      {formatQtyScaled(l.qtyReceived, l.qtyReceivedScale)} <Unit code={l.uomCode} />
                     </td>
                     <td className="numeric tabular">
                       {formatQtyScaled(l.qtyStock, l.qtyStockScale)} {l.stockingUomCode}
@@ -974,7 +975,7 @@ function ReceiptStatusPanel({
       </button>
 
       {state.status === 'loading' ? (
-        <ServerPending what={WHAT_RECEIVED_SO_FAR} slow={state.slow} rows={3} />
+        <ServerPending shape="cards" what={WHAT_RECEIVED_SO_FAR} slow={state.slow} rows={3} />
       ) : null}
 
       {/* NOTHING ELSE IS SHOWN. The take-down's figure is a document from
@@ -1025,10 +1026,10 @@ function ReceiptStatusPanel({
                       <span className="report-loc-code tabular">{l.skuCode}</span>
                     </th>
                     <td className="numeric tabular">
-                      {formatQtyScaled(l.qtyOrdered, l.qtyScale)} {l.uomCode}
+                      {formatQtyScaled(l.qtyOrdered, l.qtyScale)} <Unit code={l.uomCode} />
                     </td>
                     <td className="numeric tabular">
-                      {formatQtyScaled(l.qtyReceived, l.qtyScale)} {l.uomCode}
+                      {formatQtyScaled(l.qtyReceived, l.qtyScale)} <Unit code={l.uomCode} />
                       {l.receiptLineCount === 0n ? null : (
                         <span className="figure-withheld">
                           {' '}
@@ -1042,7 +1043,7 @@ function ReceiptStatusPanel({
                     <td className="numeric tabular">
                       {l.qtyOutstanding < 0n ? (
                         <span className="over-delivered">
-                          {formatQtyScaled(-l.qtyOutstanding, l.qtyScale)} {l.uomCode} over
+                          {formatQtyScaled(-l.qtyOutstanding, l.qtyScale)} <Unit code={l.uomCode} /> over
                         </span>
                       ) : l.qtyOutstanding === 0n ? (
                         <span className="figure-withheld">all in</span>
@@ -1111,7 +1112,7 @@ export function Receiving({ db, permissions, apiOptions }: ReceivingProps): Reac
   }
   if (location === null) {
     return (
-      <div className="empty-state">
+      <div className="empty-state empty-attn">
         <Icon name="pin" size={40} />
         <span className="empty-title">This device does not know where it is</span>
         <p className="empty-body">
@@ -1345,7 +1346,7 @@ function ReceivingAt({
         </header>
 
         {state.status === 'loading' ? (
-          <ServerPending what={WHAT_EXPECTED} slow={state.slow} rows={3} />
+          <ServerPending shape="cards" what={WHAT_EXPECTED} slow={state.slow} rows={3} />
         ) : null}
 
         {/* OFFLINE. The server's list is not available, and it says so — never
@@ -1423,7 +1424,7 @@ function ReceivingAt({
               </p>
             )}
             {state.data.orders.length === 0 ? (
-              <div className="empty-state">
+              <div className="empty-state empty-good">
                 <Icon name="check" size={40} />
                 <span className="empty-title">Nothing is expected here</span>
                 <p className="empty-body">

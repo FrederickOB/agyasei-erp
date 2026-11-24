@@ -637,6 +637,28 @@ const probes: Record<string, () => Promise<void>> = {
     );
     expect(answer).toContain('"grants":[]');
   },
+
+  'session.tenant': async () => {
+    await bHolds('B registry row', `select count(*)::text as v from platform.tenant where id = $1`);
+    const own = await A.owner.session.tenant();
+    clean.assertClean('session.tenant', own);
+    // A's own name, read independently with an explicit predicate — non-empty,
+    // and exactly the registry's: B's marker name would have to be a wrong one.
+    exactly(
+      'session.tenant name',
+      own.name ?? '',
+      await admin(`select legal_name as v from platform.tenant where id = $1`, [A.tenantId]),
+    );
+    expect(own.name).toBe(`${SPEC_A.marker} Holdings Ltd`);
+    // The procedure takes no input at all — the tenant is the token's — so
+    // there is no B id to name. A token for A with B's real user id still
+    // answers with A's name: the user is not the key, the tenant is.
+    const crossUser = await h
+      .callerFor(await h.identityFor(A.tenantId, { uid: B.ownerIdentity.userId, grant: 'none' }))
+      .session.tenant();
+    clean.assertClean('session.tenant (B user under A token)', crossUser);
+    expect(crossUser).toEqual(own);
+  },
 };
 
 describe('every query procedure: tenant A sees none of tenant B, at every read path', () => {
@@ -707,6 +729,7 @@ describe('every query procedure: tenant A sees none of tenant B, at every read p
   it('[isolation:sales.recomputeCheck] B’s sale answers as nonexistent', () => probes['sales.recomputeCheck']!());
   it('[isolation:session.permissions] B’s real user id, under A’s token, resolves to nothing', () =>
     probes['session.permissions']!());
+  it('[isolation:session.tenant] A’s token names A’s business and only A’s', () => probes['session.tenant']!());
 });
 
 // ---------------------------------------------------------------------------
@@ -850,6 +873,7 @@ const DECISIVE_MUTATION: Record<string, Decisive> = {
   'sales.get': 'rls-off',
   'sales.recomputeCheck': 'rls-off',
   'session.permissions': 'held-by-app-predicate',
+  'session.tenant': 'held-by-app-predicate',
 };
 
 describe('mutation: remove the backstop and every probe goes red — with an IsolationBreach', () => {

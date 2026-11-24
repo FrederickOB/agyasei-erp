@@ -98,8 +98,12 @@ describe('the queue is readable at last', () => {
     );
 
     expect(await screen.findByText(/Blocking/)).toBeTruthy();
-    expect(screen.getByText(/sequence consumed upto regression/)).toBeTruthy();
-    expect(screen.getByText(/app\.sequence_block · consumed_upto/)).toBeTruthy();
+    // A title a person can act on, a line on what happened…
+    expect(screen.getByText('Receipt numbering went backwards')).toBeTruthy();
+    expect(screen.getByText(/fewer receipt numbers than it had already reported/)).toBeTruthy();
+    // …and the codes still on screen, for a support call to quote.
+    expect(screen.getByText(/Receipt numbers · /)).toBeTruthy();
+    expect(screen.getByText(/SEQUENCE_CONSUMED_UPTO_REGRESSION · consumed_upto/)).toBeTruthy();
   });
 
   it('prints the figures EXACTLY as they arrived — never parsed (ADR-0004)', async () => {

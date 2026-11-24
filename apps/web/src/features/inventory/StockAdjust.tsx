@@ -467,7 +467,7 @@ export function StockAdjust({ db, permissions }: StockAdjustProps): ReactNode {
 
   if (location === null) {
     return (
-      <div className="empty-state">
+      <div className="empty-state empty-attn">
         <Icon name="pin" size={40} />
         <span className="empty-title">This device does not know where it is</span>
         <p className="empty-body">

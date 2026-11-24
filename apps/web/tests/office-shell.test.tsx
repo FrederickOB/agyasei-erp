@@ -208,3 +208,50 @@ describe('inside the office', () => {
     await screen.findByRole('region', { name: 'Sales' }, { timeout: 8000 });
   });
 });
+
+describe('the office masthead', () => {
+  /** A server that answers only the one read the masthead makes. */
+  function naming(name: string | null): ApiCallOptions {
+    return {
+      endpoint: { url: 'http://api.test', bearer: 'dev' },
+      fetchFn: (url) => {
+        if (new URL(url).pathname !== '/trpc/session.tenant') return Promise.reject(new Error('no radio'));
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve({ result: { data: { json: { name } } } }),
+        });
+      },
+    };
+  }
+
+  async function openOffice(apiOptions: ApiCallOptions): Promise<HTMLElement> {
+    const db = await till();
+    const { container } = render(
+      <CurrencyProvider spec={DEV_PLACEHOLDER_CURRENCY}>
+        <Shell
+          db={db}
+          permissions={holding([CAPABILITY.reportLocation])}
+          status={<div>status</div>}
+          apiOptions={apiOptions}
+        />
+      </CurrencyProvider>,
+    );
+    fireEvent.click(await screen.findByRole('button', { name: 'Open the office' }));
+    await screen.findByRole('navigation', { name: 'Office' });
+    return container.querySelector('.office-brand') as HTMLElement;
+  }
+
+  it('names the business the session belongs to, as the server says it', async () => {
+    const brand = await openOffice(naming('Northwind Supplies Ltd'));
+    await waitFor(() => expect(brand.textContent).toContain('Northwind Supplies Ltd'));
+    expect(brand.textContent).toContain('Back office');
+    expect(brand.querySelector('.office-brand-mark')?.textContent).toBe('NS');
+  });
+
+  it('says only "Back office" when the name cannot be asked', async () => {
+    const brand = await openOffice(NO_SERVER);
+    expect(brand.textContent).toContain('Back office');
+    expect(brand.querySelector('small')).toBeNull();
+  });
+});

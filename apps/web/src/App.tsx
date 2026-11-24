@@ -36,6 +36,7 @@ import { Shell } from './features/shell/Shell';
 import { StatusBar } from './features/shell/StatusBar';
 import { useUpdateReady } from './features/shell/use-update';
 import { CurrencyProvider } from './money/CurrencyContext';
+import { UnitNamesProvider } from './ui/Unit';
 import { Icon } from './ui/Icon';
 import { readApiBearerToken, syncConfigured } from './data/powersync';
 import { blocksSales, type DeviceLocationState } from './data/session/device-location';
@@ -168,6 +169,7 @@ export function App({ db, deviceLocation, devicePriceList }: AppProps): ReactNod
     <CurrencyProvider spec={spec}>
       {/* Printing is optional plumbing around the counter, never a gate on it. */}
       <PrintingProvider db={db}>
+      <UnitNamesProvider db={db}>
       <Shell
         db={db}
         permissions={offered}
@@ -196,6 +198,7 @@ export function App({ db, deviceLocation, devicePriceList }: AppProps): ReactNod
           ) : null
         }
       />
+      </UnitNamesProvider>
       </PrintingProvider>
     </CurrencyProvider>
   );

@@ -120,6 +120,7 @@ import {
   loadSyncedCreditPosition,
 } from '../../data/queries/credit-position';
 import { loadCreditCustomers, type CreditCustomer } from '../../data/queries/customers';
+import { loadDebtors, type Debtor } from '../../data/queries/debtors';
 import { readDeviceLocation } from '../../data/queries/session';
 import { useLiveQuery } from '../../data/use-live-query';
 import { businessDateFor } from '../../lib/business-date';
@@ -136,7 +137,7 @@ import {
   StatusForm,
   type QueuedRepayment,
 } from './CreditForms';
-import { SyncedPositionPanel } from './SyncedPosition';
+import { asAtWords, SyncedPositionPanel } from './SyncedPosition';
 
 const WHAT = 'A customer’s credit position';
 
@@ -154,27 +155,234 @@ const EMPTY_OPTIONS: ApiCallOptions = {};
  * needs a connection. Those are two different facts and the screen keeps them
  * apart rather than blanking the whole page.
  */
+const PICKER_LIMIT = 30;
+const DEBTORS_LIMIT = 50;
+
+/**
+ * The staleness of a whole list of synced figures is the staleness of its
+ * OLDEST: "as at 06:40 today" must be true of every row under it.
+ */
+function oldestAsAt(debtors: readonly Debtor[], nowMs: number): string {
+  let oldest: Debtor | null = null;
+  for (const d of debtors) {
+    if (oldest === null) oldest = d;
+    else if (d.computedAtMs === null) {
+      if (oldest.computedAtMs !== null || d.asOf < oldest.asOf) oldest = d;
+    } else if (oldest.computedAtMs !== null && d.computedAtMs < oldest.computedAtMs) oldest = d;
+  }
+  return oldest === null ? '' : asAtWords(oldest.computedAtMs, oldest.asOf, nowMs);
+}
+
+/**
+ * Who owes, most overdue first — the list Accounts opens Credit to work
+ * through. Every figure is the SYNCED one, so the "as at" sits in the heading
+ * and in each figure's own label (R3: never a bare "balance"). Tapping a row
+ * opens that customer, where the live figure is asked for.
+ */
+function DebtorsList({
+  debtors,
+  onPick,
+  nowMs,
+}: {
+  readonly debtors: readonly Debtor[];
+  readonly onPick: (customerId: string) => void;
+  readonly nowMs: number;
+}): ReactNode {
+  const asAt = oldestAsAt(debtors, nowMs);
+  if (debtors.length === 0) {
+    return (
+      <p className="report-note" data-provenance="synced_as_of">
+        Nobody owes anything on the book this device last received. Search above to open any
+        customer&rsquo;s account.
+      </p>
+    );
+  }
+  const shown = debtors.slice(0, DEBTORS_LIMIT);
+  const late = debtors.filter((d) => d.oldestOverdue !== null).length;
+  return (
+    <section className="debtors" data-provenance="synced_as_of" aria-labelledby="debtors-head">
+      <header className="debtors-head">
+        <h3 id="debtors-head">Who owes, most overdue first</h3>
+        <span className="scope-chip scope-partial">
+          <Icon name="clock" size={16} />
+          Synced, {asAt}
+        </span>
+      </header>
+      <p className="report-note">
+        {String(debtors.length)} {debtors.length === 1 ? 'customer owes' : 'customers owe'}
+        {late === 0 ? ', none of it overdue' : `; ${String(late)} ${late === 1 ? 'is' : 'are'} overdue`}.
+        These are the office&rsquo;s figures {asAt} &mdash; open a customer for the figure now.
+      </p>
+      <ul className="debtor-list" aria-label="Customers who owe">
+        {shown.map((d) => {
+          const over = d.availableMinor < 0n;
+          return (
+            <li key={d.accountId}>
+              <button
+                type="button"
+                className="debtor-row pressable"
+                data-overdue={d.oldestOverdue === null ? 'no' : 'yes'}
+                onClick={() => onPick(d.customerId)}
+              >
+                <span className="debtor-who">
+                  <b>{d.name}</b>
+                  <small className="tabular">
+                    {d.code}
+                    {d.phone === null ? '' : ` · ${d.phone}`}
+                  </small>
+                </span>
+                <span className="debtor-figures">
+                  <span className="debtor-owed">
+                    <small>Owed {asAt}</small>
+                    <Money amount={d.balanceMinor} />
+                  </span>
+                  {d.oldestOverdue === null ? (
+                    <small className="debtor-age">Not yet due</small>
+                  ) : (
+                    <small className="debtor-age debtor-late">
+                      <Money amount={d.oldestOverdue.amountMinor} /> {d.oldestOverdue.label} days
+                      overdue
+                    </small>
+                  )}
+                </span>
+                {over || d.status !== 'ACTIVE' ? (
+                  <span className="debtor-flags">
+                    {over ? <span className="debtor-flag">Over limit</span> : null}
+                    {d.status !== 'ACTIVE' ? (
+                      <span className="debtor-flag">{d.status.replace(/_/g, ' ').toLowerCase()}</span>
+                    ) : null}
+                  </span>
+                ) : null}
+              </button>
+            </li>
+          );
+        })}
+      </ul>
+      {debtors.length > shown.length ? (
+        <p className="report-note">
+          Showing the {String(shown.length)} most urgent of {String(debtors.length)}. Search above
+          to find anyone else.
+        </p>
+      ) : null}
+    </section>
+  );
+}
+
+/** Lower-case and strip spacing, so "0244 123 456" finds "0244123456". */
+function fold(text: string): string {
+  return text.toLowerCase().replace(/\s+/g, '');
+}
+
 function CustomerPicker({
   customers,
+  debtors,
   customerId,
   onPick,
+  nowMs,
 }: {
   readonly customers: readonly CreditCustomer[];
+  /**
+   * The synced book as a worklist; null on a device that holds no book;
+   * undefined while that is still being read — the landing waits rather than
+   * flashing the plain list and swapping it out from under a finger.
+   */
+  readonly debtors: readonly Debtor[] | null | undefined;
   readonly customerId: string;
   readonly onPick: (id: string) => void;
+  readonly nowMs: number;
 }): ReactNode {
+  // A dropdown of every account holder does not survive contact with a real
+  // book of customers: a native <select> of four hundred names cannot be
+  // searched on an Android tablet. Type any part of a name, the tenant's code
+  // or a phone number; the first matches are shown before anything is typed,
+  // so the screen is never a blank page with a control on it.
+  const [query, setQuery] = useState('');
+  const picked = customers.find((c) => c.id === customerId) ?? null;
+
+  if (picked !== null) {
+    return (
+      <div className="customer-picked">
+        <span className="customer-picked-label">Which customer</span>
+        <span className="customer-picked-who">
+          <b>{picked.name}</b>
+          <small className="tabular">
+            {picked.code}
+            {picked.phone === null ? '' : ` · ${picked.phone}`}
+          </small>
+        </span>
+        <button
+          type="button"
+          className="secondary-action pressable"
+          onClick={() => {
+            setQuery('');
+            onPick('');
+          }}
+        >
+          Change
+        </button>
+      </div>
+    );
+  }
+
+  const needle = fold(query);
+  const matches =
+    needle.length === 0
+      ? customers
+      : customers.filter(
+          (c) =>
+            fold(c.name).includes(needle) ||
+            fold(c.code).includes(needle) ||
+            (c.phone !== null && fold(c.phone).includes(needle)),
+        );
+  const shown = matches.slice(0, PICKER_LIMIT);
+  // Before anything is typed: the debtors worklist on a device holding the
+  // book, the plain list on one that does not, and nothing while that is
+  // still unknown. Once something is typed: matches across every customer.
+  const landing: 'waiting' | 'debtors' | 'list' =
+    needle.length > 0 || debtors === null ? 'list' : debtors === undefined ? 'waiting' : 'debtors';
+
   return (
-    <label className="threshold-form-field">
-      <span>Which customer</span>
-      <select value={customerId} onChange={(e) => onPick(e.currentTarget.value)}>
-        <option value="">Choose a customer…</option>
-        {customers.map((c) => (
-          <option key={c.id} value={c.id}>
-            {c.name} · {c.code}
-          </option>
-        ))}
-      </select>
-    </label>
+    <div className="customer-picker">
+      <label className="threshold-form-field">
+        <span>Which customer</span>
+        <input
+          type="search"
+          value={query}
+          placeholder="Name, code or phone"
+          autoComplete="off"
+          enterKeyHint="go"
+          onChange={(e) => setQuery(e.currentTarget.value)}
+          onKeyDown={(e) => {
+            // Enter takes the only match — a typed code is usually exact.
+            if (e.key === 'Enter' && matches.length === 1) onPick(matches[0]!.id);
+          }}
+        />
+      </label>
+      {landing === 'waiting' ? null : landing === 'debtors' ? (
+        <DebtorsList debtors={debtors ?? []} onPick={onPick} nowMs={nowMs} />
+      ) : shown.length === 0 ? (
+        needle.length === 0 ? null : <p className="report-note">No customer matches &ldquo;{query}&rdquo;.</p>
+      ) : (
+        <ul className="customer-list" aria-label="Customers">
+          {shown.map((c) => (
+            <li key={c.id}>
+              <button type="button" className="customer-row pressable" onClick={() => onPick(c.id)}>
+                <b>{c.name}</b>
+                <small className="tabular">
+                  {c.code}
+                  {c.phone === null ? '' : ` · ${c.phone}`}
+                </small>
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      {landing === 'list' && matches.length > shown.length ? (
+        <p className="report-note">
+          Showing {String(shown.length)} of {String(matches.length)}. Type more to narrow it down.
+        </p>
+      ) : null}
+    </div>
   );
 }
 
@@ -318,7 +526,15 @@ function AgeingPanel({ position }: { readonly position: CreditPosition }): React
                   <th scope="row" className="tabular">
                     {inv.dueDate ?? '—'}
                   </th>
-                  <td className="tabular">{String(inv.daysPastDue)}</td>
+                  <td className="tabular">
+                    {/* The server's figure is negative before the due date;
+                        "-26 days past due" makes a person do the sign. */}
+                    {inv.daysPastDue > 0
+                      ? String(inv.daysPastDue)
+                      : inv.daysPastDue === 0
+                        ? 'Due today'
+                        : `Not due — ${String(-inv.daysPastDue)} ${inv.daysPastDue === -1 ? 'day' : 'days'} to go`}
+                  </td>
                   <td>
                     <Money amount={inv.outstandingMinor} />
                   </td>
@@ -485,6 +701,7 @@ export interface CreditProps {
 export function Credit({ db, permissions, apiOptions }: CreditProps): ReactNode {
   const location = useLiveQuery(db, readDeviceLocation, []);
   const customers = useLiveQuery(db, loadCreditCustomers, []);
+  const debtors = useLiveQuery(db, loadDebtors, []);
   const [customerId, setCustomerId] = useState('');
   const [asOfOverride, setAsOfOverride] = useState<string | null>(null);
   const options = useMemo<ApiCallOptions>(() => apiOptions ?? EMPTY_OPTIONS, [apiOptions]);
@@ -516,8 +733,10 @@ export function Credit({ db, permissions, apiOptions }: CreditProps): ReactNode 
         <form className="credit-chooser" onSubmit={(e) => e.preventDefault()}>
           <CustomerPicker
             customers={customers ?? []}
+            debtors={debtors}
             customerId={customerId}
             onPick={(id) => setCustomerId(id)}
+            nowMs={Date.now()}
           />
           <label className="report-range-field">
             <span>As at</span>
@@ -611,11 +830,10 @@ function CreditForCustomer({
 
   return (
     <>
-      <div className="report-panel-head">
-        {state.status === 'ready' ? <FetchedAt atMs={state.fetchedAtMs} /> : null}
-      </div>
-
-      {state.status === 'loading' ? <ServerPending what={WHAT} slow={state.slow} rows={3} /> : null}
+      {/* No "as at" here: this lookup finds WHICH account, and carries no
+          figure. The position below states when its own figures were asked —
+          two identical clocks one above the other read as a glitch. */}
+      {state.status === 'loading' ? <ServerPending shape="figures" what={WHAT} slow={state.slow} rows={3} /> : null}
       {/* One refusal per screen: when the fallback below takes over, IT states
           the refusal, alongside the figures it is entitled to show. */}
       {state.status === 'failed' && offlineAccountId === null ? (
@@ -765,7 +983,7 @@ function CreditPositionFor({
         {state.status === 'ready' ? <FetchedAt atMs={state.fetchedAtMs} /> : null}
       </div>
 
-      {state.status === 'loading' ? <ServerPending what={WHAT} slow={state.slow} rows={3} /> : null}
+      {state.status === 'loading' ? <ServerPending shape="figures" what={WHAT} slow={state.slow} rows={3} /> : null}
       {state.status === 'failed' ? (
         <ServerUnavailable what={WHAT} failure={state.failure} onRetry={refresh} />
       ) : null}

@@ -60,6 +60,9 @@
  * that would render an empty state for it, deliberately.
  */
 import { Suspense, lazy, useState, type ReactNode } from 'react';
+import { readDeviceLocation } from '../../data/queries/session';
+import { useScrollEdges } from '../../ui/use-scroll-edges';
+import { useSlidingPill } from '../../ui/use-sliding-pill';
 import type { LocalDb } from '../../data/db';
 import type { ApiCallOptions } from '../../data/api/client';
 import { holdsCapability, type PermissionsState } from '../../data/api/session';
@@ -127,6 +130,9 @@ export function Shell({ db, permissions, status, notice, apiOptions }: ShellProp
     [],
   );
   const lineCount = cartLines ?? 0;
+  // Which outlet this device trades as. A person picking up a tablet should
+  // never have to infer it from the stock on screen.
+  const location = useLiveQuery(db, readDeviceLocation, []);
 
   const offered = VIEWS.filter((v) => v.requires === null || holdsCapability(permissions, v.requires));
   // If the active destination stops being offered — a capability list arrives
@@ -137,11 +143,13 @@ export function Shell({ db, permissions, status, notice, apiOptions }: ShellProp
   // session can still hold something the office shows.
   const officeAvailable = officeOffered(permissions);
   const inOffice = room === 'office' && officeAvailable;
+  const { ref: navRef, more: navMore } = useScrollEdges<HTMLElement>(active);
+  const pill = useSlidingPill(navRef, active, '.view-switch-item[aria-current="true"]');
 
   return (
     <>
       {inOffice ? (
-        <Suspense fallback={<ServerPending what="The office" rows={4} />}>
+        <Suspense fallback={<ServerPending shape="tiles" what="The office" rows={4} />}>
           <OfficeShell
             db={db}
             permissions={permissions}
@@ -158,8 +166,13 @@ export function Shell({ db, permissions, status, notice, apiOptions }: ShellProp
             the connection state is never scrolled off the screen — it is the
             answer to "did that sale go?" and it has to be there when asked. */}
         <header className="app-bar">
-          {status}
-          {notice}
+          <div className="app-bar-status">{status}</div>
+          {location?.name != null || (location?.code ?? '') !== '' ? (
+            <span className="app-bar-place" title={location?.code}>
+              <Icon name="pin" size={16} />
+              <span>{location?.name ?? location?.code}</span>
+            </span>
+          ) : null}
           {officeAvailable ? (
             <button
               type="button"
@@ -171,33 +184,44 @@ export function Shell({ db, permissions, status, notice, apiOptions }: ShellProp
               <span>Office</span>
             </button>
           ) : null}
-          <nav className="view-switch" aria-label="Main">
-            {offered.map((v) => {
-              const badge = v.id === 'counter' && lineCount > 0 ? lineCount : null;
-              return (
-                <button
-                  key={v.id}
-                  type="button"
-                  className="view-switch-item pressable"
-                  aria-current={active === v.id}
-                  {...(badge === null
-                    ? {}
-                    : {
-                        'aria-label': `${v.label} — ${String(badge)} ${badge === 1 ? 'line' : 'lines'} in the cart`,
-                      })}
-                  onClick={() => setView(v.id)}
-                >
-                  <Icon name={v.icon} size={20} />
-                  <span className="view-switch-label">{v.label}</span>
-                  {badge === null ? null : (
-                    <span className="view-switch-badge tabular" aria-hidden="true">
-                      {badge}
-                    </span>
-                  )}
-                </button>
-              );
-            })}
-          </nav>
+          <div className="view-switch-frame" data-more-start={navMore.start} data-more-end={navMore.end}>
+            <nav
+              className="view-switch"
+              aria-label="Main"
+              ref={navRef}
+              data-pill={pill.style === null ? 'off' : 'on'}
+            >
+              {pill.style === null ? null : (
+                <span className="nav-pill" aria-hidden="true" style={pill.style} />
+              )}
+              {offered.map((v) => {
+                const badge = v.id === 'counter' && lineCount > 0 ? lineCount : null;
+                return (
+                  <button
+                    key={v.id}
+                    type="button"
+                    className="view-switch-item pressable"
+                    aria-current={active === v.id}
+                    {...(badge === null
+                      ? {}
+                      : {
+                          'aria-label': `${v.label} — ${String(badge)} ${badge === 1 ? 'line' : 'lines'} in the cart`,
+                        })}
+                    onClick={() => setView(v.id)}
+                  >
+                    <Icon name={v.icon} size={20} />
+                    <span className="view-switch-label">{v.label}</span>
+                    {badge === null ? null : (
+                      <span className="view-switch-badge tabular" aria-hidden="true">
+                        {badge}
+                      </span>
+                    )}
+                  </button>
+                );
+              })}
+            </nav>
+          </div>
+          {notice === null || notice === undefined ? null : <div className="app-bar-notice">{notice}</div>}
         </header>
         <main className="app-main">
           {/* The counter is always rendered; `hidden` removes it from the
@@ -210,12 +234,17 @@ export function Shell({ db, permissions, status, notice, apiOptions }: ShellProp
               onOpenPrinterSettings={() => setView('printer')}
             />
           </div>
-          {active === 'sales' ? (
-            <SalesList db={db} permissions={permissions} onOpenPrinterSettings={() => setView('printer')} />
-          ) : null}
-          {active !== 'counter' && active !== 'sales'
-            ? renderDestination(active, { db, permissions, apiOptions })
-            : null}
+          {/* Keyed by destination, so each arrival replays the entrance —
+              a screen that fades up says "this is new", a hard cut does not. */}
+          {active === 'counter' ? null : (
+            <div className="view-enter" key={active}>
+              {active === 'sales' ? (
+                <SalesList db={db} permissions={permissions} onOpenPrinterSettings={() => setView('printer')} />
+              ) : (
+                renderDestination(active, { db, permissions, apiOptions })
+              )}
+            </div>
+          )}
         </main>
       </div>
     </>

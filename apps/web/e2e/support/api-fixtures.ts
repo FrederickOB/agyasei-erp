@@ -295,6 +295,8 @@ const adminDevices: ProcedureHandler = () => [
 export function defaultProcedures(codes: readonly string[] = FIXTURE_CAPABILITIES): Record<string, ProcedureHandler> {
   return {
     'session.permissions': permissionsFor(codes),
+    // The office masthead names the business the session belongs to.
+    'session.tenant': () => ({ name: 'Fixture Trading Ltd' }),
     // Online, the till asks before it opens (OpenTill.tsx): the server's date
     // at this location, the period open, no refusal.
     'cashSession.openCheck': (input) => ({
