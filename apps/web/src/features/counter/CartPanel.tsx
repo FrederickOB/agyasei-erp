@@ -197,7 +197,9 @@ function CartLineItem({
             <Money amount={unitMinor} className="money" /> / {line.uomLabel}
           </span>
         </span>
-        <Money amount={lineTotalMinor(line)} className="money cart-line-total" />
+        <span className="cart-line-total-tick" key={lineTotalMinor(line).toString()}>
+          <Money amount={lineTotalMinor(line)} className="money cart-line-total" />
+        </span>
       </div>
       <div className="cart-line-controls">
         <div className="qty-stepper">

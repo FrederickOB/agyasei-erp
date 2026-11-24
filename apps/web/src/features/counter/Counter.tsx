@@ -663,7 +663,12 @@ export function Counter({
               >
                 <span className="cart-bar-icon" aria-hidden="true">
                   <Icon name="cart" size={22} />
-                  {lineCount > 0 ? <span className="cart-bar-badge tabular">{lineCount}</span> : null}
+                  {lineCount > 0 ? (
+                    // Keyed by the count: every line in or out bumps it once.
+                    <span className="cart-bar-badge tabular" key={lineCount}>
+                      {lineCount}
+                    </span>
+                  ) : null}
                 </span>
                 <span className="cart-bar-text">
                   <span className="cart-bar-lines">
@@ -673,6 +678,8 @@ export function Counter({
                     <Money amount={totalMinor} className="money cart-bar-total" />
                   </span>
                 </span>
+                {/* Tapping the summary opens the sale: say so with the shape. */}
+                <Icon name="up" size={20} className="cart-bar-open" />
               </button>
               <button
                 type="button"

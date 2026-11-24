@@ -101,8 +101,14 @@ const PAIRS: readonly (readonly [string, string, string, number])[] = [
   ...[0, 1, 2, 3, 4, 5, 6, 7].map(
     (i) => [`category colour ${String(i)} as a mark on a surface`, `cat-${String(i)}`, 'surface', 3] as const,
   ),
-  // The complete-sale button is green with white words, at large-text size.
-  ['the complete-sale label', 'brand-ink', 'ok', 3],
+  // ...and a product tile's initials, written on that colour.
+  ...[0, 1, 2, 3, 4, 5, 6, 7].map(
+    (i) => [`initials on category colour ${String(i)}`, 'cat-ink', `cat-${String(i)}`, 4.5] as const,
+  ),
+  // A tile's words on its soft fill.
+  ['a product name on its tile', 'text', 'tile', 4.5],
+  ['a unit on its tile', 'text-muted', 'tile', 4.5],
+  ['a selected tile’s words on the brand tint', 'text', 'brand-tint', 4.5],
 ];
 
 describe('the counter’s colour tokens', () => {

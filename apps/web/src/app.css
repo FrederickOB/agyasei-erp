@@ -93,11 +93,20 @@
      sits where Material's own `outline` token sits, for the same reason. */
   --control-border: #7f8a9b;
 
-  --brand: #1b4ddb;
+  /* The counter's one accent: a construction orange (founder's reference,
+     24 Nov 2026), darkened from the reference's #e8511f until white words on
+     it read at 4.5:1 — the reference's own orange only managed 3.7. */
+  --brand: #cc4a12;
   --brand-ink: #ffffff;
-  --brand-strong: #163cad;
-  --brand-tint: #eaf0ff;
-  --brand-text: #1743c4;
+  --brand-strong: #a63c0c;
+  --brand-tint: #fff1e6;
+  --brand-text: #b23c0b;
+  /* A product tile: a soft fill on the white register, no outline (the
+     reference's calm). Its words and its initials circle say "tap me". */
+  --tile: #f1f3f5;
+  --tile-press: #e4e7eb;
+  /* Words on a category's initials circle. */
+  --cat-ink: #ffffff;
 
   --ok: #12693f;
   --ok-tint: #e4f2ea;
@@ -130,14 +139,14 @@
      these by their place in the alphabet, never by name). Each is a
      non-text mark — a card's leading edge, a chip's dot — held at 3:1
      against the surface (tests/design-tokens.test.ts). */
-  --cat-0: #0b8574;
-  --cat-1: #6b5ce7;
-  --cat-2: #b0700a;
-  --cat-3: #c93a66;
-  --cat-4: #2f66d6;
-  --cat-5: #2f8a35;
-  --cat-6: #d0560f;
-  --cat-7: #5c6b80;
+  --cat-0: #0b7a6b;
+  --cat-1: #5b4cd6;
+  --cat-2: #94600a;
+  --cat-3: #b8325c;
+  --cat-4: #2a5ec9;
+  --cat-5: #2a7d30;
+  --cat-6: #a8480d;
+  --cat-7: #556377;
 
   /* ── The back office (features/office). Its own palette, deliberately
      unlike the counter's: a soft lavender-grey canvas, white cards, one
@@ -190,11 +199,14 @@
     --border: #29323e;
     --control-border: #626f81;
 
-    --brand: #3a66e8;
+    --brand: #cc4a12;
     --brand-ink: #ffffff;
-    --brand-strong: #5b83f7;
-    --brand-tint: #16223c;
-    --brand-text: #9db7ff;
+    --brand-strong: #e0601f;
+    --brand-tint: #2b1a0f;
+    --brand-text: #fdba74;
+    --tile: #1d242e;
+    --tile-press: #263040;
+    --cat-ink: #0c1016;
 
     --ok: #35a06a;
     --ok-tint: #10251b;
@@ -269,7 +281,9 @@ body {
   padding: 0;
   background: var(--bg);
   color: var(--text);
-  font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  /* Inter, self-hosted and precached (public/fonts/office), so the counter
+     reads the same on every tablet, offline as on. */
+  font-family: 'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
   font-size: 17px;
   line-height: 1.5;
   -webkit-text-size-adjust: 100%;
@@ -498,20 +512,23 @@ button {
 }
 
 /* ─── COUNTER: THE REGISTER ──────────────────────────────────────────────────
-   Redesigned 24 Nov 2026 against how the counters people already know are
-   laid out (Square, Shopify POS, Toast, Lightspeed): the page itself never
-   scrolls while selling. The till, the search and the departments stay put;
-   only the catalogue scrolls; the sale is always in view.
+   Restyled 24 Nov 2026 to the founder's reference (a calm tablet POS: white
+   canvas, soft borderless tiles with a coloured circle, a flat order summary
+   down the right, one orange action). Layout as before: the page never
+   scrolls while selling on a tablet — the till, search and departments stay
+   put, only the catalogue scrolls, and the sale is always in view.
 
-     · wide (≥900px: landscape tablet, laptop): catalogue | full-height ticket
+     · wide (≥900px): catalogue | full-height sale pane, a hairline between
      · narrow (portrait tablet, phone): catalogue above a CHECKOUT DOCK that is
-       the last row of the screen — the "Take payment" control can not scroll
-       away, whatever the position in a 219-line catalogue.
+       the last row of the screen
 
-   The lock is `.app-shell:has(… .register)` below: while the register is the
-   visible view, the shell is exactly the screen's height and the catalogue
-   is the scroller. A browser without :has() keeps page scroll, and the dock
-   still holds the bottom edge by being sticky. */
+   THE LOCK. While the register is the visible view, the PAGE ROOT is the
+   screen's height and the shell takes whatever is left under anything the
+   app renders above it (the signed-in session bar, a lease banner). Locking
+   the shell itself to 100dvh — the first version — ignored those bars, so on
+   the pilot tablet the dock was pushed their height below the screen, under
+   the taskbar. A browser without :has() keeps page scroll, and the dock, being
+   sticky, still holds the bottom edge. */
 .counter {
   display: grid;
   gap: var(--s-4);
@@ -539,12 +556,15 @@ button {
 .register-wide {
   grid-template-columns: minmax(0, 1fr) minmax(340px, 400px);
   grid-template-rows: minmax(0, 1fr);
-  column-gap: var(--s-4);
+  column-gap: 0;
 }
-/* Without the lock (no :has), the ticket follows the scroll instead. */
+.register-wide .register-main {
+  padding-right: var(--s-4);
+}
+/* Without the lock (no :has), the pane follows the scroll instead. */
 .register-ticket {
   position: sticky;
-  top: var(--s-4);
+  top: 0;
   align-self: start;
   display: flex;
   min-height: 0;
@@ -555,21 +575,32 @@ button {
   min-height: 0;
 }
 
-/* Wherever the register is the visible view, the dock is the page's last
-   thing: no padding under it for the page to show through. */
+/* The register sits on a white canvas, as the reference does: the tiles are
+   the only grey on the page, so the eye goes straight to them. */
 @supports selector(:has(*)) {
   .app-main:has(> .view-pane:not([hidden]) > .register) {
     padding-bottom: 0;
+    background: var(--surface);
   }
 }
-/* Tablet-sized screens only. On a phone the shell's own chrome would leave
-   the catalogue a letterbox; there the page scrolls the chrome away and the
-   dock, being sticky, still holds the bottom edge. */
 @supports selector(:has(*)) {
 @media (min-width: 560px) and (min-height: 520px) {
-  .app-shell:has(> .app-main > .view-pane:not([hidden]) > .register) {
+  #root:has(.app-shell .view-pane:not([hidden]) > .register) {
     height: 100vh;
     height: 100dvh;
+    min-height: 0;
+    overflow: hidden;
+  }
+  /* Whatever sits above the shell keeps its height… */
+  #root:has(.app-shell .view-pane:not([hidden]) > .register) > :not(.app-shell):not(:has(.app-shell)) {
+    flex: none;
+  }
+  /* …and the shell (and anything wrapping it) takes the rest. */
+  #root:has(.app-shell .view-pane:not([hidden]) > .register) :has(> .app-shell),
+  #root:has(.app-shell .view-pane:not([hidden]) > .register) .app-shell {
+    display: flex;
+    flex-direction: column;
+    flex: 1 1 auto;
     min-height: 0;
     overflow: hidden;
   }
@@ -578,7 +609,6 @@ button {
     flex-direction: column;
     min-height: 0;
     padding-top: var(--s-3);
-    padding-bottom: 0;
   }
   .app-main > .view-pane:not([hidden]):has(> .register) {
     flex: 1;
@@ -586,18 +616,70 @@ button {
     display: flex;
     flex-direction: column;
   }
-  .app-shell:has(> .app-main > .view-pane:not([hidden]) > .register-wide) > .app-main {
-    padding-bottom: var(--s-4);
-  }
   .register-ticket {
     position: static;
     align-self: stretch;
     max-height: none;
   }
+  /* The pane runs from under the app bar to the screen's bottom edge. */
+  .register-wide .register-ticket {
+    margin: calc(-1 * var(--s-3)) calc(-1 * var(--s-4)) 0 0;
+  }
 }
 }
 
-/* ─── SEARCH + FILTERS ───────────────────────────────────────────────────── */
+/* ─── THE TILL, AS THE REGISTER'S HEADING ──────────────────────────────────
+   The reference leads with the day ("Monday 5.5."); so does the counter —
+   it is the date every sale here is filed under. */
+.till-bar {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  min-height: var(--tap-min);
+}
+.till-bar-dot {
+  flex: none;
+  width: 9px;
+  height: 9px;
+  border-radius: var(--r-full);
+  background: var(--ok);
+  box-shadow: 0 0 0 4px var(--ok-tint);
+}
+.till-bar.offline .till-bar-dot {
+  background: var(--wait);
+  box-shadow: 0 0 0 4px var(--wait-tint);
+}
+.till-bar-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--text-muted);
+  font-size: var(--t-sm);
+  font-weight: 600;
+}
+.till-bar-text strong {
+  margin-left: 2px;
+  color: var(--text);
+  font-size: var(--t-xl);
+  font-weight: 750;
+  letter-spacing: -0.01em;
+}
+.till-bar-flag {
+  color: var(--wait-ink);
+  font-weight: 700;
+}
+.till-bar .till-bar-action {
+  min-height: var(--tap-min);
+  flex: none;
+  padding: 0 var(--s-4);
+  border: 0;
+  border-radius: var(--r-2);
+  background: var(--tile);
+  font-size: var(--t-sm);
+  font-weight: 700;
+}
+
+/* ─── SEARCH + DEPARTMENTS ───────────────────────────────────────────────── */
 .product-search {
   display: flex;
   flex-direction: column;
@@ -613,7 +695,7 @@ button {
 .search-row {
   display: flex;
   align-items: center;
-  gap: var(--s-3);
+  gap: var(--s-4);
 }
 .search-field {
   position: relative;
@@ -624,7 +706,6 @@ button {
 }
 .search-row > .till-bar {
   flex: none;
-  min-height: var(--tap);
 }
 .search-field .search-icon {
   position: absolute;
@@ -636,12 +717,12 @@ button {
   width: 100%;
   min-height: var(--tap);
   padding: 0 calc(var(--tap-min) + var(--s-2)) 0 calc(var(--s-4) * 2 + var(--icon-md));
-  font-size: var(--t-lg);
-  border: 1px solid var(--control-border);
-  border-radius: var(--r-3);
-  background: var(--surface);
-  box-shadow: var(--shadow-1);
+  font-size: var(--t-md);
+  border: 1px solid transparent;
+  border-radius: var(--r-2);
+  background: var(--tile);
   transition:
+    background-color var(--dur-2) linear,
     border-color var(--dur-1) linear,
     box-shadow var(--dur-2) var(--ease);
 }
@@ -650,6 +731,7 @@ button {
 }
 .search-input:focus {
   border-color: var(--brand);
+  background: var(--surface);
   box-shadow: 0 0 0 4px var(--brand-tint);
   outline: none;
 }
@@ -670,6 +752,7 @@ button {
   border-radius: var(--r-full);
   background: transparent;
   color: var(--text-muted);
+  animation: pop var(--dur-2) var(--ease) backwards;
 }
 
 /* Filter chips, built from the catalogue's own categories — tenant data, not
@@ -711,14 +794,23 @@ button {
   border-color: var(--text);
   color: var(--surface);
 }
+/* The register's departments: the reference's soft tabs. */
+.catalogue-head .chip {
+  border-color: transparent;
+  border-radius: var(--r-2);
+  background: var(--tile);
+}
+.catalogue-head .chip[aria-pressed='true'] {
+  border-color: var(--brand);
+  background: var(--brand-tint);
+  color: var(--brand-text);
+  box-shadow: inset 0 0 0 1px var(--brand);
+}
 .chip-swatch {
   width: 10px;
   height: 10px;
   border-radius: var(--r-full);
   background: var(--cat);
-}
-.chip[aria-pressed='true'] .chip-swatch {
-  box-shadow: 0 0 0 2px var(--surface);
 }
 
 /* The colour key: one per tenant category, by its place in the alphabet. */
@@ -730,15 +822,15 @@ button {
 .cat-5 { --cat: var(--cat-5); }
 .cat-6 { --cat: var(--cat-6); }
 .cat-7 { --cat: var(--cat-7); }
-.cat-none { --cat: var(--control-border); }
+.cat-none { --cat: var(--text-muted); }
 
-/* ─── PRODUCT GRID ───────────────────────────────────────────────────────── */
+/* ─── PRODUCT TILES ──────────────────────────────────────────────────────── */
 .catalogue-scroll {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
-  /* Room for a card's press shadow and focus ring at the scroller's edges. */
+  /* Room for a tile's focus ring at the scroller's edges. */
   margin: 0 calc(-1 * var(--s-1));
   padding: var(--s-1) var(--s-1) var(--s-4);
   scrollbar-width: thin;
@@ -749,59 +841,69 @@ button {
   padding: 0;
   display: grid;
   gap: var(--s-3);
-  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(148px, 1fr));
 }
-@media (min-width: 600px) {
+@media (min-width: 560px) {
   .product-grid {
-    grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+    grid-template-columns: repeat(auto-fill, minmax(164px, 1fr));
   }
 }
 .product-card {
   position: relative;
   width: 100%;
-  min-height: 112px;
   height: 100%;
+  min-height: 132px;
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  justify-content: space-between;
-  gap: var(--s-3);
-  padding: var(--s-3) var(--s-3) var(--s-3) calc(var(--s-3) + 5px);
+  gap: var(--s-2);
+  padding: var(--s-3) var(--s-3) var(--s-3) var(--s-4);
   text-align: left;
-  border: 1px solid var(--control-border);
+  border: 0;
   border-radius: var(--r-3);
-  background: var(--surface);
-  box-shadow: var(--shadow-1);
+  background: var(--tile);
+  color: var(--text);
   overflow: hidden;
-}
-/* The department's colour, down the card's leading edge. */
-.product-card::before {
-  content: '';
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  left: 0;
-  width: 5px;
-  background: var(--cat, var(--control-border));
+  transition:
+    transform var(--dur-1) var(--ease),
+    background-color var(--dur-2) linear,
+    box-shadow var(--dur-2) var(--ease);
 }
 .product-card:active:not(:disabled) {
-  box-shadow: none;
+  background: var(--tile-press);
 }
-/* Already in the sale: the card says so, and says how many. */
+/* Already in the sale: the tile says so, and says how many. */
 .product-card.in-cart {
-  border-color: var(--brand);
-  box-shadow:
-    inset 0 0 0 1px var(--brand),
-    var(--shadow-1);
-  background: color-mix(in srgb, var(--brand-tint) 60%, var(--surface));
+  background: var(--brand-tint);
+  box-shadow: inset 0 0 0 2px var(--brand);
 }
-.product-qty {
-  flex: none;
-  margin-left: auto;
+.product-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  min-height: 32px;
+}
+/* The reference's numbered circle, as the product's initials in its
+   department's colour: something to find by shape before reading. */
+.product-mono {
   display: flex;
   align-items: center;
   justify-content: center;
-  min-width: 32px;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--r-full);
+  background: var(--cat, var(--text-muted));
+  color: var(--cat-ink);
+  font-size: var(--t-xs);
+  font-weight: 750;
+  letter-spacing: 0.02em;
+}
+.product-qty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 34px;
   height: 28px;
   padding: 0 var(--s-2);
   border-radius: var(--r-full);
@@ -809,38 +911,40 @@ button {
   color: var(--brand-ink);
   font-size: var(--t-xs);
   font-weight: 800;
-  animation: pop var(--dur-3) var(--ease) backwards;
+  animation: bump var(--dur-3) var(--ease);
+}
+@keyframes bump {
+  0% {
+    transform: scale(0.6);
+  }
+  55% {
+    transform: scale(1.18);
+  }
 }
 .product-name {
-  font-size: var(--t-md);
-  font-weight: 620;
-  line-height: 1.3;
-  /* Wrap rather than truncate; a cut-off product name is a mis-sale. Break
-     inside a word only when a word alone is wider than the card. */
-  overflow-wrap: break-word;
-}
-.product-price {
-  font-size: var(--t-lg);
-  font-weight: 780;
-  letter-spacing: -0.01em;
-}
-.product-unit {
-  color: var(--text-muted);
+  flex: 1;
   font-size: var(--t-sm);
   font-weight: 600;
+  line-height: 1.3;
+  /* Wrap rather than truncate; a cut-off product name is a mis-sale. Break
+     inside a word only when a word alone is wider than the tile. */
+  overflow-wrap: break-word;
 }
 .product-foot {
-  display: flex;
-  align-items: center;
-  gap: var(--s-2);
-  width: 100%;
-}
-.product-price-line {
   display: flex;
   align-items: baseline;
   flex-wrap: wrap;
   column-gap: var(--s-1);
-  min-width: 0;
+}
+.product-price {
+  font-size: var(--t-md);
+  font-weight: 750;
+  letter-spacing: -0.01em;
+}
+.product-unit {
+  color: var(--text-muted);
+  font-size: var(--t-xs);
+  font-weight: 600;
 }
 .catalogue-more {
   margin: var(--s-4) 0 0;
@@ -849,7 +953,7 @@ button {
   text-align: center;
 }
 
-/* Cause and effect: the card you tapped confirms it was the card you tapped,
+/* Cause and effect: the tile you tapped confirms it was the tile you tapped,
    which is the whole answer to "did that go in?" in a queue. */
 .product-added {
   position: absolute;
@@ -858,21 +962,22 @@ button {
   align-items: center;
   justify-content: center;
   gap: var(--s-2);
-  background: var(--ok-tint);
-  color: var(--ok-ink);
-  font-weight: 700;
-  animation: added var(--dur-3) var(--ease) forwards;
+  border-radius: inherit;
+  background: color-mix(in srgb, var(--brand) 88%, transparent);
+  color: var(--brand-ink);
+  font-weight: 750;
+  animation: added 620ms var(--ease) forwards;
 }
 @keyframes added {
   0% {
     opacity: 0;
-    transform: scale(0.96);
+    transform: scale(0.94);
   }
-  25% {
+  22% {
     opacity: 1;
     transform: scale(1);
   }
-  75% {
+  70% {
     opacity: 1;
   }
   100% {
@@ -938,16 +1043,17 @@ button {
   line-height: 1.5;
 }
 
-/* ─── THE SALE TICKET: DOCKED COLUMN, CHECKOUT DOCK AND SHEET ────────────── */
+/* ─── THE SALE: SUMMARY PANE, CHECKOUT DOCK AND SHEET ────────────────────── */
 .cart-panel {
   display: flex;
   flex-direction: column;
   min-height: 0;
-  border: 1px solid var(--border);
-  border-radius: var(--r-4);
   background: var(--surface);
-  box-shadow: var(--shadow-2);
   overflow: hidden;
+}
+/* Wide: the reference's flat order summary — a hairline, not a floating card. */
+.register-ticket .cart-panel {
+  border-left: 1px solid var(--border);
 }
 .cart-head {
   display: flex;
@@ -959,14 +1065,14 @@ button {
 }
 .cart-title {
   font-size: var(--t-lg);
-  font-weight: 750;
+  font-weight: 700;
   letter-spacing: -0.01em;
 }
 .cart-count {
   min-width: 26px;
   padding: 2px var(--s-2);
   border-radius: var(--r-full);
-  background: var(--surface-2);
+  background: var(--tile);
   color: var(--text-muted);
   font-size: var(--t-xs);
   font-weight: 800;
@@ -988,7 +1094,7 @@ button {
 .cart-line {
   padding: var(--s-4) 0 var(--s-3);
   border-bottom: 1px solid var(--border);
-  animation: line-in var(--dur-2) var(--ease);
+  animation: line-in var(--dur-3) var(--ease);
 }
 .cart-line:last-child {
   border-bottom: 0;
@@ -996,7 +1102,7 @@ button {
 @keyframes line-in {
   from {
     opacity: 0;
-    transform: translateY(6px);
+    transform: translateX(16px);
   }
 }
 .cart-line-main {
@@ -1005,24 +1111,31 @@ button {
   align-items: baseline;
   gap: var(--s-3);
 }
-.cart-line-name {
-  font-weight: 620;
-  line-height: 1.3;
-  overflow-wrap: anywhere;
-}
-.cart-line-total {
-  font-weight: 780;
-  white-space: nowrap;
-}
 .cart-line-info {
   display: flex;
   flex-direction: column;
   min-width: 0;
 }
+.cart-line-name {
+  font-size: var(--t-sm);
+  font-weight: 650;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
 .cart-line-each {
   margin-top: 2px;
   color: var(--text-muted);
+  font-size: var(--t-xs);
+}
+.cart-line-total {
   font-size: var(--t-sm);
+  font-weight: 750;
+  white-space: nowrap;
+}
+/* Wrapped by the amount, so a change replays a short tick. */
+.cart-line-total-tick {
+  display: inline-block;
+  animation: tick var(--dur-3) var(--ease);
 }
 .cart-line-controls {
   display: flex;
@@ -1031,13 +1144,11 @@ button {
   gap: var(--s-2);
   margin-top: var(--s-2);
 }
+/* The reference's stepper: two soft squares either side of the count. */
 .qty-stepper {
   display: inline-flex;
   align-items: center;
-  padding: 2px;
-  border: 1px solid var(--control-border);
-  border-radius: var(--r-full);
-  background: var(--surface-2);
+  gap: var(--s-1);
 }
 .qty-button {
   display: flex;
@@ -1046,17 +1157,18 @@ button {
   min-width: var(--tap-min);
   min-height: var(--tap-min);
   border: 0;
-  border-radius: var(--r-full);
-  background: transparent;
+  border-radius: var(--r-2);
+  background: var(--tile);
   color: var(--text);
 }
 .qty-button:active:not(:disabled) {
-  background: var(--surface-3);
+  background: var(--tile-press);
 }
 .qty-display {
-  min-width: 5.5rem;
+  min-width: 5rem;
   padding: 0 var(--s-1);
   text-align: center;
+  font-size: var(--t-sm);
   font-weight: 750;
   white-space: nowrap;
 }
@@ -1067,9 +1179,14 @@ button {
   min-width: var(--tap-min);
   min-height: var(--tap-min);
   border: 0;
-  border-radius: var(--r-full);
+  border-radius: var(--r-2);
   background: transparent;
-  color: var(--attn);
+  color: var(--text-muted);
+}
+@media (hover: hover) {
+  .line-remove:hover {
+    color: var(--attn);
+  }
 }
 
 .undo-bar {
@@ -1078,11 +1195,11 @@ button {
   gap: var(--s-3);
   margin: 0 var(--s-4) var(--s-3);
   padding: var(--s-2) var(--s-2) var(--s-2) var(--s-4);
-  border-radius: var(--r-3);
+  border-radius: var(--r-2);
   background: var(--text);
   color: var(--surface);
   font-size: var(--t-sm);
-  animation: line-in var(--dur-2) var(--ease);
+  animation: rise var(--dur-2) var(--ease) backwards;
 }
 .undo-bar span {
   flex: 1;
@@ -1105,14 +1222,15 @@ button {
   display: flex;
   flex-direction: column;
   gap: var(--s-3);
-  padding: var(--s-4) var(--s-5) var(--s-5);
+  padding: var(--s-4) var(--s-5);
+  padding-bottom: calc(var(--s-5) + env(safe-area-inset-bottom));
   border-top: 1px solid var(--border);
   background: var(--surface);
 }
 .cart-totals {
   display: flex;
   flex-direction: column;
-  gap: var(--s-1);
+  gap: var(--s-2);
 }
 .total-row {
   display: flex;
@@ -1131,8 +1249,7 @@ button {
 }
 .grand-row .total-label {
   color: var(--text);
-  font-size: var(--t-lg);
-  font-weight: 700;
+  font-weight: 650;
 }
 /* Subtotal and tax sit UNDER the total in weight, never beside it: the figure
    a customer hands over is the one thing on this panel that must be readable
@@ -1151,24 +1268,30 @@ button {
   font-weight: 700;
 }
 
-/* THE pay control, wherever it sits: the biggest, bluest thing on screen. */
+/* THE pay control, wherever it sits: the one orange thing on the screen. */
 .pay-action {
   min-height: 60px;
-  border-radius: var(--r-3);
+  border-radius: var(--r-2);
   font-size: var(--t-lg);
-  font-weight: 750;
+  font-weight: 700;
+}
+.pay-action .icon {
+  transition: transform var(--dur-2) var(--ease);
 }
 .pay-action:not(:disabled) {
-  box-shadow:
-    0 1px 2px rgb(13 17 23 / 0.08),
-    0 8px 18px color-mix(in srgb, var(--brand) 28%, transparent);
+  box-shadow: 0 8px 20px color-mix(in srgb, var(--brand) 30%, transparent);
+}
+@media (hover: hover) {
+  .pay-action:hover:not(:disabled) .icon {
+    transform: translateX(3px);
+  }
 }
 
-/* The checkout dock — a phone's or a portrait tablet's last row. In the
-   locked register it is simply the bottom of the grid; without the lock it is
-   sticky, so it still holds the screen's bottom edge as the page scrolls. It
-   is never `position: fixed`: a fixed bar belongs to whatever ancestor last
-   took a transform, which is how the old one ended up mid-page. */
+/* The checkout dock — a portrait tablet's or a phone's last row. In the
+   locked register it is the bottom of the grid; without the lock it is
+   sticky. Never `position: fixed`: a fixed bar belongs to whatever ancestor
+   last took a transform. Its bottom padding clears the system's gesture bar
+   or taskbar when the page is drawn edge to edge (viewport-fit=cover). */
 .checkout-dock {
   position: sticky;
   bottom: 0;
@@ -1181,7 +1304,7 @@ button {
   padding-bottom: calc(var(--s-3) + env(safe-area-inset-bottom));
   background: var(--surface);
   border-top: 1px solid var(--border);
-  box-shadow: 0 -8px 24px rgb(13 17 23 / 0.08);
+  box-shadow: 0 -10px 24px rgb(13 17 23 / 0.06);
 }
 .cart-bar-row {
   display: flex;
@@ -1212,9 +1335,9 @@ button {
   min-width: 0;
   min-height: 60px;
   padding: 0 var(--s-3);
-  border: 1px solid var(--control-border);
-  border-radius: var(--r-3);
-  background: var(--surface);
+  border: 0;
+  border-radius: var(--r-2);
+  background: var(--tile);
   text-align: left;
 }
 .cart-bar-icon {
@@ -1222,16 +1345,16 @@ button {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 44px;
-  height: 44px;
+  width: 40px;
+  height: 40px;
   flex: none;
   border-radius: var(--r-full);
-  background: var(--surface-2);
+  background: var(--surface);
 }
 .cart-bar-badge {
   position: absolute;
-  top: -4px;
-  right: -6px;
+  top: -5px;
+  right: -7px;
   min-width: 22px;
   height: 22px;
   padding: 0 5px;
@@ -1242,18 +1365,20 @@ button {
   font-weight: 800;
   line-height: 22px;
   text-align: center;
-  box-shadow: 0 0 0 2px var(--surface);
+  box-shadow: 0 0 0 2px var(--tile);
+  animation: bump var(--dur-3) var(--ease);
 }
 .cart-bar-text {
   display: flex;
   flex-direction: column;
+  flex: 1;
   min-width: 0;
   line-height: 1.2;
 }
 .cart-bar-lines {
   color: var(--text-muted);
   font-size: var(--t-xs);
-  font-weight: 750;
+  font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.05em;
 }
@@ -1262,8 +1387,12 @@ button {
   font-weight: 800;
   letter-spacing: -0.01em;
 }
+.cart-bar-open {
+  flex: none;
+  color: var(--text-muted);
+}
 .checkout-dock .pay-action {
-  flex: 1.2;
+  flex: 1.15;
   max-width: 22rem;
 }
 @media (max-width: 479px) {
@@ -1273,7 +1402,8 @@ button {
     white-space: nowrap;
   }
   .checkout-dock .pay-action .icon,
-  .cart-bar-icon {
+  .cart-bar-icon,
+  .cart-bar-open {
     display: none;
   }
 }
@@ -1302,12 +1432,13 @@ button {
   max-height: 86dvh;
   margin: 0 auto;
   border-radius: var(--r-4) var(--r-4) 0 0;
-  padding-bottom: env(safe-area-inset-bottom);
+  box-shadow: var(--shadow-2);
   /* Rises from the dock it was opened from — spatial continuity, not a pop. */
   animation: sheet-up var(--dur-3) var(--ease);
 }
 .sheet-grip {
   align-self: center;
+  flex: none;
   width: 40px;
   height: 4px;
   margin-top: var(--s-2);
@@ -1316,8 +1447,8 @@ button {
 }
 @keyframes sheet-up {
   from {
-    transform: translateY(12%);
-    opacity: 0.6;
+    transform: translateY(24%);
+    opacity: 0.4;
   }
 }
 .sheet-close {
@@ -1327,9 +1458,9 @@ button {
   min-width: var(--tap-min);
   min-height: var(--tap-min);
   margin-left: auto;
-  border: 1px solid var(--control-border);
+  border: 0;
   border-radius: var(--r-full);
-  background: var(--surface-2);
+  background: var(--tile);
 }
 
 /* ─── ACTIONS ────────────────────────────────────────────────────────────── */
@@ -1412,6 +1543,22 @@ button {
   font-weight: 700;
   border: 1px solid var(--control-border);
   border-radius: var(--r-3);
+  background: var(--surface);
+  transition:
+    background-color var(--dur-2) linear,
+    box-shadow var(--dur-2) var(--ease);
+}
+.pay-panel .tender-input,
+.pay-panel .tender-reference,
+.pay-panel .tender-customer {
+  border-color: transparent;
+  border-radius: var(--r-2);
+  background: var(--tile);
+}
+.pay-panel .tender-input:focus,
+.pay-panel .tender-reference:focus,
+.pay-panel .tender-customer:focus {
+  border-color: var(--brand);
   background: var(--surface);
 }
 .tender-input:focus {
@@ -1598,11 +1745,11 @@ button {
   align-items: center;
   justify-content: center;
   gap: var(--s-1);
-  min-height: 72px;
+  min-height: 76px;
   padding: var(--s-2) var(--s-3);
-  border: 1px solid var(--control-border);
-  border-radius: var(--r-3);
-  background: var(--surface);
+  border: 0;
+  border-radius: var(--r-2);
+  background: var(--tile);
   color: var(--text);
   font-size: var(--t-sm);
   font-weight: 650;
@@ -1666,20 +1813,17 @@ button {
 .quick-tile {
   min-height: var(--tap);
   padding: 0 var(--s-2);
-  border: 1px solid var(--control-border);
-  border-radius: var(--r-3);
-  background: var(--surface);
+  border: 0;
+  border-radius: var(--r-2);
+  background: var(--tile);
   color: var(--text);
   font-size: var(--t-md);
   font-weight: 750;
 }
-.quick-exact {
-  background: var(--surface-2);
-}
 .quick-tile[aria-pressed='true'] {
-  border-color: var(--text);
-  background: var(--text);
-  color: var(--surface);
+  background: var(--brand-tint);
+  color: var(--brand-text);
+  box-shadow: inset 0 0 0 2px var(--brand);
 }
 .pay-panel .tender-change .total-value {
   font-size: var(--t-3xl);
@@ -1689,8 +1833,47 @@ button {
   font-size: var(--t-sm);
 }
 .tender-split {
-  border-style: dashed;
+  border: 1px dashed var(--control-border);
+  background: transparent;
   color: var(--text-muted);
+}
+/* Payment and the finished sale sit on the register's white canvas: flat,
+   no card around them, one outline only where a split needs to show which
+   part is which. */
+@supports selector(:has(*)) {
+  .app-main:has(> .view-pane:not([hidden]) :is(.pay-panel, .receipt-view)) {
+    background: var(--surface);
+  }
+}
+.pay-panel,
+.view-pane .receipt-view {
+  border-color: transparent;
+  box-shadow: none;
+}
+.pay-panel .tender-head {
+  border-bottom-color: transparent;
+  padding-left: 0;
+  padding-right: 0;
+}
+.pay-panel .tender-body {
+  padding-left: 0;
+  padding-right: 0;
+}
+.pay-panel .tender-line:only-of-type {
+  padding: 0;
+  border: 0;
+}
+.pay-panel .tender-actions {
+  margin: 0 calc(-1 * var(--s-4));
+  padding-left: var(--s-4);
+  padding-right: var(--s-4);
+  border-radius: 0;
+}
+/* A screen arrives; it does not appear. Released at the end (backwards),
+   because the payment screen holds a sticky action bar. */
+.pay-panel,
+.receipt-view {
+  animation: rise var(--dur-3) var(--ease) backwards;
 }
 /* The one action, stuck to the bottom of the screen while the panel scrolls
    under it, with its reason right above it. */
@@ -1731,62 +1914,11 @@ button {
   font-weight: 750;
 }
 .complete-action:not(:disabled) {
-  background: var(--ok);
-  box-shadow:
-    0 1px 2px rgb(13 17 23 / 0.08),
-    0 8px 18px color-mix(in srgb, var(--ok) 30%, transparent);
-}
-@media (hover: hover) {
-  .complete-action:hover:not(:disabled) {
-    background: color-mix(in srgb, var(--ok) 86%, #000);
-  }
+  box-shadow: 0 8px 20px color-mix(in srgb, var(--brand) 30%, transparent);
 }
 
 /* ─── THE TILL ───────────────────────────────────────────────────────────── */
-/* The till's state lives in the counter's own chrome: always in view while
-   selling, one tap from cash-up, and loud only when it was opened offline. */
-.till-bar {
-  grid-column: 1 / -1;
-  display: flex;
-  align-items: center;
-  gap: var(--s-2);
-  padding: var(--s-1) var(--s-1) var(--s-1) var(--s-4);
-  border: 1px solid var(--border);
-  border-radius: var(--r-full);
-  background: var(--surface);
-  font-size: var(--t-sm);
-}
-.till-bar-dot {
-  flex: none;
-  width: 10px;
-  height: 10px;
-  border-radius: var(--r-full);
-  background: var(--ok);
-  box-shadow: 0 0 0 4px var(--ok-tint);
-}
-.till-bar.offline .till-bar-dot {
-  background: var(--wait);
-  box-shadow: 0 0 0 4px var(--wait-tint);
-}
-.till-bar-text {
-  flex: 1 1 auto;
-  min-width: 0;
-  color: var(--text-muted);
-}
-.till-bar-text strong {
-  color: var(--text);
-}
-.till-bar-flag {
-  color: var(--wait-ink);
-  font-weight: 700;
-}
-.till-bar-action {
-  min-height: var(--tap-min);
-  flex: none;
-  padding: 0 var(--s-4);
-  border-radius: var(--r-full);
-  font-size: var(--t-sm);
-}
+/* (The till's bar in the register is styled with the register, above.) */
 .till-date {
   font-size: var(--t-2xl);
   font-weight: 800;
@@ -3724,8 +3856,8 @@ button {
    queue; this is a page for a desk.
 
    Inter is self-hosted (public/fonts/office, latin subset, ~100 KB in the
-   precache) so the office renders the same offline as on. The counter never
-   loads it: the @font-face is only referenced from inside .office. */
+   precache) so both rooms render the same offline as on. Since the counter's
+   restyle (24 Nov 2026) the counter uses it too. */
 @font-face {
   font-family: 'Inter';
   font-style: normal;
