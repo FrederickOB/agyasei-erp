@@ -3433,7 +3433,7 @@ button {
   flex: 1 1 10rem;
 }
 
-/* The on-screen receipt: the mandatory fallback, full screen, number first. */
+/* The on-screen receipt: the mandatory fallback, full screen (ReceiptSheet). */
 .receipt-sheet {
   position: fixed;
   inset: 0;
@@ -3441,45 +3441,92 @@ button {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: var(--s-3);
-  padding: var(--s-4);
   overflow-y: auto;
-  background: var(--surface);
+  background: var(--bg);
   color: var(--text);
+  animation: fade var(--dur-2) var(--ease);
 }
 .receipt-sheet-bar {
+  position: sticky;
+  top: 0;
+  z-index: 1;
   align-self: stretch;
   display: flex;
-  justify-content: flex-end;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-3);
+  padding: var(--s-3) var(--s-4);
+  padding-top: calc(var(--s-3) + env(safe-area-inset-top));
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+}
+.receipt-sheet-id {
+  min-width: 0;
 }
 .receipt-sheet-label {
   margin: 0;
-  font-size: var(--t-lg);
   color: var(--text-muted);
+  font-size: var(--t-xs);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
 }
+/* Readable across a counter, on one line where the screen allows. */
 .receipt-sheet-number {
   margin: 0;
-  font-size: clamp(3rem, 18vw, 7rem);
+  font-size: clamp(1.25rem, 1rem + 1.2vw, 1.75rem);
   font-weight: 800;
-  line-height: 1;
-  letter-spacing: 0.02em;
-  word-break: break-all;
-  text-align: center;
+  line-height: 1.2;
+  letter-spacing: 0.01em;
+  overflow-wrap: anywhere;
+}
+/* A phone gives the number the room: the close control keeps its name for
+   assistive tech, and shows only its icon. */
+@media (max-width: 479px) {
+  .receipt-sheet-close-text {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+  .receipt-sheet-bar .secondary-action {
+    min-width: var(--tap-min);
+    padding: 0 var(--s-3);
+  }
 }
 .receipt-sheet-missing {
   max-width: 32rem;
+  margin: var(--s-5) var(--s-4);
   text-align: center;
 }
+/* The slip itself. Its width is its columns in `ch` — exact for a monospace
+   face — so every column is always on screen; its type is the largest that
+   fits the screen's width AND, down to a readable floor, its height, so an
+   ordinary receipt is seen whole without scrolling. Never side-scrolls. */
 .receipt-sheet-paper {
-  width: 100%;
-  max-width: 40ch;
-  padding: var(--s-3);
-  border: 1px dashed var(--control-border);
+  --rs-pad: 1.25em;
+  box-sizing: content-box;
+  width: calc(var(--rs-cols, 40) * 1ch);
+  max-width: calc(100vw - 2 * var(--rs-pad) - 2 * var(--s-4));
+  margin: var(--s-4) var(--s-4) var(--s-6);
+  padding: var(--rs-pad);
   border-radius: var(--r-1);
   background: #fff;
   color: #000;
-  font: 15px/1.3 ui-monospace, 'Courier New', monospace;
-  overflow-x: auto;
+  box-shadow: var(--shadow-2);
+  font-family: ui-monospace, 'SF Mono', 'Roboto Mono', 'Courier New', monospace;
+  font-size: clamp(
+    11px,
+    min(
+      calc((100vw - 4rem) / (var(--rs-cols, 40) * 0.62)),
+      calc((100dvh - 9rem) / (var(--rs-rows, 30) * 1.4))
+    ),
+    26px
+  );
+  line-height: 1.35;
+  overflow-x: hidden;
 }
 .rs-line {
   white-space: pre;
@@ -3493,12 +3540,16 @@ button {
 .rs-bold {
   font-weight: 700;
 }
+/* A printer's double-height line: taller, never wider — a bigger font here
+   pushed the TOTAL's amount off the slip. */
 .rs-tall {
-  font-size: 18px;
+  margin: 0.3em 0;
+  font-weight: 800;
+  transform: scaleY(1.45);
 }
 .rs-rule {
   height: 0;
-  margin: var(--s-1) 0;
+  margin: 0.3em 0;
   border-top: 1px dashed #000;
 }
 
