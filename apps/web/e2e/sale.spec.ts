@@ -52,10 +52,17 @@ test('cash: till, cart, tender, on-screen receipt, then in Sales waiting to send
   await expect(sheet).toBeVisible();
   await expect(sheet).toContainText(CEMENTISH.slice(0, 20));
   await expect(sheet).toContainText(/185\.00/);
+  // What was handed over is on the receipt, as well as what went back.
+  await expect(sheet).toContainText(/Cash received\s+\S*200\.00/);
+  await expect(sheet).toContainText(/Change\s+\S*15\.00/);
   await sheet.getByRole('button', { name: /close/i }).first().click();
   await expect(sheet).toBeHidden();
 
   await expect(device.receipt).toContainText(/185\.00/);
+  // And on the completion screen: the change first, out of the cash received.
+  await expect(device.receipt.locator('.receipt-change')).toContainText('Change to give');
+  await expect(device.receipt.locator('.receipt-change-value')).toHaveText(/15\.00/);
+  await expect(device.receipt.locator('.receipt-received-value')).toHaveText(/200\.00/);
   await expect(device.receipt.locator('.sync-badge')).toHaveText('Waiting to send');
   const number = (await device.receipt.locator('.receipt-number').innerText()).trim();
   expect(number.length).toBeGreaterThan(0);

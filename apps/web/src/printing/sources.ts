@@ -270,7 +270,11 @@ export async function documentForCommittedSale(
     unitPriceE4: l.unitPriceE4,
     amountMinor: lineTotalMinor(l),
   }));
-  const tenders = receiptTenders(await getRecordedSaleTenders(db, facts.saleId), facts.changeMinor);
+  const tenders = receiptTenders(
+    await getRecordedSaleTenders(db, facts.saleId),
+    facts.changeMinor,
+    facts.tenderedMinor,
+  );
   return buildReceiptDocument({
     saleId: facts.saleId,
     receiptNo: facts.receiptNo,
@@ -288,6 +292,7 @@ export async function documentForCommittedSale(
     taxLines,
     totalMinor: facts.totalMinor,
     tenders: tenders.tenders,
+    cashReceivedMinor: tenders.cashReceivedMinor,
     changeMinor: tenders.changeMinor,
     pack: ctx.pack,
     footerLines: ctx.footerLines,
@@ -403,6 +408,7 @@ export async function documentFromSyncedSale(db: LocalDb, saleId: string): Promi
   const tenders = receiptTenders(
     synced.length > 0 ? synced : await getRecordedSaleTenders(db, saleId),
     facts.changeMinor,
+    facts.tenderedMinor,
   );
   return buildReceiptDocument({
     saleId,
@@ -421,6 +427,7 @@ export async function documentFromSyncedSale(db: LocalDb, saleId: string): Promi
     taxLines: [...merged.values()],
     totalMinor: big(sale['total']),
     tenders: tenders.tenders,
+    cashReceivedMinor: tenders.cashReceivedMinor,
     changeMinor: tenders.changeMinor,
     pack: ctx.pack,
     footerLines: ctx.footerLines,

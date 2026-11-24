@@ -528,6 +528,19 @@ describe('queue ordering', () => {
   });
 });
 
+describe('cash received on a just-rung sale', () => {
+  it('is the notes the device recorded as handed over, not the total and not a recomputation', async () => {
+    const db = openTestDb();
+    const { saleId, cart } = await ringSale(db); // 12,400.00 owed, 15,000.00 handed over
+    const facts = (await readCommittedSale(db, saleId))!;
+    expect(facts.tenderedMinor).toBe(1_500_000n);
+    const doc = await documentForCommittedSale(db, facts, cart, TEST_CURRENCY);
+    expect(doc.cashReceivedMinor).toBe(1_500_000n);
+    expect(doc.changeMinor).toBe(260_000n);
+    expect(doc.tenders.reduce((a, t) => a + t.amountMinor, 0n)).toBe(doc.totalMinor);
+  });
+});
+
 describe('tax lines on a just-rung sale', () => {
   it('carries the basis\'s own rate and the pack\'s tax-code name, and the split foots to the total', async () => {
     const db = openTestDb();
