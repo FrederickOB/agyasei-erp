@@ -229,10 +229,14 @@ export function readApiEndpoint(): ApiEndpoint | null {
 
 /**
  * Default ceiling on a single request. Long enough that a slow rural link
- * still completes; short enough that a screen says something honest rather
- * than spinning at a person who has stopped believing it.
+ * still completes — and that an API waking from its free-tier sleep (≈30 s
+ * to first answer, measured 25 Nov 2026) answers the request that woke it
+ * instead of the screen giving up at 15 s and showing a failure for a server
+ * that was about to reply. The screen is not silent meanwhile: past a couple
+ * of seconds it says it is still waiting (use-api-query's `slow`). A device
+ * with no network fails at once, not at this ceiling.
  */
-export const DEFAULT_TIMEOUT_MS = 15_000;
+export const DEFAULT_TIMEOUT_MS = 45_000;
 
 export interface ApiCallOptions {
   readonly endpoint?: ApiEndpoint | null;

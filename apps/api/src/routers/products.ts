@@ -11,6 +11,12 @@
  *                  reasons, in ONE idempotent write
  *   removeAll      archive the whole catalogue, confirmed against the count
  *                  the person was shown
+ *   setSellable    switch ONE product off for sale, or back on — it keeps its
+ *                  prices, stock and history; counters stop offering it
+ *
+ * Taking a product off (either way) never strands a device's record of it:
+ * a sale, adjustment or receipt made before the device heard still lands,
+ * with a review (../retired-product.ts).
  *
  * ── ROW BY ROW ────────────────────────────────────────────────────────────
  * Unlike opening stock, a product list is not all-or-nothing (see 0032's
@@ -20,7 +26,8 @@
  * time, whatever the preview said.
  *
  * ── WHAT A ROW CREATES ────────────────────────────────────────────────────
- * One `app.product` (stocked, sellable, purchasable), its stocking unit as the
+ * One `app.product` (stocked, purchasable, sellable unless its "On sale"
+ * cell says No), its stocking unit as the
  * default selling unit at 1/1 (exact, so tolerance 0 — 0003's header), one
  * `price_list_item` per price given, an `app.product_cost` when a cost is
  * given, and a preferred `supplier_product` when a supplier is named. A
@@ -58,6 +65,7 @@ import {
   previewProductImportInput,
   productNameKey,
   removeAllProductsInput,
+  setProductSellableInput,
   type ParsedProductFile,
   type ParsedProductRow,
   type ProductRowIssue,
@@ -394,6 +402,8 @@ function rowView(r: CheckedRow) {
     supplier: r.supplier?.existing?.name ?? r.supplier?.name ?? null,
     supplierIsNew: r.supplier !== null && r.supplier.existing === null,
     taxCode: r.taxCode,
+    /** False: the product loads switched off for sale. */
+    onSale: r.row.onSale,
     /** Minor units × 10⁴ per ONE stocking unit, as a decimal string. */
     costE4: r.costE4 === null ? null : wire(r.costE4),
     prices: r.prices.map((p) => ({ priceListId: p.list.id, priceListName: p.list.name, priceE4: wire(p.priceE4) })),
@@ -471,6 +481,14 @@ export interface RemoveAllResponse {
   archivedCount: number;
 }
 
+export interface SetSellableResponse {
+  [key: string]: JsonValue;
+  productId: string;
+  sellable: boolean;
+  /** False when the product already stood that way — nothing was written but the log. */
+  changed: boolean;
+}
+
 export const productsRouter = router({
   /** What the template and the preview need to know about this tenant. */
   importSetup: manageProcedure.query(async ({ ctx }) => {
@@ -486,9 +504,9 @@ export const productsRouter = router({
     return ctx.deps.runner.withTenant(ctx.identity.tenantId, async (tx) => {
       const products = await tx.query<{
         id: string; sku_code: string; name: string; category: string | null; unit: string;
-        cost_e4: string | null; supplier: string | null; created_at: string;
+        cost_e4: string | null; supplier: string | null; created_at: string; is_sellable: boolean;
       }>(
-        `select p.id, p.sku_code, p.name, c.name as category, coalesce(u.name, u.code) as unit,
+        `select p.id, p.sku_code, p.name, c.name as category, coalesce(u.name, u.code) as unit, p.is_sellable,
                 pc.cost_e4::text as cost_e4, s.name as supplier,
                 to_char(p.created_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as created_at
            from app.product p
@@ -526,6 +544,8 @@ export const productsRouter = router({
           unit: p.unit,
           costE4: p.cost_e4,
           supplier: p.supplier,
+          /** False: switched off — kept, priced, not offered at the counter. */
+          sellable: p.is_sellable,
           createdAt: p.created_at,
           prices: byProduct.get(p.id) ?? [],
         })),
@@ -650,7 +670,7 @@ export const productsRouter = router({
               const catId = r.category.existing?.id ?? categoryId.get(lc(r.category.name))!;
               productRows.push([
                 tenantId, pid, key, clock.next(), r.code, r.row.name, catId, r.unit!.id, r.taxCode!,
-                r.row.notes === '' ? null : r.row.notes,
+                r.row.notes === '' ? null : r.row.notes, r.row.onSale,
               ]);
               uomRows.push([tenantId, id('product_uom', line), key, clock.next(), pid, r.unit!.id, '1', '1', true, true, true, 0, 0]);
               for (const p of r.prices) {
@@ -668,7 +688,7 @@ export const productsRouter = router({
             await bulkInsert(
               atx,
               'app.product',
-              ['tenant_id', 'id', 'write_id', 'hlc', 'sku_code', 'name', 'category_id', 'stocking_uom_id', 'tax_code', 'notes'],
+              ['tenant_id', 'id', 'write_id', 'hlc', 'sku_code', 'name', 'category_id', 'stocking_uom_id', 'tax_code', 'notes', 'is_sellable'],
               productRows,
             );
             await bulkInsert(
@@ -746,6 +766,47 @@ export const productsRouter = router({
               );
             }
             await atx.query(`update app.product set ${stamp} where deleted_at is null`, [key, hlc]);
+          },
+        };
+      },
+    );
+    return result.response;
+  }),
+
+  /**
+   * Switch one product off for sale, or back on. Office-only and online
+   * (catalogue.manage is never an offline capability), so this is a plain
+   * last-write-wins edit of one flag, made under a key minted per press.
+   *
+   * Off reaches each counter at its next sync and the counter stops offering
+   * the product. A sale a counter rang BEFORE it heard still lands — the
+   * server never refuses it for this (sales.ts; ../retired-product.ts).
+   * A removed product, or one this tenant does not hold, is NOT_FOUND.
+   */
+  setSellable: manageProcedure.input(setProductSellableInput).mutation(async ({ ctx, input }) => {
+    const result = await runIdempotent<SetSellableResponse>(
+      { runner: ctx.deps.runner, clock: ctx.deps.clock },
+      ctx.identity,
+      { op: 'catalogue.product.set_sellable', idempotencyKey: input.idempotencyKey, claimedHlc: input.claimedHlc, clientWallAt: input.clientWallAt },
+      input,
+      async (tx) => {
+        const found = await tx.query<{ is_sellable: boolean }>(
+          `select is_sellable from app.product where id = $1 and deleted_at is null`,
+          [input.productId],
+        );
+        const current = found.rows[0];
+        if (!current) throw new TRPCError({ code: 'NOT_FOUND', message: 'product not found' });
+        const changed = current.is_sellable !== input.sellable;
+        return {
+          response: { productId: input.productId, sellable: input.sellable, changed },
+          apply: async (atx) => {
+            if (!changed) return;
+            await atx.query(
+              `update app.product
+                  set is_sellable = $2, updated_at = transaction_timestamp(), write_id = $3, hlc = $4
+                where id = $1 and deleted_at is null`,
+              [input.productId, input.sellable, input.idempotencyKey, ctx.deps.clock.next()],
+            );
           },
         };
       },

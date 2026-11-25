@@ -69,7 +69,8 @@ test('cash: till, cart, tender, on-screen receipt, then in Sales waiting to send
   await checkReceipt(device, where);
 
   // Two writes queued, both the device's: the till's open, and the sale.
-  await expect(device.status).toHaveText(/Offline · 2 records waiting/);
+  // (A network, no sync service: "Connecting" through the grace, then "Offline".)
+  await expect(device.status).toHaveText(/(Connecting|Offline) · 2 records waiting/);
 
   await device.receipt.getByRole('button', { name: /new sale/i }).click();
   await device.expectCartLines(0);

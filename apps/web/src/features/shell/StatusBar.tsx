@@ -4,8 +4,9 @@
  * channel. Also hosts the update affordance (§8.11): a chip, applied only
  * through the version gate at a safe point.
  *
- * The four states are told apart by SHAPE first (a live ring, a struck-out
- * cloud, a cycle, a warning triangle), then by colour, then by words. The
+ * The states are told apart by SHAPE first (a live ring, a struck-out cloud,
+ * a whole cloud while connecting, a cycle, a warning triangle), then by
+ * colour, then by words. The
  * glyphs this replaced — a filled dot and a triangle from whatever font the
  * tablet happened to have — were indistinguishable at arm's length in
  * daylight, which is the only lighting this bar is ever read in.
@@ -21,6 +22,7 @@ import { statusLine, type SyncUiState } from '../../state/sync-status';
 const ICONS: Record<SyncUiState['kind'], IconName> = {
   online_synced: 'live',
   offline: 'cloud-off',
+  connecting: 'cloud',
   syncing: 'sync',
   stuck: 'alert',
 };

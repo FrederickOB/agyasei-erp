@@ -8,6 +8,7 @@ import {
   canonicalProductRows,
   classifyHeader,
   decimalCell,
+  onSaleCell,
   parseCsv,
   parseProductCsv,
   productNameKey,
@@ -126,5 +127,33 @@ describe('parseProductCsv — every row’s shape, no lookups', () => {
 
   it('one name key for every spelling of the same product', () => {
     expect(productNameKey('  Cement   50KG ')).toBe(productNameKey('cement 50kg'));
+  });
+});
+
+describe('the “On sale” column — load a product switched off', () => {
+  it('reads yes / no as people and Excel write them; blank is yes; anything else is named', () => {
+    for (const yes of ['', 'Yes', 'Y', 'TRUE', '1', 'on', ' active ']) expect(onSaleCell(yes), yes).toBe(true);
+    for (const no of ['No', 'n', 'FALSE', '0', 'Off', 'inactive']) expect(onSaleCell(no), no).toBe(false);
+    for (const bad of ['maybe', 'yes please', '2']) expect(onSaleCell(bad), bad).toBeNull();
+  });
+
+  it('is optional, sits in the template, and a bad value refuses only its own row', () => {
+    expect(productTemplateHeaders(['Retail'])).toContain('On sale');
+    expect(classifyHeader('On sale')).toEqual({ column: 'onSale' });
+    expect(classifyHeader('For sale?')).toEqual({ column: 'onSale' });
+    // Without the column every row is on sale.
+    expect(parseProductCsv('Name,Category,Unit,Price\nX,Y,bag,1').rows[0]!.onSale).toBe(true);
+    const f = parseProductCsv('Name,Category,Unit,Price,On sale\nA,C,bag,1,No\nB,C,bag,1,\nD,C,bag,1,perhaps');
+    expect(f.rows.map((r) => [r.name, r.onSale, r.issues])).toEqual([
+      ['A', false, []],
+      ['B', true, []],
+      ['D', true, ['BAD_ON_SALE']],
+    ]);
+  });
+
+  it('the content hash sees the switch: the same row on and off is a different list', () => {
+    const on = parseProductCsv('Name,Category,Unit,Price,On sale\nA,C,bag,1,Yes');
+    const off = parseProductCsv('Name,Category,Unit,Price,On sale\nA,C,bag,1,No');
+    expect(canonicalProductRows(on)).not.toBe(canonicalProductRows(off));
   });
 });

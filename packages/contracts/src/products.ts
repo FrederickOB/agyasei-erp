@@ -21,13 +21,17 @@
  * resolve — this file never names one (CLAUDE.md §2.9). A bare "Price" column
  * is the tenant's first-priority list.
  *
+ * ON SALE. An optional "On sale" column (Yes / No, blank = Yes) loads a
+ * product switched off: in the catalogue, priced, but not offered at the
+ * counter until someone switches it on (products.setSellable).
+ *
  * MONEY IS TEXT HERE. Costs and prices stay decimal strings until the server
  * parses them exactly, at the scale the tenant's jurisdiction pack gives its
  * currency (ADR-0004; CLAUDE.md §2.3). Nothing in this file turns one into a
  * number.
  */
 import { z } from 'zod';
-import { mutationEnvelope } from './wire.js';
+import { mutationEnvelope, zUuid } from './wire.js';
 
 export const PRODUCT_IMPORT_MAX_ROWS = 5_000;
 export const PRODUCT_IMPORT_MAX_CHARS = 3_000_000;
@@ -47,6 +51,7 @@ export const PRODUCT_ROW_ISSUES = [
   'BAD_COST',
   'BAD_PRICE',
   'NO_PRICE',
+  'BAD_ON_SALE',
   'DUPLICATE_IN_FILE',
   // Found against the tenant's own catalogue.
   'DUPLICATE_CODE',
@@ -62,7 +67,7 @@ export const PRODUCT_ROW_ISSUES = [
 export type ProductRowIssue = (typeof PRODUCT_ROW_ISSUES)[number];
 
 /** The import's own column keys. Product chrome, never tenant vocabulary. */
-export type ProductColumn = 'name' | 'code' | 'category' | 'unit' | 'supplier' | 'cost' | 'tax' | 'notes';
+export type ProductColumn = 'name' | 'code' | 'category' | 'unit' | 'supplier' | 'cost' | 'tax' | 'onSale' | 'notes';
 
 /** Header spellings people actually type, normalised (see `normaliseHeader`). */
 const ALIASES: Readonly<Record<ProductColumn, readonly string[]>> = {
@@ -73,15 +78,31 @@ const ALIASES: Readonly<Record<ProductColumn, readonly string[]>> = {
   supplier: ['supplier', 'supplier name', 'vendor'],
   cost: ['cost price', 'cost', 'unit cost', 'buying price', 'purchase price', 'cost per unit'],
   tax: ['tax', 'tax code', 'vat', 'tax rate'],
+  onSale: ['on sale', 'for sale', 'sellable', 'active'],
   notes: ['notes', 'note', 'description', 'remarks'],
 };
+const ON_SALE_YES: ReadonlySet<string> = new Set(['yes', 'y', 'true', '1', 'on', 'active']);
+const ON_SALE_NO: ReadonlySet<string> = new Set(['no', 'n', 'false', '0', 'off', 'inactive']);
+
+/**
+ * An "On sale" cell → true / false; null when it is neither a yes nor a no.
+ * Blank is YES: a product listed in the file is meant to be sold unless the
+ * row says otherwise. Excel's own booleans arrive as TRUE / FALSE.
+ */
+export function onSaleCell(text: string): boolean | null {
+  const t = text.trim().toLowerCase();
+  if (t === '' || ON_SALE_YES.has(t)) return true;
+  if (ON_SALE_NO.has(t)) return false;
+  return null;
+}
+
 /** A price column that names no list means the tenant's first-priority list. */
 const BARE_PRICE = ['price', 'selling price', 'sale price', 'unit price', 'sales price'];
 const REQUIRED: readonly ProductColumn[] = ['name', 'category', 'unit'];
 
 /**
  * "Product name *", "product_name", " Cost price (per unit) " → "product name",
- * "product name", "cost price". Lower case, no required-marker, no hint in
+ * "product name", "cost price". Lower case, no required-marker or "?", no hint in
  * brackets, underscores and runs of space collapsed.
  */
 export function normaliseHeader(header: string): string {
@@ -89,7 +110,7 @@ export function normaliseHeader(header: string): string {
     .replace(/^﻿/, '')
     .toLowerCase()
     .replace(/\([^)]*\)/g, ' ')
-    .replace(/\*/g, ' ')
+    .replace(/[*?]/g, ' ')
     .replace(/[_\s]+/g, ' ')
     .trim();
 }
@@ -222,6 +243,8 @@ export interface ParsedProductRow {
   /** Plain decimal text, or '' when the cell is empty. Exactness is the server's. */
   readonly costText: string;
   readonly tax: string;
+  /** False when the row asks for the product to load switched off. */
+  readonly onSale: boolean;
   readonly notes: string;
   /** One entry per price column that has a value, in column order. */
   readonly prices: readonly { readonly column: number; readonly text: string }[];
@@ -275,7 +298,7 @@ export function parseProductCsv(csv: string): ParsedProductFile {
   if (missing.length > 0) {
     const words: Record<ProductColumn, string> = {
       name: 'Product name', code: 'Product code', category: 'Category', unit: 'Unit',
-      supplier: 'Supplier', cost: 'Cost price', tax: 'Tax', notes: 'Notes',
+      supplier: 'Supplier', cost: 'Cost price', tax: 'Tax', onSale: 'On sale', notes: 'Notes',
     };
     return EMPTY_FILE(
       `The first row must name the columns. Missing: ${missing.map((m) => words[m]).join(', ')}. ` +
@@ -305,6 +328,7 @@ export function parseProductCsv(csv: string): ParsedProductFile {
     const costRaw = cell(fields, 'cost');
     const tax = cell(fields, 'tax');
     const notes = cell(fields, 'notes');
+    const onSale = onSaleCell(cell(fields, 'onSale'));
     const issues: ProductRowIssue[] = [];
 
     if (name === '') issues.push('MISSING_NAME');
@@ -331,6 +355,7 @@ export function parseProductCsv(csv: string): ParsedProductFile {
     });
     if (badPrice) issues.push('BAD_PRICE');
     else if (prices.length === 0) issues.push('NO_PRICE');
+    if (onSale === null) issues.push('BAD_ON_SALE');
 
     const nameKey = productNameKey(name);
     const codeKey = code.toUpperCase();
@@ -349,6 +374,7 @@ export function parseProductCsv(csv: string): ParsedProductFile {
       supplier,
       costText,
       tax,
+      onSale: onSale ?? true,
       notes,
       prices,
       issues,
@@ -377,7 +403,7 @@ export function canonicalProductRows(file: ParsedProductFile): string {
   return file.rows
     .map((r) =>
       [
-        productNameKey(r.name), r.code, r.category, r.unit, r.supplier, r.costText, r.tax, r.notes,
+        productNameKey(r.name), r.code, r.category, r.unit, r.supplier, r.costText, r.tax, r.onSale ? '1' : '0', r.notes,
         ...r.prices.map((p) => `${file.priceColumns[p.column]?.listKey ?? ''}=${p.text}`),
       ].join('\t'),
     )
@@ -400,6 +426,7 @@ export function productTemplateHeaders(priceListNames: readonly string[]): strin
     'Supplier',
     'Product code',
     'Tax',
+    'On sale',
     'Notes',
   ];
 }
@@ -420,6 +447,16 @@ export const removeAllProductsInput = z
   .object({ ...mutationEnvelope, expectedCount: z.number().int().min(1).max(1_000_000) })
   .strict();
 
+/**
+ * Switch ONE product on or off for sale (app.product.is_sellable). Off is not
+ * removal: the product keeps its prices, stock and history, the counters stop
+ * offering it at their next sync, and switching it back on is the same call.
+ */
+export const setProductSellableInput = z
+  .object({ ...mutationEnvelope, productId: zUuid, sellable: z.boolean() })
+  .strict();
+
 export type PreviewProductImportInput = z.input<typeof previewProductImportInput>;
 export type CommitProductImportInput = z.input<typeof commitProductImportInput>;
 export type RemoveAllProductsInput = z.input<typeof removeAllProductsInput>;
+export type SetProductSellableInput = z.input<typeof setProductSellableInput>;

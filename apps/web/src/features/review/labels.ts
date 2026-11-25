@@ -57,6 +57,11 @@ const CLASS_WORDS: Readonly<Record<string, ClassWords>> = {
     title: 'Voided sale had already been paid',
     summary: 'A sale was voided on one device after it had been settled elsewhere.',
   },
+  PRODUCT_RETIRED_BEFORE_SYNC: {
+    title: 'Recorded for a product that had been taken off',
+    summary:
+      'A device recorded this before it heard the product was switched off or removed. It was kept exactly as recorded — check it, and bring the product back if it is still in use.',
+  },
   CONVERSION_OUT_OF_TOLERANCE: {
     title: 'Received quantity outside tolerance',
     summary: 'A confirmed delivery quantity is further from its unit conversion than the unit allows.',

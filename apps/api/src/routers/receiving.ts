@@ -105,6 +105,7 @@ import { deterministicUuid } from '@erp/db';
 import { divRound, lineNetMinor, mulDiv } from '@erp/money';
 import type { Queryable } from '../db.js';
 import { runIdempotent } from '../pipeline.js';
+import { liveAsOfRemoval, openProductTakenOffReview, type ProductTakenOff } from '../retired-product.js';
 import {
   assertLocationInScope,
   permissionProcedure,
@@ -402,28 +403,50 @@ export const receivingRouter = router({
             qtyReceivedBefore: bigint | null;
             qtyOutstandingAfter: bigint | null;
           }[] = [];
+          /** Products the office REMOVED after the device recorded this receipt. */
+          const takenOff: ProductTakenOff[] = [];
 
           for (const line of input.lines) {
             // ---- the product and its stocking unit ------------------------
+            //
+            // A REMOVED product is not refused, for the reason a deactivated
+            // supplier is not: the goods are in the yard. The receipt lands
+            // against the units live when the product was removed, and a
+            // review says so (../retired-product.ts). Another tenant's
+            // product is still NOT_FOUND (RLS).
             const prod = await tx.query<{
               id: string;
+              sku_code: string;
+              name: string;
+              removed_at: string | null;
               is_purchasable: boolean;
               stock_tracking: string;
               stocking_uom_id: string;
               stocking_scale: number;
               stocking_code: string;
             }>(
-              `select p.id, p.is_purchasable, p.stock_tracking, p.stocking_uom_id,
+              `select p.id, p.sku_code, p.name, p.deleted_at::text as removed_at,
+                      p.is_purchasable, p.stock_tracking, p.stocking_uom_id,
                       u.qty_scale as stocking_scale, u.code as stocking_code
                  from app.product p
                  join app.unit_of_measure u
                    on u.tenant_id = p.tenant_id and u.id = p.stocking_uom_id
-                where p.id = $1 and p.deleted_at is null`,
+                where p.id = $1`,
               [line.productId],
             );
             const product = prod.rows[0];
             if (!product) {
               throw new TRPCError({ code: 'NOT_FOUND', message: `product ${line.productId} not found` });
+            }
+            if (product.removed_at !== null) {
+              takenOff.push({
+                productId: product.id,
+                skuCode: product.sku_code,
+                name: product.name,
+                removedAt: product.removed_at,
+                switchedOff: false,
+                lineNo: line.lineNo,
+              });
             }
             if (!product.is_purchasable) {
               throw new TRPCError({
@@ -450,8 +473,8 @@ export const receivingRouter = router({
                  from app.product_uom pu
                  join app.unit_of_measure u on u.tenant_id = pu.tenant_id and u.id = pu.uom_id
                 where pu.product_id = $1 and pu.uom_id = $2
-                  and pu.deleted_at is null and pu.can_buy`,
-              [line.productId, line.uomId],
+                  and ${liveAsOfRemoval('pu', '$3')} and pu.can_buy`,
+              [line.productId, line.uomId, product.removed_at],
             );
             const buy = puom.rows[0];
             if (!buy) {
@@ -914,6 +937,19 @@ export const receivingRouter = router({
                     where id = $4`,
                   [orderAfter.statusAfter, key, clock.next(), orderAfter.purchaseOrderId],
                 );
+              }
+
+              if (takenOff.length > 0) {
+                await openProductTakenOffReview(atx, {
+                  tenantId,
+                  writeId: key,
+                  hlc: clock.next(),
+                  entityTable: 'app.goods_receipt',
+                  entityId: goodsReceiptId,
+                  locationId: input.locationId,
+                  recorded: 'A goods receipt',
+                  products: takenOff,
+                });
               }
             },
           };

@@ -456,6 +456,12 @@ button {
   background: var(--brand-tint);
   color: var(--brand-text);
 }
+/* Connecting: a network, the stream not up yet — calm, not alarming, and
+   distinct in shape (a whole cloud) from Offline's struck-out one. */
+.status-connecting .status-dot {
+  background: var(--surface-2);
+  color: var(--brand-text);
+}
 .status-stuck .status-dot {
   background: var(--attn-tint);
   color: var(--attn);
@@ -528,7 +534,13 @@ button {
    the shell itself to 100dvh — the first version — ignored those bars, so on
    the pilot tablet the dock was pushed their height below the screen, under
    the taskbar. A browser without :has() keeps page scroll, and the dock, being
-   sticky, still holds the bottom edge. */
+   sticky, still holds the bottom edge.
+
+   THE SHELL MUST BE SHOWING, not only the pane. Opening the office hides the
+   counter's whole shell, but the register stays the counter's active pane
+   inside it; a lock that asked only about the pane held the page to one
+   screen UNDER the office, and every office tab stopped scrolling there on a
+   tablet or laptop (e2e/office-scroll.spec.ts). */
 .counter {
   display: grid;
   gap: var(--s-4);
@@ -585,19 +597,19 @@ button {
 }
 @supports selector(:has(*)) {
 @media (min-width: 560px) and (min-height: 520px) {
-  #root:has(.app-shell .view-pane:not([hidden]) > .register) {
+  #root:has(.app-shell:not([hidden]) .view-pane:not([hidden]) > .register) {
     height: 100vh;
     height: 100dvh;
     min-height: 0;
     overflow: hidden;
   }
   /* Whatever sits above the shell keeps its height… */
-  #root:has(.app-shell .view-pane:not([hidden]) > .register) > :not(.app-shell):not(:has(.app-shell)) {
+  #root:has(.app-shell:not([hidden]) .view-pane:not([hidden]) > .register) > :not(.app-shell):not(:has(.app-shell)) {
     flex: none;
   }
   /* …and the shell (and anything wrapping it) takes the rest. */
-  #root:has(.app-shell .view-pane:not([hidden]) > .register) :has(> .app-shell),
-  #root:has(.app-shell .view-pane:not([hidden]) > .register) .app-shell {
+  #root:has(.app-shell:not([hidden]) .view-pane:not([hidden]) > .register) :has(> .app-shell),
+  #root:has(.app-shell:not([hidden]) .view-pane:not([hidden]) > .register) .app-shell {
     display: flex;
     flex-direction: column;
     flex: 1 1 auto;
@@ -4451,6 +4463,10 @@ button {
   background: var(--o-blue-tint);
   color: var(--o-blue-text);
 }
+.office-status .status-connecting {
+  background: var(--o-grey-tint);
+  color: var(--o-blue-text);
+}
 .office-status .status-stuck {
   background: var(--o-red-tint);
   color: var(--o-red-text);
@@ -6836,6 +6852,76 @@ button {
   color: var(--o-blue-text, var(--brand-text));
   font-size: var(--t-xs);
   font-weight: 600;
+}
+.pi-off {
+  margin-left: 6px;
+  padding: 1px 7px;
+  border-radius: var(--r-full);
+  background: var(--o-grey-tint, var(--surface-2));
+  color: var(--o-grey-text, var(--text-muted));
+  font-size: var(--t-xs);
+  font-weight: 600;
+  white-space: nowrap;
+}
+/* A switched-off product: still listed, read as resting — the word "Off"
+   beside the switch says it, never the dimming alone. */
+.pi-row-off td:not(:nth-child(2)) {
+  color: var(--o-muted, var(--text-muted));
+}
+.pi-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-2);
+  min-height: 44px;
+  padding: 0 4px;
+  border: 0;
+  background: none;
+  color: var(--o-text, var(--text));
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+.pi-switch:disabled {
+  cursor: progress;
+}
+.pi-switch-track {
+  position: relative;
+  flex: none;
+  width: 40px;
+  height: 24px;
+  border-radius: var(--r-full);
+  background: var(--o-line-2, var(--line));
+  transition: background var(--dur-2) var(--ease);
+}
+.pi-switch-thumb {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--o-card, #fff);
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.25);
+  transition: transform var(--dur-2) var(--ease);
+}
+.pi-switch[aria-checked='true'] .pi-switch-track {
+  background: var(--o-mint, var(--ok));
+}
+.pi-switch[aria-checked='true'] .pi-switch-thumb {
+  transform: translateX(16px);
+}
+.pi-switch:focus-visible .pi-switch-track {
+  outline: 2px solid var(--o-violet, var(--brand));
+  outline-offset: 2px;
+}
+.pi-switch-word {
+  min-width: 2.2em;
+}
+@media (prefers-reduced-motion: reduce) {
+  .pi-switch-track,
+  .pi-switch-thumb {
+    transition: none;
+  }
 }
 .pi-prices {
   display: inline-flex;

@@ -1,5 +1,5 @@
 /**
- * The four offline states (§8.4), as a small explicit state machine.
+ * The offline states (§8.4), as a small explicit state machine.
  *
  * Offline is the EXPECTED condition for hours at a time. It is presented
  * calmly, permanently and unmistakably — never a modal, never a toast, never
@@ -11,11 +11,22 @@
  *
  * Stuck can ONLY be entered while connectivity is present: an offline queue
  * is normal, not stuck.
+ *
+ * CONNECTING is the honest name for the gap between "this tablet has a
+ * network" and "the sync stream is up": the first seconds after the app
+ * opens, the tablet waking from sleep, the stream re-handshaking for a fresh
+ * token, or the API waking from its free-tier sleep (≈30 s, measured). The
+ * stream's `connected` flag is false through all of it, and calling that
+ * "Offline" told a cashier with full signal that they were offline. So: while
+ * the browser reports a network and the stream has been down for less than
+ * CONNECTING_GRACE_MS, it is "Connecting". Past the grace — or the moment the
+ * browser reports no network at all — it is Offline, exactly as before.
  */
 
 export type SyncUiState =
   | { readonly kind: 'online_synced' }
   | { readonly kind: 'offline'; readonly pendingCount: number }
+  | { readonly kind: 'connecting'; readonly pendingCount: number }
   | {
       readonly kind: 'syncing';
       readonly pendingCount: number;
@@ -33,7 +44,12 @@ export interface SendProgress {
 }
 
 export interface SyncInputs {
+  /** The sync stream is connected (the server is actually reachable). */
   readonly online: boolean;
+  /** The browser reports a network (`navigator.onLine`). Absent = unknown, treated as none. */
+  readonly network?: boolean;
+  /** When the stream was last seen going down, or a reconnect attempt began. */
+  readonly downSinceMs?: number | null;
   readonly pendingCount: number;
   readonly oldestQueuedAtMs: number | null;
   readonly nowMs: number;
@@ -43,11 +59,22 @@ export interface SyncInputs {
 /** Default threshold after which a non-draining queue with connectivity is called stuck. */
 export const DEFAULT_STUCK_THRESHOLD_MS = 15 * 60_000;
 
+/**
+ * How long a tablet WITH a network may be reconnecting before it is called
+ * offline. Covers a cold API (≈30 s on the free tier), PowerSync's 5 s retry,
+ * and the handshake, with room to spare.
+ */
+export const CONNECTING_GRACE_MS = 90_000;
+
 export function deriveSyncUiState(
   inputs: SyncInputs,
   stuckThresholdMs: number = DEFAULT_STUCK_THRESHOLD_MS,
 ): SyncUiState {
   if (!inputs.online) {
+    const since = inputs.downSinceMs ?? null;
+    if (inputs.network === true && since !== null && inputs.nowMs - since < CONNECTING_GRACE_MS) {
+      return { kind: 'connecting', pendingCount: inputs.pendingCount };
+    }
     return { kind: 'offline', pendingCount: inputs.pendingCount };
   }
   if (inputs.pendingCount === 0) {
@@ -67,7 +94,9 @@ export function deriveSyncUiState(
 }
 
 export type SyncEvent =
-  | { readonly type: 'connectivity'; readonly online: boolean }
+  | { readonly type: 'connectivity'; readonly online: boolean; readonly atMs?: number }
+  /** The browser's own network signal. Its return starts a fresh reconnect window. */
+  | { readonly type: 'network'; readonly online: boolean; readonly atMs?: number }
   | {
       readonly type: 'queue';
       readonly pendingCount: number;
@@ -86,19 +115,44 @@ export class SyncStatusMachine {
   ) {
     this.inputs = {
       online: false,
+      network: false,
       pendingCount: 0,
       oldestQueuedAtMs: null,
       nowMs: 0,
       progress: null,
       ...initial,
     };
+    // Starting up without the stream is the first reconnect attempt.
+    if (!this.inputs.online && this.inputs.downSinceMs === undefined) {
+      this.inputs = { ...this.inputs, downSinceMs: this.inputs.nowMs };
+    }
   }
 
   apply(event: SyncEvent): SyncUiState {
     switch (event.type) {
-      case 'connectivity':
-        this.inputs = { ...this.inputs, online: event.online };
+      case 'connectivity': {
+        const at = event.atMs ?? this.inputs.nowMs;
+        const wasOnline = this.inputs.online;
+        this.inputs = {
+          ...this.inputs,
+          online: event.online,
+          nowMs: Math.max(this.inputs.nowMs, at),
+          downSinceMs: event.online ? null : wasOnline ? at : (this.inputs.downSinceMs ?? at),
+        };
         break;
+      }
+      case 'network': {
+        const at = event.atMs ?? this.inputs.nowMs;
+        const back = event.online && this.inputs.network !== true;
+        this.inputs = {
+          ...this.inputs,
+          network: event.online,
+          nowMs: Math.max(this.inputs.nowMs, at),
+          // The network returning is a new reconnect attempt: a fresh window.
+          downSinceMs: back && !this.inputs.online ? at : (this.inputs.downSinceMs ?? null),
+        };
+        break;
+      }
       case 'queue':
         this.inputs = {
           ...this.inputs,
@@ -165,6 +219,10 @@ export function statusLine(state: SyncUiState, options: StatusLineOptions = {}):
       return state.pendingCount === 0
         ? 'Offline · nothing waiting'
         : `Offline · ${state.pendingCount} ${plural(state.pendingCount)} waiting`;
+    case 'connecting':
+      return state.pendingCount === 0
+        ? 'Connecting · nothing waiting'
+        : `Connecting · ${state.pendingCount} ${plural(state.pendingCount)} waiting`;
     case 'syncing':
       return state.progress !== null
         ? `Sending · ${state.progress.sentCount} of ${state.progress.batchSize}`
