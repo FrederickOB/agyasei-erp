@@ -21,6 +21,7 @@ import { deterministicUuid, type PermissionCode } from '@erp/db';
 import { applyReorderPoints } from '@erp/db/seed';
 import type { Queryable } from '../db.js';
 import { runIdempotent } from '../pipeline.js';
+import { openProductTakenOffReview } from '../retired-product.js';
 import {
   assertLocationInScope,
   permissionProcedure,
@@ -86,37 +87,54 @@ function movementPermission(input: Record<string, unknown>): PermissionCode | un
 
 export interface ProductStockInfo {
   productId: string;
+  skuCode: string;
+  name: string;
   stockingUomId: string;
   qtyScale: number;
   uomCode: string;
   stockTracking: string;
+  /** When the product was removed (text), or null. Only ever set under `asRecorded`. */
+  removedAt: string | null;
 }
 
+/**
+ * The product and its stocking unit. A REMOVED product is NOT_FOUND — unless
+ * `asRecorded`, for a write a device already made: the stock moved whether or
+ * not the office has since removed the product (../retired-product.ts).
+ */
 export async function loadProductStockInfo(
   tx: Queryable,
   productId: string,
+  opts: { readonly asRecorded?: boolean } = {},
 ): Promise<ProductStockInfo> {
   const res = await tx.query<{
     id: string;
+    sku_code: string;
+    name: string;
     stocking_uom_id: string;
     qty_scale: number;
     uom_code: string;
     stock_tracking: string;
+    removed_at: string | null;
   }>(
-    `select p.id, p.stocking_uom_id, u.qty_scale, u.code as uom_code, p.stock_tracking
+    `select p.id, p.sku_code, p.name, p.stocking_uom_id, u.qty_scale, u.code as uom_code, p.stock_tracking,
+            p.deleted_at::text as removed_at
      from app.product p
      join app.unit_of_measure u on u.tenant_id = p.tenant_id and u.id = p.stocking_uom_id
-     where p.id = $1 and p.deleted_at is null`,
+     where p.id = $1${opts.asRecorded === true ? '' : ' and p.deleted_at is null'}`,
     [productId],
   );
   const row = res.rows[0];
   if (!row) throw new TRPCError({ code: 'NOT_FOUND', message: 'product not found' });
   return {
     productId: row.id,
+    skuCode: row.sku_code,
+    name: row.name,
     stockingUomId: row.stocking_uom_id,
     qtyScale: row.qty_scale,
     uomCode: row.uom_code,
     stockTracking: row.stock_tracking,
+    removedAt: row.removed_at,
   };
 }
 
@@ -222,7 +240,10 @@ export const inventoryRouter = router({
         },
         input,
         async (tx) => {
-          const product = await loadProductStockInfo(tx, input.productId);
+          // A device's movement of a product the office has since REMOVED still
+          // lands, with a review. Switched off is not taken off for stock: an
+          // outlet still counts and adjusts what it holds.
+          const product = await loadProductStockInfo(tx, input.productId, { asRecorded: true });
           if (product.stockTracking !== 'STOCKED') {
             throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'product is not stock-tracked' });
           }
@@ -277,6 +298,27 @@ export const inventoryRouter = router({
                   input.businessDate,
                 ],
               );
+              if (product.removedAt !== null) {
+                await openProductTakenOffReview(atx, {
+                  tenantId,
+                  writeId: input.idempotencyKey,
+                  hlc: ctx.deps.clock.next(),
+                  entityTable: 'app.stock_movement',
+                  entityId: movementId,
+                  locationId: input.locationId,
+                  recorded: 'A stock movement',
+                  products: [
+                    {
+                      productId: product.productId,
+                      skuCode: product.skuCode,
+                      name: product.name,
+                      removedAt: product.removedAt,
+                      switchedOff: false,
+                      lineNo: null,
+                    },
+                  ],
+                });
+              }
             },
           };
         },

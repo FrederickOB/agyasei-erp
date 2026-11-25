@@ -225,7 +225,27 @@ describe('commitImport: the good rows land, exactly, once', () => {
         { priceListId: secondList.id, priceE4: '1100000000' },
       ]),
     );
-    expect(red).toMatchObject({ costE4: '980125000', supplier: 'Brushworks Ltd', category: 'Paints (import)' });
+    expect(red).toMatchObject({ costE4: '980125000', supplier: 'Brushworks Ltd', category: 'Paints (import)', sellable: true });
+  });
+
+  it('an “On sale: No” row loads switched off; a value that is neither yes nor no is refused by name', async () => {
+    const csv = toCsv([
+      ['Product name', 'Category', 'Unit', 'Price', 'On sale'],
+      ['Shelved varnish', 'Paints (import)', unitName, '10', 'No'],
+      ['Ready varnish', 'Paints (import)', unitName, '10', 'Yes'],
+      ['Unsure varnish', 'Paints (import)', unitName, '10', 'perhaps'],
+    ]);
+    const preview = await a.products.previewImport({ csv });
+    expect(preview.rows.map((r) => [r.name, r.onSale, r.status])).toEqual([
+      ['Shelved varnish', false, 'ready'],
+      ['Ready varnish', true, 'ready'],
+      ['Unsure varnish', true, 'problem'],
+    ]);
+    const r = await a.products.commitImport({ idempotencyKey: uuidv7(), csv });
+    expect(r.rejected).toEqual([{ lineNo: 4, issues: ['BAD_ON_SALE'] }]);
+    const list = (await a.products.list()).products;
+    expect(list.find((p) => p.name === 'Shelved varnish')).toMatchObject({ sellable: false });
+    expect(list.find((p) => p.name === 'Ready varnish')).toMatchObject({ sellable: true });
   });
 });
 

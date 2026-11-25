@@ -104,6 +104,7 @@ import { emergencyNumber } from '@erp/sequence';
 import type { Queryable } from '../db.js';
 import { documentNumberHolder } from '../document-numbers.js';
 import { runIdempotent, type JsonValue } from '../pipeline.js';
+import { liveAsOfRemoval, openProductTakenOffReview, type ProductTakenOff } from '../retired-product.js';
 import {
   reconcileTenders,
   ROLE_SETTLEMENT,
@@ -450,6 +451,9 @@ export const salesRouter = router({
           assertPackPriceable(components, businessDate);
 
           const pricedLines: PricedLine[] = [];
+          // Products the office switched off or removed after this till rang
+          // them up. The sale still lands — see ../retired-product.ts.
+          const takenOff: ProductTakenOff[] = [];
           // The steepest discount any single line carries, in basis points of
           // that line's own extended amount. Accumulated here because the
           // bound below must be measured against the SERVER's extended figure
@@ -458,25 +462,41 @@ export const salesRouter = router({
           let maxDiscountBps = 0n;
           for (let i = 0; i < input.lines.length; i += 1) {
             const line = input.lines[i]!;
+            // NOT filtered on deleted_at, and a switched-off product is not
+            // refused: a till rings up what ITS copy of the catalogue offers,
+            // and the office may have taken the product off since. The sale
+            // happened; it lands at the prices in force when the product was
+            // taken off, and a review says so (../retired-product.ts). A
+            // product this tenant never held is still NOT_FOUND (RLS).
             const prod = await tx.query<{
               id: string;
+              sku_code: string;
+              name: string;
               tax_code: string;
               is_sellable: boolean;
+              removed_at: string | null;
               stock_tracking: string;
               stocking_uom_id: string;
               stocking_scale: number;
             }>(
-              `select p.id, p.tax_code, p.is_sellable, p.stock_tracking,
-                      p.stocking_uom_id, u.qty_scale as stocking_scale
+              `select p.id, p.sku_code, p.name, p.tax_code, p.is_sellable, p.deleted_at::text as removed_at,
+                      p.stock_tracking, p.stocking_uom_id, u.qty_scale as stocking_scale
                from app.product p
                join app.unit_of_measure u on u.tenant_id = p.tenant_id and u.id = p.stocking_uom_id
-               where p.id = $1 and p.deleted_at is null`,
+               where p.id = $1`,
               [line.productId],
             );
             const product = prod.rows[0];
             if (!product) throw new TRPCError({ code: 'NOT_FOUND', message: 'product not found' });
-            if (!product.is_sellable) {
-              throw new TRPCError({ code: 'PRECONDITION_FAILED', message: `product ${line.productId} is not sellable` });
+            if (product.removed_at !== null || !product.is_sellable) {
+              takenOff.push({
+                productId: product.id,
+                skuCode: product.sku_code,
+                name: product.name,
+                removedAt: product.removed_at,
+                switchedOff: !product.is_sellable,
+                lineNo: i + 1,
+              });
             }
             if (!components.some((c) => c.taxCode === product.tax_code)) {
               throw new TRPCError({
@@ -495,9 +515,9 @@ export const salesRouter = router({
               `select pu.uom_id, pu.factor_num::text, pu.factor_den::text, u.qty_scale, u.code
                from app.product_uom pu
                join app.unit_of_measure u on u.tenant_id = pu.tenant_id and u.id = pu.uom_id
-               where pu.product_id = $1 and pu.deleted_at is null and pu.can_sell
+               where pu.product_id = $1 and ${liveAsOfRemoval('pu', '$3')} and pu.can_sell
                  and (($2::text is not null and u.code = $2) or ($2::text is null and pu.is_default_sell))`,
-              [line.productId, line.uomCode ?? null],
+              [line.productId, line.uomCode ?? null, product.removed_at],
             );
             const sell = puom.rows[0];
             if (!sell) {
@@ -508,14 +528,14 @@ export const salesRouter = router({
             }
 
             const item = await tx.query<{ unit_price_e4: string }>(
-              `select unit_price_e4::text from app.price_list_item
-               where price_list_id = $1 and product_id = $2 and uom_id = $3 and deleted_at is null
-                 and effective_from <= $4::date
-                 and (effective_to is null or effective_to > $4::date)
-                 and min_qty <= $5
-               order by min_qty desc, effective_from desc
+              `select i.unit_price_e4::text from app.price_list_item i
+               where i.price_list_id = $1 and i.product_id = $2 and i.uom_id = $3 and ${liveAsOfRemoval('i', '$6')}
+                 and i.effective_from <= $4::date
+                 and (i.effective_to is null or i.effective_to > $4::date)
+                 and i.min_qty <= $5
+               order by i.min_qty desc, i.effective_from desc
                limit 1`,
-              [priceList.id, line.productId, sell.uom_id, businessDate, wire(line.qty)],
+              [priceList.id, line.productId, sell.uom_id, businessDate, wire(line.qty), product.removed_at],
             );
             const priced = item.rows[0];
             if (!priced) {
@@ -1100,6 +1120,21 @@ export const salesRouter = router({
                   },
                   requiredPermission: SEQUENCE_REVIEW_PERMISSION,
                   locationIds: [input.locationId],
+                });
+              }
+
+              // A product the office took off after this till rang it up. The
+              // sale stands as rung; a person checks the catalogue.
+              if (takenOff.length > 0) {
+                await openProductTakenOffReview(atx, {
+                  tenantId,
+                  writeId: key,
+                  hlc: clock.next(),
+                  entityTable: 'app.sale',
+                  entityId: saleId,
+                  locationId: input.locationId,
+                  recorded: 'A sale',
+                  products: takenOff,
                 });
               }
 

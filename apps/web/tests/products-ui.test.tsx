@@ -10,12 +10,16 @@
  *  3. Removing every product needs the confirmation word, and sends the
  *     count the person was shown — so a catalogue that changed meanwhile is
  *     refused by the server rather than archived blind.
+ *  4. One product is switched off (and on) from its row: one call per press,
+ *     under its own key; the list shows the server's answer, and a press the
+ *     server did not take leaves the switch where it was and says so.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { ApiCallOptions, ApiEndpoint, ApiFetch } from '../src/data/api/client';
 import { DEV_PLACEHOLDER_CURRENCY } from '../src/data/seed';
 import { Products } from '../src/features/products/Products';
+import { conflictSummary, conflictTitle } from '../src/features/review/labels';
 import { readXlsxRows } from '../src/lib/xlsx';
 import { CurrencyProvider } from '../src/money/CurrencyContext';
 
@@ -39,12 +43,20 @@ const SETUP = {
   productCount: 3,
 };
 
+const P1 = '0190a0b0-0000-7000-8000-0000000000a1';
+const P2 = '0190a0b0-0000-7000-8000-0000000000a2';
+
 const LIST = {
   products: [
     {
-      productId: 'p1', code: 'P-00001', name: 'Cement 50kg', category: 'Cement', unit: 'Bag',
-      costE4: '9800000', supplier: 'Acme Ltd', createdAt: '2026-11-24T10:00:00.000Z',
+      productId: P1, code: 'P-00001', name: 'Cement 50kg', category: 'Cement', unit: 'Bag',
+      costE4: '9800000', supplier: 'Acme Ltd', createdAt: '2026-11-24T10:00:00.000Z', sellable: true,
       prices: [{ priceListId: 'pl-1', priceE4: '12500000' }],
+    },
+    {
+      productId: P2, code: 'P-00002', name: 'Old gloss paint', category: 'Paint', unit: 'Bag',
+      costE4: null, supplier: null, createdAt: '2026-11-24T10:00:00.000Z', sellable: false,
+      prices: [{ priceListId: 'pl-1', priceE4: '5000000' }],
     },
   ],
 };
@@ -123,7 +135,7 @@ describe('the template is this tenant’s own', () => {
     const [header] = await readXlsxRows(bytes);
     expect(header).toEqual([
       'Product name *', 'Category *', 'Unit *', 'Price: Shop price *', 'Price: Trade price',
-      'Cost price', 'Supplier', 'Product code', 'Tax', 'Notes',
+      'Cost price', 'Supplier', 'Product code', 'Tax', 'On sale', 'Notes',
     ]);
     const lists = await readXlsxRows(bytes, 'Lists');
     expect(lists.map((r) => r[0])).toEqual(['Units', 'Bag', 'Kilogram']);
@@ -211,5 +223,63 @@ describe('removing every product', () => {
     expect(await screen.findByText(/3 products removed/)).toBeTruthy();
     const call = sent.find((s) => s.path === 'products.removeAll')!;
     expect(call.body).toMatchObject({ expectedCount: 3 });
+  });
+});
+
+describe('switching one product off, and on', () => {
+  it('one call per press, under its own key; the row shows the server’s answer and the filter counts follow', async () => {
+    const sent: Sent[] = [];
+    renderProducts(
+      server(
+        {
+          'products.importSetup': SETUP,
+          'products.list': LIST,
+          'products.setSellable': { productId: P1, sellable: false, changed: true },
+        },
+        sent,
+      ),
+    );
+    const cement = (await screen.findByRole('switch', { name: 'On sale: Cement 50kg' })) as HTMLButtonElement;
+    const paint = screen.getByRole('switch', { name: 'On sale: Old gloss paint' });
+    expect(cement.getAttribute('aria-checked')).toBe('true');
+    expect(paint.getAttribute('aria-checked')).toBe('false');
+    expect(screen.getByRole('button', { name: 'Switched off (1)' })).toBeTruthy();
+
+    fireEvent.click(cement);
+    await waitFor(() => expect(cement.getAttribute('aria-checked')).toBe('false'));
+    const calls = sent.filter((s) => s.path === 'products.setSellable');
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.body).toMatchObject({ productId: P1, sellable: false });
+    expect(calls[0]!.body!['idempotencyKey']).toMatch(/^[0-9a-f-]{36}$/);
+    expect(cement.textContent).toMatch(/Off/);
+
+    // The filter reads the new state: both are off now, none on sale.
+    fireEvent.click(screen.getByRole('button', { name: 'Switched off (2)' }));
+    expect(screen.getByText('Cement 50kg')).toBeTruthy();
+    expect(screen.getByText('Old gloss paint')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'On sale (0)' }));
+    expect(screen.queryByText('Cement 50kg')).toBeNull();
+    expect(screen.getByText('No products here.')).toBeTruthy();
+  });
+
+  it('a press the server did not take leaves the switch as it was, and names the product', async () => {
+    const sent: Sent[] = [];
+    // No answer for setSellable: the call fails as an unreachable server would.
+    renderProducts(server({ 'products.importSetup': SETUP, 'products.list': LIST }, sent));
+    const paint = await screen.findByRole('switch', { name: 'On sale: Old gloss paint' });
+    fireEvent.click(paint);
+    expect((await screen.findByRole('alert')).textContent).toMatch(/Old gloss paint was not switched on/);
+    expect(paint.getAttribute('aria-checked')).toBe('false');
+    // It was really sent — the refusal is the server's silence, not a malformed request.
+    expect(sent.filter((x) => x.path === 'products.setSellable').map((x) => x.body)).toEqual([
+      expect.objectContaining({ productId: P2, sellable: true }),
+    ]);
+  });
+});
+
+describe('Decisions names the review a taken-off product raises', () => {
+  it('has a sentence, not a code', () => {
+    expect(conflictTitle('PRODUCT_RETIRED_BEFORE_SYNC')).toBe('Recorded for a product that had been taken off');
+    expect(conflictSummary('PRODUCT_RETIRED_BEFORE_SYNC')).toMatch(/kept exactly as recorded/);
   });
 });
