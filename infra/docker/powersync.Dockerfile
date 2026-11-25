@@ -19,7 +19,7 @@
 # cost every device a re-sync (§9.8 Case B) — it is a decision, not a reflex.
 
 # journeyapps/powersync-service:1.24.0 — the version the dev stack runs.
-FROM journeyapps/powersync-service@sha256:0fc9f65e693c07f1206007acddb87141402c09ef20589e29a0dfe20d57ce80b6
+FROM journeyapps/powersync-service@sha256:4c6c2c4312e7339206dfbc5cc385ae2a6e29e2908fa0b2a2d669f07f3c959635
 
 COPY --chown=901:901 infra/fly/powersync/config.yaml /config/config.yaml
 COPY --chown=901:901 infra/powersync/sync_rules.yaml /config/sync_rules.yaml
