@@ -6837,6 +6837,76 @@ button {
   font-size: var(--t-xs);
   font-weight: 600;
 }
+.pi-off {
+  margin-left: 6px;
+  padding: 1px 7px;
+  border-radius: var(--r-full);
+  background: var(--o-grey-tint, var(--surface-2));
+  color: var(--o-grey-text, var(--text-muted));
+  font-size: var(--t-xs);
+  font-weight: 600;
+  white-space: nowrap;
+}
+/* A switched-off product: still listed, read as resting — the word "Off"
+   beside the switch says it, never the dimming alone. */
+.pi-row-off td:not(:nth-child(2)) {
+  color: var(--o-muted, var(--text-muted));
+}
+.pi-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-2);
+  min-height: 44px;
+  padding: 0 4px;
+  border: 0;
+  background: none;
+  color: var(--o-text, var(--text));
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+.pi-switch:disabled {
+  cursor: progress;
+}
+.pi-switch-track {
+  position: relative;
+  flex: none;
+  width: 40px;
+  height: 24px;
+  border-radius: var(--r-full);
+  background: var(--o-line-2, var(--line));
+  transition: background var(--dur-2) var(--ease);
+}
+.pi-switch-thumb {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--o-card, #fff);
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.25);
+  transition: transform var(--dur-2) var(--ease);
+}
+.pi-switch[aria-checked='true'] .pi-switch-track {
+  background: var(--o-mint, var(--ok));
+}
+.pi-switch[aria-checked='true'] .pi-switch-thumb {
+  transform: translateX(16px);
+}
+.pi-switch:focus-visible .pi-switch-track {
+  outline: 2px solid var(--o-violet, var(--brand));
+  outline-offset: 2px;
+}
+.pi-switch-word {
+  min-width: 2.2em;
+}
+@media (prefers-reduced-motion: reduce) {
+  .pi-switch-track,
+  .pi-switch-thumb {
+    transition: none;
+  }
+}
 .pi-prices {
   display: inline-flex;
   flex-direction: column;

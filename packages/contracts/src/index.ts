@@ -121,12 +121,14 @@ export {
   commitProductImportInput,
   decimalCell,
   normaliseHeader,
+  onSaleCell,
   parseCsv,
   parseProductCsv,
   previewProductImportInput,
   productNameKey,
   productTemplateHeaders,
   removeAllProductsInput,
+  setProductSellableInput,
   toCsv,
   toCsvLine,
   type CommitProductImportInput,
@@ -137,6 +139,7 @@ export {
   type ProductColumn,
   type ProductRowIssue,
   type RemoveAllProductsInput,
+  type SetProductSellableInput,
 } from './products.js';
 
 export {

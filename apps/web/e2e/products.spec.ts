@@ -1,12 +1,15 @@
 /**
  * Products (the catalogue from a spreadsheet), walked in a real browser at
- * every size: the screen renders from the server's answers, a CSV is chosen,
- * checked and imported, and nothing on the way scrolls sideways — the
- * preview table scrolls inside its own frame, never the page.
+ * every size: the screen renders from the server's answers, a product is
+ * switched off from its row, a CSV is chosen, checked and imported, and
+ * nothing on the way scrolls sideways — the tables scroll inside their own
+ * frames, never the page.
  */
 import { test, expect } from './support/device';
 import { FIXTURE_CAPABILITIES, permissionsFor } from './support/api-fixtures';
 import { expectNoHorizontalScroll } from './support/layout';
+
+const CEMENT = '0190a0b0-0000-7000-8000-0000000000c1';
 
 const SETUP = {
   currencyCode: 'XTS',
@@ -40,8 +43,8 @@ test('products: check a file, import the ready rows', async ({ device, page, api
   api.answer('products.list', () => ({
     products: [
       {
-        productId: 'p1', code: 'P-00001', name: 'Portland cement 50kg bag', category: 'Cement', unit: 'Bag',
-        costE4: '9800000', supplier: 'Acme Building Supplies Limited', createdAt: '2026-11-24T10:00:00.000Z',
+        productId: CEMENT, code: 'P-00001', name: 'Portland cement 50kg bag', category: 'Cement', unit: 'Bag',
+        costE4: '9800000', supplier: 'Acme Building Supplies Limited', createdAt: '2026-11-24T10:00:00.000Z', sellable: true,
         prices: [{ priceListId: 'pl-1', priceE4: '12500000' }, { priceListId: 'pl-2', priceE4: '11000000' }],
       },
     ],
@@ -57,6 +60,7 @@ test('products: check a file, import the ready rows', async ({ device, page, api
       { ...row(4, 'Mystery', 'problem', ['UNKNOWN_UNIT']), unit: 'furlong' },
     ],
   }));
+  api.answer('products.setSellable', () => ({ productId: CEMENT, sellable: false, changed: true }));
   api.answer('products.commitImport', () => ({
     importId: 'k', rowCount: 3, importedCount: 1, rejectedCount: 2, createdCategoryCount: 0, createdSupplierCount: 0,
     rejected: [{ lineNo: 3, issues: ['DUPLICATE_NAME'] }, { lineNo: 4, issues: ['UNKNOWN_UNIT'] }],
@@ -70,6 +74,15 @@ test('products: check a file, import the ready rows', async ({ device, page, api
   await expect(screen.getByRole('heading', { level: 1, name: 'Products' })).toBeVisible();
   await expect(screen.getByText('Portland cement 50kg bag')).toBeVisible();
   await expectNoHorizontalScroll(page, `${where}: products`);
+
+  // Switch it off from its row: the server's answer shows, nothing widens.
+  const onSale = screen.getByRole('switch', { name: 'On sale: Portland cement 50kg bag' });
+  await expect(onSale).toHaveAttribute('aria-checked', 'true');
+  await onSale.click();
+  await expect(onSale).toHaveAttribute('aria-checked', 'false');
+  await expect(screen.getByRole('button', { name: 'Switched off (1)' })).toBeVisible();
+  expect(api.calls.filter((c) => c.path === 'products.setSellable')).toHaveLength(1);
+  await expectNoHorizontalScroll(page, `${where}: products, one switched off`);
 
   await page.getByLabel('Product file').setInputFiles({
     name: 'list.csv',

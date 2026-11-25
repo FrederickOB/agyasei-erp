@@ -1,5 +1,6 @@
 /**
- * The product list from a spreadsheet, and archiving the catalogue
+ * The product list from a spreadsheet, switching one product off or on, and
+ * archiving the catalogue
  * (apps/api/src/routers/products.ts; migration 0032). ONLINE ONLY, like
  * opening stock: this is configuration done at a laptop against a live
  * server, and deliberately NOT an outbox kind (`outbox-surface.test.ts`).
@@ -11,10 +12,12 @@ import {
   commitProductImportInput,
   previewProductImportInput,
   removeAllProductsInput,
+  setProductSellableInput,
   type CommitProductImportInput,
   type PreviewProductImportInput,
   type ProductRowIssue,
   type RemoveAllProductsInput,
+  type SetProductSellableInput,
 } from '@erp/contracts';
 import {
   apiMutate,
@@ -54,6 +57,8 @@ export interface CatalogueProduct {
   /** Minor units × 10⁴ per ONE stocking unit. */
   readonly costE4: bigint | null;
   readonly supplier: string | null;
+  /** False: switched off — kept and priced, but not offered at the counter. */
+  readonly sellable: boolean;
   readonly prices: readonly { readonly priceListId: string; readonly priceE4: bigint }[];
 }
 
@@ -69,6 +74,8 @@ export interface ImportPreviewRow {
   readonly supplier: string | null;
   readonly supplierIsNew: boolean;
   readonly taxCode: string | null;
+  /** False: the row loads switched off ("On sale: No"). */
+  readonly onSale: boolean;
   readonly costE4: bigint | null;
   readonly prices: readonly { readonly priceListId: string; readonly priceListName: string; readonly priceE4: bigint }[];
   readonly status: ImportRowStatus;
@@ -111,6 +118,7 @@ export const PRODUCT_ISSUE_TEXT: Readonly<Record<ProductRowIssue, string>> = {
   BAD_COST: 'Cost price is not a number',
   BAD_PRICE: 'A price is not a number',
   NO_PRICE: 'No selling price',
+  BAD_ON_SALE: '“On sale” should be Yes or No (blank means Yes)',
   DUPLICATE_IN_FILE: 'Appears earlier in this file',
   DUPLICATE_CODE: 'A product with this code already exists',
   DUPLICATE_NAME: 'A product with this name already exists',
@@ -164,6 +172,8 @@ function mapList(json: unknown): readonly CatalogueProduct[] {
       unit: asString(p['unit'], 'unit'),
       costE4: asOptionalScaled(p['costE4'], 'costE4'),
       supplier: asOptionalString(p['supplier'], 'supplier'),
+      // A server from before the switch sends no flag: everything was on sale.
+      sellable: p['sellable'] === undefined ? true : asBoolean(p['sellable'], 'sellable'),
       prices: asArray(p['prices'], 'prices').map((x) => {
         const pr = asRecord(x, 'price');
         return { priceListId: asString(pr['priceListId'], 'priceListId'), priceE4: asScaled(pr['priceE4'], 'priceE4') };
@@ -210,6 +220,7 @@ function mapPreview(json: unknown): ImportPreview {
         supplier: asOptionalString(row['supplier'], 'supplier'),
         supplierIsNew: asBoolean(row['supplierIsNew'], 'supplierIsNew'),
         taxCode: asOptionalString(row['taxCode'], 'taxCode'),
+        onSale: row['onSale'] === undefined ? true : asBoolean(row['onSale'], 'onSale'),
         costE4: asOptionalScaled(row['costE4'], 'costE4'),
         prices: asArray(row['prices'], 'prices').map((x) => {
           const p = asRecord(x, 'price');
@@ -278,6 +289,27 @@ export function removeAllProducts(
     'products.removeAll',
     input,
     (json) => ({ archivedCount: asCount(asRecord(json, 'products.removeAll')['archivedCount'], 'archivedCount') }),
+    options,
+  );
+}
+
+/**
+ * Switch one product off for sale, or back on. The key is minted per press by
+ * the caller and held across a retry of THAT press, so a double tap is one act.
+ */
+export function setProductSellable(
+  input: SetProductSellableInput,
+  options: ApiCallOptions = {},
+): Promise<ApiResult<{ readonly productId: string; readonly sellable: boolean }>> {
+  const bad = guard(setProductSellableInput, 'products.setSellable', input);
+  if (bad !== null) return Promise.resolve(bad);
+  return apiMutate(
+    'products.setSellable',
+    input,
+    (json) => {
+      const r = asRecord(json, 'products.setSellable');
+      return { productId: asString(r['productId'], 'productId'), sellable: asBoolean(r['sellable'], 'sellable') };
+    },
     options,
   );
 }

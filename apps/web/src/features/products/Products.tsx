@@ -14,9 +14,16 @@
  *      a file of exactly those rows with the reason beside each, to fix and
  *      upload again.
  *
+ * Each product can be SWITCHED OFF (and back on) from the list: it keeps its
+ * prices, stock and history, and the counters stop offering it at their next
+ * sync. An "On sale" column in the file loads a product already switched off.
+ *
  * And, once, before a new list: remove every product. An archive, never a
  * delete — sales history keeps its products — confirmed by typing, and
  * checked by the server against the count this screen showed.
+ *
+ * Neither strands a counter: a sale a tablet rang up before it heard still
+ * lands on the server, and is flagged in Decisions (api retired-product.ts).
  */
 import { useMemo, useRef, useState, type ReactNode } from 'react';
 import { parseProductCsv, productTemplateHeaders, toCsv, type ParsedProductFile } from '@erp/contracts';
@@ -29,6 +36,8 @@ import {
   previewProductImport,
   PRODUCT_ISSUE_TEXT,
   removeAllProducts,
+  setProductSellable,
+  type CatalogueProduct,
   type ImportPreview,
   type ImportPreviewRow,
   type ImportResult,
@@ -111,6 +120,7 @@ function templateWorkbook(setup: ProductImportSetup): Uint8Array<ArrayBuffer> {
     ...(columns[1]!.length > 0 ? [{ range: range(at('Category')), source: source(1, columns[1]!.length), strict: false }] : []),
     ...(columns[2]!.length > 0 ? [{ range: range(at('Tax')), source: source(2, columns[2]!.length), strict: true }] : []),
     ...(columns[3]!.length > 0 ? [{ range: range(at('Supplier')), source: source(3, columns[3]!.length), strict: false }] : []),
+    { range: range(at('On sale')), source: '"Yes,No"', strict: true },
   ];
 
   const guide: string[][] = [
@@ -127,6 +137,7 @@ function templateWorkbook(setup: ProductImportSetup): Uint8Array<ArrayBuffer> {
     ['Supplier', 'No', 'Who you buy it from. Pick one, or type a new name: a new supplier is created for you.'],
     ['Product code', 'No', 'Your own code. Leave it empty and one is made for you (P-00001, P-00002 …).'],
     ['Tax', 'No', setup.defaultTaxCode === null ? 'Pick one from the list.' : `Leave empty for the usual (${setup.taxCodes.find((t) => t.code === setup.defaultTaxCode)?.name ?? setup.defaultTaxCode}).`],
+    ['On sale', 'No', 'Yes or No — leave it empty for Yes. No loads the product switched off: in your catalogue with its prices, but not offered at the counter until you switch it on.'],
     ['Notes', 'No', 'Anything else worth keeping about the product.'],
     [],
     ['Fill the “Products” sheet, one product per row, starting on row 2. Keep the first row as it is.'],
@@ -410,7 +421,10 @@ function ImportPanel({
                   <tr key={r.lineNo} className={`pi-row-${r.status}`}>
                     <td className="numeric tabular">{r.lineNo}</td>
                     <td>
-                      <span className="pi-name">{r.name === '' ? '—' : r.name}</span>
+                      <span className="pi-name">
+                        {r.name === '' ? '—' : r.name}
+                        {!r.onSale ? <span className="pi-off">off sale</span> : null}
+                      </span>
                       {r.code !== '' ? <span className="pi-sub tabular">{r.code}</span> : null}
                     </td>
                     <td>
@@ -508,6 +522,7 @@ function RemoveAllDialog({
         <div className="modal-sheet-body">
           <ul className="pi-notes">
             <li>They leave every counter at its next sync, and can no longer be sold.</li>
+            <li>A sale a counter rang up before it heard still goes through, and is flagged in Decisions.</li>
             <li>Past sales, receipts and stock history stay exactly as they are.</li>
             <li>Categories, suppliers and price lists stay, ready for your new list.</li>
           </ul>
@@ -543,14 +558,80 @@ function RemoveAllDialog({
   );
 }
 
+type ListFilter = 'all' | 'on' | 'off';
+
+/**
+ * One product's on/off switch. A key is minted per PRESS — switching off and
+ * on again are two acts — and the switch is disabled while its press is in
+ * flight, so a double tap is one act, not two.
+ */
+function SellableSwitch({
+  product,
+  sellable,
+  busy,
+  onToggle,
+}: {
+  readonly product: CatalogueProduct;
+  readonly sellable: boolean;
+  readonly busy: boolean;
+  readonly onToggle: () => void;
+}): ReactNode {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={sellable}
+      aria-label={`On sale: ${product.name}`}
+      className="pi-switch pressable"
+      disabled={busy}
+      onClick={onToggle}
+    >
+      <span className="pi-switch-track" aria-hidden="true">
+        <span className="pi-switch-thumb" />
+      </span>
+      <span className="pi-switch-word">{busy ? '…' : sellable ? 'On' : 'Off'}</span>
+    </button>
+  );
+}
+
 function CatalogueTable({ setup, options, version }: { readonly setup: ProductImportSetup; readonly options: ApiCallOptions; readonly version: number }): ReactNode {
   const { state, refresh } = useApiQuery(() => fetchCatalogue(options), [options, version]);
   const [query, setQuery] = useState('');
+  const [filter, setFilter] = useState<ListFilter>('all');
+  /** What a press changed since the list was read — the server's answer, not a guess. */
+  const [switched, setSwitched] = useState<ReadonlyMap<string, boolean>>(new Map());
+  const [pressing, setPressing] = useState<ReadonlySet<string>>(new Set());
+  const [failure, setFailure] = useState<string | null>(null);
   if (state.status === 'loading') return <ServerPending shape="table" what="Products" rows={6} slow={state.slow} />;
   if (state.status === 'failed') return <ServerUnavailable what="Products" failure={state.failure} onRetry={refresh} />;
+
+  const sellable = (p: CatalogueProduct): boolean => switched.get(p.productId) ?? p.sellable;
+  const offCount = state.data.filter((p) => !sellable(p)).length;
   const q = query.trim().toLowerCase();
-  const matched = q === '' ? state.data : state.data.filter((p) => [p.name, p.code, p.category ?? '', p.supplier ?? ''].some((t) => t.toLowerCase().includes(q)));
+  const matched = state.data.filter(
+    (p) =>
+      (filter === 'all' || (filter === 'on') === sellable(p)) &&
+      (q === '' || [p.name, p.code, p.category ?? '', p.supplier ?? ''].some((t) => t.toLowerCase().includes(q))),
+  );
   const rows = matched.slice(0, SHOWN_PRODUCTS);
+
+  const toggle = async (p: CatalogueProduct): Promise<void> => {
+    const next = !sellable(p);
+    setFailure(null);
+    setPressing((s) => new Set(s).add(p.productId));
+    const r = await setProductSellable({ idempotencyKey: uuidv7(), productId: p.productId, sellable: next }, options);
+    setPressing((s) => {
+      const n = new Set(s);
+      n.delete(p.productId);
+      return n;
+    });
+    if (!r.ok) {
+      setFailure(`${p.name} was not switched ${next ? 'on' : 'off'}: ${r.failure.message}`);
+      return;
+    }
+    setSwitched((m) => new Map(m).set(p.productId, r.data.sellable));
+  };
+
   return (
     <section className="pi-card" aria-label="Your products">
       <div className="pi-list-head">
@@ -574,50 +655,85 @@ function CatalogueTable({ setup, options, version }: { readonly setup: ProductIm
           <p className="empty-body">Download the template above, fill it in, and import it.</p>
         </div>
       ) : (
-        <div className="pi-table-wrap">
-          <table className="pi-table">
-            <thead>
-              <tr>
-                <th>Product</th>
-                <th>Category</th>
-                <th>Unit</th>
-                {setup.priceLists.map((l) => (
-                  <th key={l.id} className="numeric">{l.name}</th>
-                ))}
-                <th className="numeric">Cost</th>
-                <th>Supplier</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((p) => (
-                <tr key={p.productId}>
-                  <td>
-                    <span className="pi-name">{p.name}</span>
-                    <span className="pi-sub tabular">{p.code}</span>
-                  </td>
-                  <td>{p.category ?? '—'}</td>
-                  <td>{p.unit}</td>
-                  {setup.priceLists.map((l) => {
-                    const price = p.prices.find((x) => x.priceListId === l.id);
-                    return (
-                      <td key={l.id} className="numeric">
-                        {price === undefined ? <span className="muted">—</span> : <Money amount={e4ToMinor(price.priceE4)} />}
-                      </td>
-                    );
-                  })}
-                  <td className="numeric">{p.costE4 === null ? <span className="muted">—</span> : <Money amount={e4ToMinor(p.costE4)} />}</td>
-                  <td>{p.supplier ?? <span className="muted">—</span>}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-          {matched.length > rows.length ? (
-            <p className="pi-help pi-empty">
-              Showing {rows.length} of {matched.length}. Search to narrow it down.
+        <>
+          <p className="pi-help">
+            Switch a product off to stop selling it. It keeps its prices and stock, and the counters stop offering it at their next sync.
+          </p>
+          <div className="pi-filters" role="group" aria-label="Show products">
+            {(
+              [
+                ['all', `All (${String(state.data.length)})`],
+                ['on', `On sale (${String(state.data.length - offCount)})`],
+                ['off', `Switched off (${String(offCount)})`],
+              ] as const
+            ).map(([f, label]) => (
+              <button key={f} type="button" className="chip pressable" aria-pressed={filter === f} onClick={() => setFilter(f)}>
+                {label}
+              </button>
+            ))}
+          </div>
+          {failure !== null ? (
+            <p className="sale-refused" role="alert">
+              <Icon name="alert" size={22} />
+              <span>{failure}</span>
             </p>
           ) : null}
-          {matched.length === 0 ? <p className="pi-help pi-empty">Nothing matches “{query}”.</p> : null}
-        </div>
+          <div className="pi-table-wrap">
+            <table className="pi-table">
+              <thead>
+                <tr>
+                  <th>Product</th>
+                  <th>On sale</th>
+                  <th>Category</th>
+                  <th>Unit</th>
+                  {setup.priceLists.map((l) => (
+                    <th key={l.id} className="numeric">{l.name}</th>
+                  ))}
+                  <th className="numeric">Cost</th>
+                  <th>Supplier</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((p) => (
+                  <tr key={p.productId} className={sellable(p) ? undefined : 'pi-row-off'}>
+                    <td>
+                      <span className="pi-name">{p.name}</span>
+                      <span className="pi-sub tabular">{p.code}</span>
+                    </td>
+                    <td>
+                      <SellableSwitch
+                        product={p}
+                        sellable={sellable(p)}
+                        busy={pressing.has(p.productId)}
+                        onToggle={() => void toggle(p)}
+                      />
+                    </td>
+                    <td>{p.category ?? '—'}</td>
+                    <td>{p.unit}</td>
+                    {setup.priceLists.map((l) => {
+                      const price = p.prices.find((x) => x.priceListId === l.id);
+                      return (
+                        <td key={l.id} className="numeric">
+                          {price === undefined ? <span className="muted">—</span> : <Money amount={e4ToMinor(price.priceE4)} />}
+                        </td>
+                      );
+                    })}
+                    <td className="numeric">{p.costE4 === null ? <span className="muted">—</span> : <Money amount={e4ToMinor(p.costE4)} />}</td>
+                    <td>{p.supplier ?? <span className="muted">—</span>}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {matched.length > rows.length ? (
+              <p className="pi-help pi-empty">
+                Showing {rows.length} of {matched.length}. Search to narrow it down.
+              </p>
+            ) : null}
+            {matched.length === 0 ? (
+              <p className="pi-help pi-empty">{q === '' ? 'No products here.' : `Nothing matches “${query}”.`}</p>
+            ) : null}
+          </div>
+        </>
       )}
     </section>
   );
