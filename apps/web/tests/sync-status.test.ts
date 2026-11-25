@@ -1,10 +1,11 @@
 /**
- * The four offline states (§8.4): transition coverage for the explicit state
+ * The offline states (§8.4): transition coverage for the explicit state
  * machine, and the calm-wording contract — offline is never presented as an
  * error, and "stuck" can only be entered while connectivity is present.
  */
 import { describe, expect, it } from 'vitest';
 import {
+  CONNECTING_GRACE_MS,
   DEFAULT_STUCK_THRESHOLD_MS,
   SyncStatusMachine,
   deriveSyncUiState,
@@ -101,12 +102,61 @@ describe('SyncStatusMachine transitions', () => {
   });
 });
 
+describe('Connecting — a network, the stream not up yet', () => {
+  // What the founder saw: full signal, "Offline" on the bar, for as long as a
+  // sleeping API took to wake. The stream's flag alone cannot tell "no
+  // network" from "reconnecting"; the browser's network signal can.
+  it('down with a network and inside the grace is CONNECTING; past it, or with no network, OFFLINE', () => {
+    const base = { online: false, pendingCount: 2, oldestQueuedAtMs: T0, progress: null };
+    expect(deriveSyncUiState({ ...base, network: true, downSinceMs: T0, nowMs: T0 + 30_000 })).toEqual({
+      kind: 'connecting',
+      pendingCount: 2,
+    });
+    expect(deriveSyncUiState({ ...base, network: true, downSinceMs: T0, nowMs: T0 + CONNECTING_GRACE_MS }).kind).toBe(
+      'offline',
+    );
+    expect(deriveSyncUiState({ ...base, network: false, downSinceMs: T0, nowMs: T0 + 1 }).kind).toBe('offline');
+  });
+
+  it('the app opening with a network says connecting, then connected — never offline in between', () => {
+    const m = new SyncStatusMachine({ online: false, network: true, nowMs: T0 });
+    expect(m.state.kind).toBe('connecting');
+    // The API was asleep: 30 s later the stream comes up.
+    expect(m.apply({ type: 'tick', nowMs: T0 + 30_000 }).kind).toBe('connecting');
+    expect(m.apply({ type: 'connectivity', online: true, atMs: T0 + 31_000 }).kind).toBe('online_synced');
+  });
+
+  it('a stream that drops while the tablet has signal is connecting, not offline — until the grace runs out', () => {
+    const m = new SyncStatusMachine({ online: true, network: true, nowMs: T0 });
+    expect(m.state.kind).toBe('online_synced');
+    expect(m.apply({ type: 'connectivity', online: false, atMs: T0 + MIN }).kind).toBe('connecting');
+    expect(m.apply({ type: 'tick', nowMs: T0 + MIN + CONNECTING_GRACE_MS - 1 }).kind).toBe('connecting');
+    expect(m.apply({ type: 'tick', nowMs: T0 + MIN + CONNECTING_GRACE_MS }).kind).toBe('offline');
+  });
+
+  it('losing the network is offline at once; its return opens a fresh reconnect window', () => {
+    const m = new SyncStatusMachine({ online: false, network: true, nowMs: T0 });
+    expect(m.apply({ type: 'network', online: false, atMs: T0 + 1_000 }).kind).toBe('offline');
+    // Long after the first window would have closed, the radio comes back.
+    expect(m.apply({ type: 'network', online: true, atMs: T0 + 10 * MIN }).kind).toBe('connecting');
+    expect(m.apply({ type: 'tick', nowMs: T0 + 10 * MIN + CONNECTING_GRACE_MS }).kind).toBe('offline');
+  });
+
+  it('is never stuck: a queue only ages into stuck while the stream is up', () => {
+    const m = new SyncStatusMachine({ online: false, network: true, nowMs: T0 });
+    m.apply({ type: 'queue', pendingCount: 3, oldestQueuedAtMs: T0 - DEFAULT_STUCK_THRESHOLD_MS * 2 });
+    expect(m.state.kind).toBe('connecting');
+  });
+});
+
 describe('statusLine wording', () => {
   const clock = (): string => '09:12';
 
   it('matches the §8.4 table', () => {
     expect(statusLine({ kind: 'online_synced' })).toBe('Online · all saved');
     expect(statusLine({ kind: 'offline', pendingCount: 14 })).toBe('Offline · 14 records waiting');
+    expect(statusLine({ kind: 'connecting', pendingCount: 0 })).toBe('Connecting · nothing waiting');
+    expect(statusLine({ kind: 'connecting', pendingCount: 1 })).toBe('Connecting · 1 record waiting');
     expect(
       statusLine({
         kind: 'syncing',

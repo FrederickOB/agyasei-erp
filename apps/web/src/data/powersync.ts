@@ -104,6 +104,22 @@ export function readApiBearerToken(): string | null {
   return typeof token === 'string' && token.length > 0 ? token : null;
 }
 
+/** At most one wake-and-reconnect per this many ms, however often the radio flaps. */
+const KICK_THROTTLE_MS = 10_000;
+
+/**
+ * Fire-and-forget GET /healthz: no credentials, no body read — its only job
+ * is to start a sleeping API booting before the stream's token request needs
+ * it. A failure is meaningless here and swallowed.
+ */
+function wakeApi(apiUrl: string): void {
+  if (typeof fetch !== 'function') return;
+  const base = apiUrl.endsWith('/') ? apiUrl.slice(0, -1) : apiUrl;
+  void fetch(`${base}/healthz`, { method: 'GET', mode: 'no-cors', cache: 'no-store', credentials: 'omit' }).catch(
+    () => undefined,
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Connector — credentials from the API, uploads through the API
 // ---------------------------------------------------------------------------
@@ -348,12 +364,38 @@ export async function openLocalDb(): Promise<LocalDb> {
       runtime.setConnected(status.connected);
     },
   });
-  // Radio back → try the queue immediately, ahead of the retry timer.
+  const credentials = credentialCacheFor(env);
+
+  // ── BACK FASTER: the radio returns, or the tablet wakes ────────────────
+  // Android freezes a backgrounded PWA's timers, so after the screen has been
+  // off the stream is down and PowerSync's own retry is still waiting out its
+  // delay. On the browser's `online` event, or the app coming back into view:
+  //   1. wake the API — on the free tier it sleeps after 15 idle minutes and
+  //      takes ≈30 s to answer (measured), and the reconnect needs a token
+  //      from it, so the wake starts now rather than when the stream asks;
+  //   2. reconnect at once if the stream is not up (the credential fetch is
+  //      deduplicated, so an attempt already waiting on the API is joined,
+  //      not restarted);
+  //   3. drain the outbox ahead of its retry timer.
+  // Throttled: a flapping radio must not hammer anything.
   if (typeof window !== 'undefined') {
-    window.addEventListener('online', () => void runtime.drainNow());
+    let lastKickMs = 0;
+    const kick = (): void => {
+      void runtime.drainNow();
+      const now = Date.now();
+      if (now - lastKickMs < KICK_THROTTLE_MS) return;
+      lastKickMs = now;
+      wakeApi(env.apiUrl);
+      if (!ps.currentStatus.connected) void ps.connect(buildConnector(env, runtime, credentials));
+    };
+    window.addEventListener('online', kick);
+    if (typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible') kick();
+      });
+    }
   }
 
-  const credentials = credentialCacheFor(env);
   await ps.connect(buildConnector(env, runtime, credentials));
   runtime.start();
 

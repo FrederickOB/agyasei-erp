@@ -33,6 +33,7 @@ export type IconName =
   | 'clock'
   | 'alert'
   | 'cloud-off'
+  | 'cloud'
   | 'sync'
   | 'live'
   | 'back'
@@ -108,6 +109,7 @@ const PATHS: Record<IconName, ReactNode> = {
       <path d="M3.5 3.5l17 17" />
     </>
   ),
+  cloud: <path d="M17.6 17.5H7a4.2 4.2 0 01-.6-8.36A5 5 0 0118.3 9.2a4.15 4.15 0 01-.7 8.3z" />,
   sync: (
     <>
       <path d="M20 12a8 8 0 01-13.7 5.6M4 12a8 8 0 0113.7-5.6" />

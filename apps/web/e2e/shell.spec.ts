@@ -22,8 +22,9 @@ test('lands in the room its form factor is for, and remembers a choice', async (
     await expect(page.getByRole('region', { name: 'Open the till' })).toBeVisible();
     await expect(page.getByRole('navigation', { name: 'Office' })).toHaveCount(0);
   }
-  // The persistent status is there in either room, calm, and says offline.
-  await expect(device.status).toContainText('Offline');
+  // The persistent status is there in either room, calm. The fixture has a
+  // network but no sync service: "Connecting" for the grace, then "Offline".
+  await expect(device.status).toHaveText(/Connecting|Offline/);
   await expectNoHorizontalScroll(page, `${ff} landing`);
 
   // Walk to the other room and back: the choice outlives a reload.

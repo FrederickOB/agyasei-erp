@@ -259,7 +259,7 @@ export function ServerPending({
       {slow ? (
         <p className="server-pending-note" role="status">
           <Icon name="sync" size={18} />
-          Still asking the server for {what.toLowerCase()}. This connection is slow.
+          Still asking the server for {what.toLowerCase()}. A server that has been idle can take up to a minute to answer.
         </p>
       ) : null}
       <div aria-hidden="true">
